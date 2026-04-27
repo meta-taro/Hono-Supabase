@@ -1,0 +1,36 @@
+services:
+  app:
+    build:
+      context: .
+      target: development
+    ports:
+      # ホスト:コンテナ のポートマッピング
+      - "${PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=development
+    volumes:
+      # ホットリロードのためにソースをマウント
+      - ./app:/app/app:ro
+      # node_modules はコンテナ側を使う（ホスト側との混在を防ぐ）
+      - /app/node_modules
+    # Supabase ローカル環境（supabase start で起動）のネットワークに接続
+    # supabase start 後に `supabase status` で確認した URL を .env に設定すること
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+# ============================================================
+# NOTE: Supabase は Docker Compose ではなく Supabase CLI で管理する
+#
+# 起動手順:
+#   1. supabase start        # Supabase ローカル環境を起動
+#   2. cp .env.example .env  # 環境変数を設定（supabase status の値を参照）
+#   3. docker compose up -d  # アプリを起動
+#
+# 通常の開発では docker compose を使わず pnpm dev を直接実行する方が高速
+# ============================================================

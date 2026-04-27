@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    // ターゲット: Node 22 は ES2022 以上をネイティブサポート
+    "target": "ES2022",
+    // ESM + Node 22 の組み合わせには NodeNext が必須
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    // ソースと出力先
+    "rootDir": ".",
+    "outDir": "dist",
+    // 型安全性を最大化する strict 系オプション
+    "strict": true,
+    // 配列・オブジェクトの添字アクセスも undefined を考慮させる
+    "noUncheckedIndexedAccess": true,
+    // import パスエイリアス: @/* → app/*
+    "paths": {
+      "@/*": ["./app/*"]
+    },
+    "lib": ["ES2022"],
+    // 外部ライブラリの型定義エラーを無視（型定義が不完全なパッケージ対策）
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    // デバッグ用ソースマップ
+    "sourceMap": true,
+    "declaration": true
+  },
+  "include": ["app/**/*"],
+  "exclude": ["node_modules", "dist", "coverage"]
+}
