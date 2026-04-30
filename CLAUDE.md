@@ -354,7 +354,7 @@ Zod スキーマ → Controller → Service → Migration
 > フェーズ完了時にチェックを入れてください
 
 - [x] Phase 1: 設定ファイル群・プロジェクト初期化
-- [ ] Phase 2: Hono アプリ骨格（Routes / Controllers / Services）
+- [x] Phase 2: Hono アプリ骨格（Routes / Controllers / Services）
 - [ ] Phase 3: Supabase マイグレーション + DB アクセス実装
 - [ ] Phase 4: Zod バリデーション + エラーハンドリング統一
 - [ ] Phase 5: `@hono/zod-openapi` による OpenAPI 自動生成

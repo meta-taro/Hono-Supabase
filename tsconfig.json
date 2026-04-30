@@ -2,9 +2,10 @@
   "compilerOptions": {
     // ターゲット: Node 22 は ES2022 以上をネイティブサポート
     "target": "ES2022",
-    // ESM + Node 22 の組み合わせには NodeNext が必須
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    // tsx / vitest / tsup（esbuild 系）で実行・ビルドするため Bundler 系に揃える。
+    // NodeNext は path alias で .js 拡張子の明示を要求するため、本構成では Bundler を採用。
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     // ソースと出力先
     "rootDir": ".",
     "outDir": "dist",
