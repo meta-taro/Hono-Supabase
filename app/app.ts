@@ -1,5 +1,5 @@
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { errorHandler } from '@/lib/error-handler';
+import { errorHandler } from '@/shared/http/error-handler';
 
 // app と index.ts を分離することで、テストが serve を起動せずに
 // app.request() で直接 fetch ハンドラを叩けるようにしている。

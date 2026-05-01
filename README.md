@@ -9,7 +9,7 @@ Hono × Supabase × TypeScript で構築する、実務志向の軽量 REST API 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 > 学習用サンプルですが、**実運用で困らないレベル** を意識して設計しています。
-> API バージョニング、構造化ログ、Zod による型安全な入出力、Supabase Auth + RLS、OpenAPI 自動生成、TDD まで一通り実装します。
+> **DDD-lite（モジュラモノリス × 4 層構造）** を採用し、API バージョニング、構造化ログ、Zod による型安全な入出力、Supabase Auth + RLS、OpenAPI 自動生成、TDD まで一通り実装します。
 
 ---
 
@@ -25,13 +25,15 @@ Hono × Supabase × TypeScript で構築する、実務志向の軽量 REST API 
 
 ## 主な特徴
 
+- **DDD-lite アーキテクチャ**: Bounded Context（`cakes` / `customers` / `orders`）× 4 層（`domain` / `application` / `infrastructure` / `presentation`）。依存方向を内向き一方向に固定し、ドメイン層を DB 非依存に保つ
+- **Repository + UseCase パターン**: domain で interface を定義、infrastructure で Supabase 実装。UseCase は in-memory repo で爆速テスト
 - **API バージョニング**: 全業務エンドポイントを `/v1` 配下に配置（`/health` のみ非バージョン）
 - **型安全な API 設計**: `@hono/zod-openapi` で Zod スキーマから OpenAPI 仕様を自動生成（仕様の二重管理ゼロ）
 - **構造化ログ**: pino による JSON ログ。障害対応・QA 対応ができるレベルで `method` / `path` / `requestId` 等を残す
 - **統一エラーレスポンス**: `code` / `message` / `details` 形式で、クライアントがプログラム的にエラー種別を分岐可能
 - **fail-fast な env 検証**: 起動時に Zod で `process.env` を検証
 - **Supabase Auth + RLS**: JWT 認証ミドルウェア + Row Level Security でテーブル単位のアクセス制御
-- **TDD 必須**: Vitest によるカバレッジ 80% 強制（未達はビルドエラー）
+- **TDD 必須**: Vitest によるカバレッジ 80% 強制（未達はビルドエラー）。テストは実装と共置
 - **再現性ある開発環境**: fnm で Node 固定、corepack で pnpm 固定、Supabase CLI でローカル DB 完結
 
 ---
@@ -117,28 +119,46 @@ open http://localhost:54323
 
 ---
 
-## ディレクトリ構成
+## ディレクトリ構成（DDD-lite）
 
 ```
 .
-├── app/                              # アプリケーションコード
-│   ├── index.ts                      # エントリーポイント
-│   ├── app.ts                        # Hono インスタンス・ミドルウェア
-│   ├── routes/v1/                    # /v1 配下のルーター
-│   ├── controllers/                  # リクエスト整形 → service 呼び出し
-│   ├── services/                     # ビジネスロジック + DB アクセス
-│   ├── schemas/                      # Zod スキーマ（OpenAPI 兼 検証）
-│   ├── middleware/                   # 認証ミドルウェア等
-│   ├── lib/                          # ロガー / エラー / Supabase クライアント
-│   ├── types/                        # 型定義
-│   └── __tests__/                    # Vitest テスト
+├── app/
+│   ├── index.ts                                  # エントリーポイント
+│   ├── app.ts                                    # Hono インスタンス・ルート集約
+│   ├── modules/                                  # = Bounded Contexts
+│   │   ├── cakes/
+│   │   │   ├── domain/                           # Entity / VO / Repository interface（純粋層）
+│   │   │   ├── application/                      # UseCase（1 ファイル = 1 ユースケース）
+│   │   │   ├── infrastructure/                   # Repository 実装（Supabase）
+│   │   │   └── presentation/                     # Hono ルート + Zod DTO + Controller
+│   │   ├── customers/                            # 同構造
+│   │   └── orders/                               # 同構造 + Domain Event
+│   ├── shared/                                   # 共有カーネル
+│   │   ├── domain/                               # AppError 等
+│   │   ├── infrastructure/                       # logger / Supabase クライアント
+│   │   └── http/                                 # env 検証 / error-handler
+│   └── __tests__/integration/                    # 跨り系の統合テスト
 ├── supabase/
-│   ├── migrations/                   # SQL マイグレーション
-│   └── seed.sql                      # 初期データ
-├── bruno/                            # API テストコレクション（Bruno）
-├── CLAUDE.md                         # AI エージェント向け指示書（規約・進捗）
-└── docker-compose.yml                # アプリ用コンテナ
+│   ├── migrations/                               # SQL マイグレーション
+│   └── seed.sql                                  # 初期データ
+├── bruno/                                        # API テストコレクション
+├── CLAUDE.md                                     # AI エージェント向け指示書（規約・進捗）
+└── docker-compose.yml                            # アプリ用コンテナ
 ```
+
+### 依存方向（DDD-lite の中核ルール）
+
+```
+presentation → application → domain
+                                ↑
+              infrastructure ───┘
+```
+
+- `domain/` は外側を一切 import しない（DB / HTTP / ロガー禁止）
+- `application/` は domain interface 経由で永続化を呼ぶ（具象を知らない）
+- `infrastructure/` が domain interface を実装する（Supabase 等）
+- コンテキスト間（`cakes` ↔ `orders` 等）の直接参照は禁止
 
 ---
 
@@ -189,13 +209,17 @@ open http://localhost:54323
 
 ## テスト方針
 
-| 種類 | ツール | 対象 |
-|---|---|---|
-| 単体テスト | Vitest | services / schemas / errors |
-| 統合テスト | Vitest + Hono `app.request()` | routes / controllers |
-| E2E | Bruno | 全エンドポイント疎通 |
+| 種類 | ツール | 対象 | 配置 | DB |
+|---|---|---|---|---|
+| 単体（domain） | Vitest | Entity / VO / Repository interface | 実装と共置 | 不要 |
+| 単体（application） | Vitest | UseCase（in-memory repo で差し替え） | 実装と共置 | 不要 |
+| 単体（infrastructure） | Vitest | Repository 実装 | 実装と共置 | 必要（Supabase ローカル） |
+| 統合 | Vitest + Hono `app.request()` | routes / controllers / 跨り系 | `app/__tests__/integration/` | UseCase mock or 実 Supabase |
+| E2E | Bruno | 全エンドポイント疎通 | `bruno/` | 必要 |
 
 カバレッジ閾値: **80%**（lines / functions / branches / statements 全て）。未達はビルドエラー扱い。
+
+DDD-lite ではドメイン層が DB 非依存になるため、`application/` のテストが**爆速**（in-memory 実装で差し替え可能）。
 
 ---
 
@@ -203,10 +227,11 @@ open http://localhost:54323
 
 - [x] **Phase 1**: 設定ファイル群・プロジェクト初期化
 - [x] **Phase 2**: Hono アプリ骨格 + `/health` + 統一エラー形式 + 構造化ログ + env 検証
-- [ ] **Phase 3**: Supabase マイグレーション + DB アクセス（services 層）
-- [ ] **Phase 4**: Zod バリデーション + controllers / routes 実装
-- [ ] **Phase 5**: `@hono/zod-openapi` による OpenAPI 仕様自動生成
-- [ ] **Phase 6**: Supabase Auth + RLS + 認証ミドルウェア
+- [x] **Phase 2.5**: DDD-lite 4 層構造への移行（`shared/` 共有カーネル + `modules/{cakes,customers,orders}/` 骨格）
+- [ ] **Phase 3**: `cakes` Bounded Context（domain → application → infrastructure → presentation 縦切り完成）
+- [ ] **Phase 4**: `customers` Bounded Context（同構造）
+- [ ] **Phase 5**: `orders` Bounded Context（Domain Event + Postgres Function でアトミック在庫減算）
+- [ ] **Phase 6**: Supabase Auth + RLS + 認証ミドルウェア + OpenAPI 仕上げ
 
 ---
 

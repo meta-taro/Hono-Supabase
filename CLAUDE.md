@@ -7,11 +7,13 @@
 
 ## Project Overview
 
-**目的**: Hono × Supabase を使った実務レベルの軽量バックエンド API を構築する学習サンプル  
+**目的**: Hono × Supabase を使った実務レベルの軽量バックエンド API を構築する学習サンプル
 **ドメイン**: ケーキ屋の商品・顧客・注文管理
+**採用アーキテクチャ**: **DDD-lite（モジュラモノリス × 4層構造）**
 
 ### 学習ゴール
 
+- DDD-lite による境界づけられたコンテキスト・レイヤ分離・依存方向の制御
 - API バージョニング設計（`/v1` プレフィックス）
 - `@hono/zod-openapi` による型安全な API 設計と OpenAPI 仕様の自動生成
 - Supabase Auth + RLS（Row Level Security）によるアクセス制御
@@ -39,60 +41,127 @@
 
 ---
 
+## Architecture（DDD-lite）
+
+### 採用コンセプト
+
+- **Bounded Context（境界づけられたコンテキスト）** = `app/modules/{cakes,customers,orders}/`
+  - 各コンテキストは独立して縦に積む。コンテキスト間の参照は最小限（基本は禁止、必要なら presentation 層で集約）
+- **4 層構造**: 各コンテキスト内を `domain → application → infrastructure → presentation` に分ける
+- **共有カーネル** = `app/shared/`
+  - 全コンテキストが依存して良い純粋ユーティリティ（エラー基底・ロガー・env・error-handler 等）
+
+### レイヤの役割と依存方向
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ presentation/   Hono ルート + Zod DTO + Controller              │ ← HTTP I/F
+│      ↓ application を呼ぶだけ。domain には触れない              │
+├──────────────────────────────────────────────────────────────────┤
+│ application/    UseCase（1 ファイル = 1 ユースケース）          │ ← ビジネス手順
+│      ↓ domain の interface に依存。infrastructure は知らない    │
+├──────────────────────────────────────────────────────────────────┤
+│ domain/         Entity / Value Object / Repository interface    │ ← 純粋層（最重要）
+│      ↑ 外側を一切知らない。外部依存ゼロ                         │
+├──────────────────────────────────────────────────────────────────┤
+│ infrastructure/ Repository 実装（Supabase 呼び出し等）          │ ← 永続化・外部 I/O
+│      ↓ domain の interface を実装する                           │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**依存ルール**（CRITICAL — 違反したらレビューで差し戻し）:
+
+1. `domain/` は外側のレイヤを **絶対に import しない**（`hono`, `supabase-js`, `@/shared/infrastructure/*` も禁止）
+2. `application/` は `domain/` のみ import 可。`infrastructure/` の具象は触らず interface に依存
+3. `infrastructure/` は `domain/` の interface を実装。`application/` は知らない
+4. `presentation/` は `application/` のみ呼ぶ。`infrastructure/` を直接触らない（DI で組み立て済みの UseCase を使う）
+5. **コンテキスト間の直接参照禁止**（`modules/orders/` から `modules/cakes/domain/` を import しない）
+
+### 採用する DDD 戦術パターン
+
+| パターン | 採用 | 適用場所 |
+|---|---|---|
+| Aggregate / Entity | ✅ | 各コンテキストの `domain/` |
+| Value Object | ✅（要所のみ） | `Price`, `OrderQuantity`, `Email` |
+| Repository（interface + 実装） | ✅ 必須 | interface = `domain/`、実装 = `infrastructure/` |
+| UseCase（Application Service） | ✅ 必須 | 1 ユースケース = 1 ファイル |
+| Domain Event | ✅ 1 箇所 | `OrderPlaced` で在庫減算（Phase 5） |
+| Domain Service | △ 必要時 | 跨る計算（合計金額算出など） |
+| CQRS | ❌ | 規模に対して過剰 |
+| Specification パターン | ❌ | 同上 |
+
+### DI 戦略
+
+**手動 DI（factory function）** を採用する。`tsyringe` 等は学習が分岐するため不採用。
+`app/shared/composition-root.ts` でモジュールを組み立てて `createApp()` に注入する。
+
+```typescript
+// イメージ（Phase 3 で実装）
+export const buildCakesModule = (sb: SupabaseClient) => {
+  const repo = new CakeSupabaseRepository(sb);
+  return {
+    listCakes: new ListCakesUseCase(repo),
+    createCake: new CreateCakeUseCase(repo),
+  };
+};
+```
+
+---
+
 ## Directory Structure
 
 ```
 cake-shop-api/
-├── app/                              # アプリケーションコード（全 TypeScript）
-│   ├── index.ts                      # エントリーポイント（サーバー起動）
-│   ├── app.ts                        # Hono インスタンス・ミドルウェア・ルートマウント
-│   ├── routes/
-│   │   └── v1/
-│   │       ├── index.ts              # v1 ルーター集約
-│   │       ├── cakes.routes.ts       # GET/POST /v1/cakes
-│   │       ├── customers.routes.ts   # GET/POST /v1/customers
-│   │       └── orders.routes.ts      # POST /v1/orders, GET /v1/orders/:id
-│   ├── controllers/                  # リクエスト整形 → service 呼び出し → レスポンス整形（30行以内目安）
-│   │   ├── cakes.controller.ts
-│   │   ├── customers.controller.ts
-│   │   └── orders.controller.ts
-│   ├── services/                     # ビジネスロジック + DB アクセス（ここ以外で DB を触らない）
-│   │   ├── cakes.service.ts
-│   │   ├── customers.service.ts
-│   │   └── orders.service.ts
-│   ├── schemas/                      # Zod スキーマ（OpenAPI 定義 兼 バリデーション）
-│   │   ├── cake.schema.ts
-│   │   ├── customer.schema.ts
-│   │   ├── order.schema.ts
-│   │   └── common.schema.ts          # ErrorResponse, IdParam 等の共通スキーマ
-│   ├── middleware/
-│   │   └── auth.middleware.ts        # Supabase Auth JWT 検証
-│   ├── lib/
-│   │   ├── supabase.ts               # Supabase クライアントシングルトン
-│   │   ├── logger.ts                 # pino ロガー（構造化ログ）
-│   │   ├── errors.ts                 # AppError, NotFoundError 等のエラークラス
-│   │   └── error-handler.ts          # app.onError 用グローバルハンドラ
-│   └── types/
-│       └── db.ts                     # DB 行の型定義（Cake, Customer, Order, OrderItem）
+├── app/                                              # アプリケーションコード（全 TypeScript）
+│   ├── index.ts                                      # エントリーポイント（サーバー起動）
+│   ├── app.ts                                        # Hono インスタンス・ミドルウェア・ルート集約
+│   ├── modules/                                      # = Bounded Contexts
+│   │   ├── cakes/
+│   │   │   ├── domain/                               # ★純粋層（外部依存ゼロ）
+│   │   │   │   ├── cake.ts                           # Entity / Aggregate Root
+│   │   │   │   ├── price.vo.ts                       # Value Object
+│   │   │   │   ├── cake.repository.ts                # interface（DI 用）
+│   │   │   │   ├── cake.errors.ts                    # ドメイン例外
+│   │   │   │   └── cake.test.ts                      # 単体テスト（共置）
+│   │   │   ├── application/                          # UseCase 層
+│   │   │   │   ├── list-cakes.usecase.ts
+│   │   │   │   ├── list-cakes.usecase.test.ts        # in-memory repo で UseCase をテスト
+│   │   │   │   ├── create-cake.usecase.ts
+│   │   │   │   └── create-cake.usecase.test.ts
+│   │   │   ├── infrastructure/                       # 外部世界の実装詳細
+│   │   │   │   ├── cake.supabase-repository.ts       # Repository 実装
+│   │   │   │   └── cake.supabase-repository.test.ts  # 実 Supabase ローカルでテスト
+│   │   │   └── presentation/                         # HTTP I/F
+│   │   │       ├── cake.routes.ts                    # Hono ルート + OpenAPI 定義
+│   │   │       ├── cake.controller.ts                # 入出力 ↔ UseCase 変換
+│   │   │       └── cake.dto.ts                       # Zod スキーマ（Request/Response）
+│   │   ├── customers/                                # 同構造（Phase 4）
+│   │   └── orders/                                   # 同構造 + Domain Event（Phase 5）
+│   ├── shared/                                       # 共有カーネル
+│   │   ├── domain/
+│   │   │   ├── errors.ts                             # AppError + 5 サブクラス
+│   │   │   └── errors.test.ts
+│   │   ├── infrastructure/
+│   │   │   ├── logger.ts                             # pino 構造化ログ
+│   │   │   ├── logger.test.ts
+│   │   │   └── supabase.ts                           # Supabase クライアント（Phase 3）
+│   │   └── http/
+│   │       ├── env.ts                                # Zod env 検証
+│   │       ├── env.test.ts
+│   │       └── error-handler.ts                      # app.onError ハンドラ
+│   └── __tests__/
+│       └── integration/                              # 跨り系の統合テスト
+│           ├── health.test.ts
+│           └── error-handler.test.ts
 ├── supabase/
-│   ├── config.toml                   # Supabase CLI 設定
-│   ├── migrations/                   # SQL マイグレーション（連番_説明.sql 形式）
-│   │   ├── 0001_create_cakes.sql
-│   │   ├── 0002_create_customers.sql
-│   │   ├── 0003_create_orders.sql
-│   │   ├── 0004_create_order_items.sql
-│   │   └── 0005_add_indexes.sql
-│   └── seed.sql                      # 開発用初期データ
-├── bruno/                            # API テストコレクション（Bruno）
-│   ├── environments/
-│   │   └── local.bru
-│   ├── Cakes/
-│   ├── Customers/
-│   └── Orders/
+│   ├── config.toml                                   # Supabase CLI 設定
+│   ├── migrations/                                   # SQL マイグレーション（連番_説明.sql）
+│   └── seed.sql                                      # 開発用初期データ
+├── bruno/                                            # API テストコレクション（Bruno）
 ├── .claude/
-│   └── settings.json                 # Claude Code プロジェクト設定（チーム共有）
-├── CLAUDE.md                         # このファイル（AI エージェント指示書）
-├── docker-compose.yml                # アプリ用（Supabase は CLI で別管理）
+│   └── settings.json                                 # Claude Code プロジェクト設定
+├── CLAUDE.md                                         # このファイル
+├── docker-compose.yml
 ├── Dockerfile
 ├── package.json
 ├── tsconfig.json
@@ -166,8 +235,8 @@ GET  /v1/orders/:id         # 注文詳細（要認証・本人のみ）
 
 ```typescript
 // ✅ パスエイリアス使用例
-import { logger } from '@/lib/logger';
-import { AppError } from '@/lib/errors';
+import { logger } from '@/shared/infrastructure/logger';
+import { AppError } from '@/shared/domain/errors';
 ```
 
 ### 関数・ファイルサイズ
@@ -175,17 +244,30 @@ import { AppError } from '@/lib/errors';
 - 関数は **50 行以内**（超えたら分割を検討）
 - ファイルは **800 行以内**（超えたらモジュール分割）
 - ネストは **4 階層以内**（早期 return / guard clause を使う）
-- Controller は **30 行以内**を目安（薄く保つ。ロジックは service へ）
+- Controller / Routes は **30 行以内**を目安（薄く保つ。ロジックは UseCase へ）
 
 ### 命名規則
 
 | 対象 | 規則 | 例 |
 |------|------|----|
-| ファイル | kebab-case | `cakes.service.ts` |
+| ファイル | kebab-case + suffix | `cake.repository.ts`, `list-cakes.usecase.ts`, `price.vo.ts` |
 | 関数・変数 | camelCase | `createCake`, `cakeId` |
-| 型・クラス | PascalCase | `CakeResponse`, `NotFoundError` |
+| 型・クラス | PascalCase | `Cake`, `Price`, `NotFoundError` |
 | 定数 | SCREAMING_SNAKE_CASE | `MAX_ORDER_QUANTITY` |
 | DB テーブル・カラム | snake_case | `order_items`, `unit_price` |
+
+#### ファイルサフィックス規約
+
+| サフィックス | 配置先 | 役割 |
+|---|---|---|
+| `*.repository.ts` | `domain/` | Repository interface |
+| `*.supabase-repository.ts` | `infrastructure/` | Repository 実装 |
+| `*.usecase.ts` | `application/` | UseCase |
+| `*.routes.ts` | `presentation/` | Hono ルート定義（OpenAPI 含む） |
+| `*.controller.ts` | `presentation/` | Controller（入出力変換） |
+| `*.dto.ts` | `presentation/` | Zod スキーマ（Request/Response） |
+| `*.vo.ts` | `domain/` | Value Object |
+| `*.errors.ts` | `domain/` | ドメイン例外 |
 
 ### コメントの書き方
 
@@ -214,9 +296,9 @@ import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
 // 3. 内部モジュール（パスエイリアス）
-import { logger } from '@/lib/logger';
-// 4. 相対パス
-import { createCake } from './cakes.service';
+import { logger } from '@/shared/infrastructure/logger';
+// 4. 相対パス（同一レイヤ内のみ）
+import { Cake } from './cake';
 ```
 
 ---
@@ -224,21 +306,30 @@ import { createCake } from './cakes.service';
 ## Forbidden Patterns（禁止パターン）
 
 ```typescript
-// ❌ Controller / Route 内での直接 DB アクセス（禁止）
+// ❌ presentation 層から DB を直接叩く（禁止）
 app.get('/v1/cakes', async (c) => {
   const { data } = await supabase.from('cakes').select('*');
   return c.json(data);
 });
 
-// ✅ 必ず service 経由でアクセスする
-app.get('/v1/cakes', async (c) => {
-  const cakes = await cakesService.listCakes();
-  return c.json(cakes);
-});
+// ❌ application 層から Supabase を import（禁止 — domain interface に依存する）
+import { createClient } from '@supabase/supabase-js';
+
+// ❌ domain 層から外側を import（禁止 — 純粋層を保つ）
+import { logger } from '@/shared/infrastructure/logger'; // domain/ では NG
+import { Hono } from 'hono';                              // domain/ では NG
+
+// ❌ コンテキスト間の直接参照（禁止）
+import { Cake } from '@/modules/cakes/domain/cake';      // orders/ では NG
 ```
 
-- 環境変数のハードコード禁止（必ず `.env` + `process.env` 経由）
-- `console.log` のコミット禁止（`logger` を使う）
+**禁止項目まとめ**:
+
+- DB アクセスは **`infrastructure/` 配下のみ**（presentation・application から直接禁止）
+- `domain/` レイヤから外側のレイヤを import 禁止
+- コンテキスト間の直接参照禁止（`modules/orders/` から `modules/cakes/domain/` を import しない）
+- 環境変数のハードコード禁止（必ず `.env` + `@/shared/http/env` 経由）
+- `console.log` のコミット禁止（`@/shared/infrastructure/logger` を使う）
 - マイグレーションファイルの**編集**禁止（新規追加のみ）
 - `/v1` プレフィックスなしの業務エンドポイント追加禁止
 - `any` 型の使用禁止
@@ -250,16 +341,25 @@ app.get('/v1/cakes', async (c) => {
 ### 方針: TDD（テスト駆動開発）
 
 1. **RED**: 失敗するテストを書く
-2. **GREEN**: テストが通る最小実装をする  
+2. **GREEN**: テストが通る最小実装をする
 3. **REFACTOR**: コードを整理する
 
-### テスト分類
+### テスト分類と配置
 
-| 種類 | ツール | 対象 | ディレクトリ |
-|------|--------|------|------------|
-| 単体テスト | Vitest | services, schemas, errors | `app/__tests__/unit/` |
-| 統合テスト | Vitest + Hono test helper | routes, controllers | `app/__tests__/integration/` |
-| E2E テスト | Bruno | 全エンドポイント疎通 | `bruno/` |
+| 種類 | 対象 | 配置 | DB |
+|------|------|------|----|
+| 単体（domain） | Entity / VO / Repository interface | 実装と共置（`*.test.ts`） | 不要 |
+| 単体（application） | UseCase（in-memory repo で差し替え） | 実装と共置 | 不要 |
+| 単体（infrastructure） | Repository 実装 | 実装と共置 | **必要**（Supabase ローカル） |
+| 統合（presentation） | routes / controllers | `app/__tests__/integration/` | UseCase mock or 実 Supabase |
+| 統合（shared 跨り） | error-handler 等 | `app/__tests__/integration/` | 不要 |
+| E2E | 全エンドポイント疎通 | `bruno/` | 必要 |
+
+### 共置テストの利点（DDD-lite で重要）
+
+- **ドメイン層が DB 非依存** → in-memory 実装で UseCase テストが**爆速**
+- リファクタ時に実装とテストが一緒に動く
+- 1 ファイル削除でテストも一緒に消える
 
 ### カバレッジ目標
 
@@ -272,7 +372,8 @@ app.get('/v1/cakes', async (c) => {
 ### 方針
 
 - Supabase Auth の JWT を使用（`Authorization: Bearer <token>` ヘッダ）
-- `app/middleware/auth.middleware.ts` で JWT を検証し、`c.set('user', user)` でコンテキストに保存
+- 認証ミドルウェアは `app/shared/http/auth.middleware.ts` に配置（Phase 6）
+- JWT を検証し、`c.set('user', user)` で Hono コンテキストに保存
 - 認証不要なエンドポイント: `GET /health`, `POST /v1/customers`, `GET /v1/cakes`
 - 認証必須なエンドポイント: それ以外すべて
 
@@ -286,7 +387,7 @@ app.get('/v1/cakes', async (c) => {
 
 ## Database Rules
 
-- DB アクセスは **`app/services/` 配下のみ** に限定する
+- DB アクセスは **`app/modules/*/infrastructure/` 配下のみ** に限定する
 - マイグレーションは `supabase/migrations/NNNN_description.sql` 形式
 - スキーマ変更は **新規マイグレーションファイルで追加**（既存ファイルの編集禁止）
 - UUID は DB 側の `gen_random_uuid()` で生成（アプリ側で指定しない）
@@ -300,7 +401,7 @@ app.get('/v1/cakes', async (c) => {
 障害対応・QA 対応ができるよう、構造化ログで文脈情報を残す。
 
 ```typescript
-import { logger } from '@/lib/logger';
+import { logger } from '@/shared/infrastructure/logger';
 
 // ✅ 構造化ログ（JSON 形式。Datadog / CloudWatch で検索可能）
 logger.info({ orderId, customerId }, 'Order created successfully');
@@ -310,6 +411,8 @@ logger.warn({ userId, path: '/v1/orders' }, 'Unauthorized access attempt');
 // ❌ console.log 禁止（コミット不可）
 console.log('order created');
 ```
+
+**ログを書く場所**: `application/` または `infrastructure/`（`domain/` は副作用ゼロを保つため不可）。
 
 ### ログレベル基準
 
@@ -324,28 +427,34 @@ console.log('order created');
 
 ## Workflow for AI Agents（Claude Code 向け手順）
 
-### 新機能追加
+### 新コンテキスト追加（縦切り）
 
-1. **CLAUDE.md を確認** → 規約・現フェーズ・禁止パターンをチェック
+1. **CLAUDE.md を確認** → 現フェーズ・依存ルール・禁止パターンをチェック
 2. **planner agent** → 実装計画を立案
 3. **tdd-guide agent** → テスト先行で実装（RED → GREEN → REFACTOR）
-4. **code-reviewer agent** → コードレビュー
-5. **security-reviewer agent** → 認証・DB アクセス変更時は必須
+4. **コンテキスト内を 4 層順に実装**（下記「実装順序」参照）
+5. **code-reviewer agent** → コードレビュー
+6. **security-reviewer agent** → 認証・DB アクセス変更時は必須
+
+### 実装順序（厳守 — 縦切り）
+
+各 Bounded Context は以下の順で完成させる:
+
+```
+1. domain/         Entity / VO / Repository interface / ドメイン例外
+2. application/    UseCase（in-memory repo でテスト）
+3. infrastructure/ Repository 実装（Supabase）+ マイグレーション
+4. presentation/   Zod DTO → Routes → Controller（OpenAPI も同時に書く）
+5. composition-root.ts に組み立て + app.ts でマウント
+```
 
 ### DB 変更時の手順
 
-1. 新規マイグレーション SQL を作成
+1. 新規マイグレーション SQL を作成（`supabase/migrations/NNNN_*.sql`）
 2. `seed.sql` を必要に応じて更新
-3. `app/types/db.ts` の型を更新
-4. Zod スキーマを更新（`app/schemas/`）
-5. サービス層を実装
-6. OpenAPI 仕様は `@hono/zod-openapi` により自動反映される
-
-### 実装順序（厳守）
-
-```
-Zod スキーマ → Controller → Service → Migration
-```
+3. 影響を受けるコンテキストの `domain/` で型を更新
+4. `infrastructure/` の Repository 実装を更新
+5. `application/` UseCase は domain interface 経由なので最小限の修正で済むはず
 
 ---
 
@@ -353,12 +462,13 @@ Zod スキーマ → Controller → Service → Migration
 
 > フェーズ完了時にチェックを入れてください
 
-- [x] Phase 1: 設定ファイル群・プロジェクト初期化
-- [x] Phase 2: Hono アプリ骨格（Routes / Controllers / Services）
-- [ ] Phase 3: Supabase マイグレーション + DB アクセス実装
-- [ ] Phase 4: Zod バリデーション + エラーハンドリング統一
-- [ ] Phase 5: `@hono/zod-openapi` による OpenAPI 自動生成
-- [ ] Phase 6: Supabase Auth + RLS + 認証ミドルウェア
+- [x] **Phase 1**: 設定ファイル群・プロジェクト初期化
+- [x] **Phase 2**: Hono アプリ骨格 + `/health` + 統一エラー + 構造化ログ + env 検証
+- [x] **Phase 2.5（軌道修正）**: DDD-lite 4 層構造への移行（`app/lib/` → `app/shared/`、`app/modules/{cakes,customers,orders}` 骨格）
+- [ ] **Phase 3**: `cakes` Bounded Context（domain → application → infrastructure → presentation の縦切り完成）
+- [ ] **Phase 4**: `customers` Bounded Context（同構造）
+- [ ] **Phase 5**: `orders` Bounded Context（Domain Event + Postgres Function でアトミック在庫減算）
+- [ ] **Phase 6**: 認証（Supabase Auth + RLS + 認証ミドルウェア）+ OpenAPI 仕上げ
 
 ---
 
@@ -382,6 +492,9 @@ pnpm lint
 
 # コードフォーマット
 pnpm format
+
+# 型チェック
+pnpm typecheck
 
 # Supabase ローカル起動（Docker が起動している必要あり）
 supabase start
@@ -409,6 +522,6 @@ docker compose down
 | `SUPABASE_URL` | Supabase プロジェクト URL | `http://localhost:54321` |
 | `SUPABASE_ANON_KEY` | 匿名キー（公開可・RLS で保護） | `eyJ...` |
 | `SUPABASE_SERVICE_ROLE_KEY` | サービスロールキー（RLS バイパス・厳重管理） | `eyJ...` |
-| `PORT` | サーバーポート | `3000` |
-| `NODE_ENV` | 実行環境 | `development` / `production` |
-| `LOG_LEVEL` | ログ出力レベル | `debug` / `info` |
+| `PORT` | サーバーポート | `3010` |
+| `NODE_ENV` | 実行環境 | `development` / `production` / `test` |
+| `LOG_LEVEL` | ログ出力レベル | `debug` / `info` / `warn` / `error` |

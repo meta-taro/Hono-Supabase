@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createLogger } from '@/lib/logger';
+import { createLogger } from './logger';
 
 describe('createLogger', () => {
   it('LOG_LEVEL を尊重する', () => {

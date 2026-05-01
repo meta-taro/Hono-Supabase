@@ -6,7 +6,7 @@ import {
   NotFoundError,
   UnauthorizedError,
   ValidationError,
-} from '@/lib/errors';
+} from './errors';
 
 describe('AppError 基底クラス', () => {
   it('code / status / message / details を保持する', () => {

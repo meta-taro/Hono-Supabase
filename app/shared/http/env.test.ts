@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { loadEnv } from '@/lib/env';
+import { loadEnv } from './env';
 
 describe('loadEnv', () => {
   it('PORT 未指定時は 3010 にフォールバックする', () => {

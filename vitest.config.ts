@@ -4,7 +4,9 @@ import { resolve } from 'node:path';
 export default defineConfig({
   test: {
     // テストファイルのパターン
-    include: ['app/__tests__/**/*.test.ts'],
+    // - 単体テスト: 実装と共置（例: app/shared/domain/errors.test.ts）
+    // - 統合テスト: app/__tests__/integration/ に集約（複数モジュールを跨ぐため）
+    include: ['app/**/*.test.ts'],
 
     // 各テストを独立した環境で実行（グローバル汚染を防ぐ）
     environment: 'node',
@@ -17,9 +19,9 @@ export default defineConfig({
       provider: 'v8',
       include: ['app/**/*.ts'],
       exclude: [
+        '**/*.test.ts', // 共置テストを除外
         'app/__tests__/**',
         'app/index.ts', // エントリーポイントはカバレッジ対象外
-        'app/types/**',
       ],
       thresholds: {
         // 80% 未満はテスト失敗扱い

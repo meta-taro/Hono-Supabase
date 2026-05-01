@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { errorHandler } from '@/lib/error-handler';
-import { NotFoundError, ValidationError } from '@/lib/errors';
+import { errorHandler } from '@/shared/http/error-handler';
+import { NotFoundError, ValidationError } from '@/shared/domain/errors';
 
 const buildTestApp = (): OpenAPIHono => {
   const app = new OpenAPIHono();

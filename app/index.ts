@@ -1,7 +1,7 @@
 import { serve } from '@hono/node-server';
 import { createApp } from '@/app';
-import { env } from '@/lib/env';
-import { logger } from '@/lib/logger';
+import { env } from '@/shared/http/env';
+import { logger } from '@/shared/infrastructure/logger';
 
 const app = createApp();
 
