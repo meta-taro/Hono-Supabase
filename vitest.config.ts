@@ -21,6 +21,7 @@ export default defineConfig({
       exclude: [
         '**/*.test.ts', // 共置テストを除外
         'app/__tests__/**',
+        '**/__test-helpers__/**', // テスト用フィクスチャ（InMemory 実装等）はカバレッジ対象外
         'app/index.ts', // エントリーポイントはカバレッジ対象外
       ],
       thresholds: {
