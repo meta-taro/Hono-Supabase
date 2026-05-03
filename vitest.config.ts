@@ -14,6 +14,15 @@ export default defineConfig({
     // describe/it/expect をグローバルに使えるようにする（import 省略可）
     globals: true,
 
+    // トップレベルで `export const env = loadEnv()` が走るため、
+    // テスト実行時にも required な env を満たす必要がある。
+    // 個別テスト内では loadEnv() に raw env を渡して上書きできる。
+    env: {
+      SUPABASE_URL: 'http://localhost:54321',
+      SUPABASE_ANON_KEY: 'test-anon-key',
+      SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
+    },
+
     // カバレッジ設定
     coverage: {
       provider: 'v8',
