@@ -23,6 +23,44 @@ Hono × Supabase × TypeScript で構築する、実務志向の軽量 REST API 
 
 ---
 
+## 想定する利用シーン
+
+本リポジトリは **バックエンド API 単体** ですが、以下のような構成での利用を想定して設計しています。
+
+### 典型構成: Next.js フロント × Hono API × Supabase
+
+```
+[ブラウザ]
+    ↓
+[Next.js (Vercel 等)]    ← UI / SSR / Server Components
+    ↓ fetch + Bearer JWT
+[Hono API (本リポジトリ)]
+    ↓
+[Supabase]               ← Auth (JWT 発行) / DB / RLS
+```
+
+- **認証は Supabase Auth が発行する JWT** を `Authorization: Bearer <token>` ヘッダで受け取る方式（ステートレス）。Next.js 側で `@supabase/supabase-js` を使って取得した JWT をそのまま本 API に渡せる
+- **API はランタイム非依存**（Hono は Web 標準 API ベース）。Node.js / Cloudflare Workers / Vercel Edge / Bun / Deno のいずれにもデプロイ可能
+- **クロスドメイン構成 OK**（CORS 対応は Phase 6 で導入予定）
+
+### 単体動作も可能
+
+Next.js が無くても、本 API 単体で以下のように利用可能:
+
+- `curl` / `Bruno` / `Postman` で直接叩く（学習・QA・E2E 用途）
+- 別フレームワーク（Nuxt / SvelteKit / モバイルアプリ等）から利用
+- バッチジョブ・CLI ツールから利用
+
+つまり **「フロントエンド技術非依存の汎用 API」** として設計しています。
+
+### スコープ外（本リポジトリには含まないもの）
+
+- フロントエンド実装（Next.js / React 等）
+- 専用 SDK / 型安全クライアント（Hono の `hc<typeof app>` を使えば Next.js 側で型推論可能だが、本リポはサーバー側に専念）
+- インフラ構築コード（IaC・CI/CD は別途）
+
+---
+
 ## 主な特徴
 
 - **DDD-lite アーキテクチャ**: Bounded Context（`cakes` / `customers` / `orders`）× 4 層（`domain` / `application` / `infrastructure` / `presentation`）。依存方向を内向き一方向に固定し、ドメイン層を DB 非依存に保つ
@@ -159,6 +197,36 @@ presentation → application → domain
 - `application/` は domain interface 経由で永続化を呼ぶ（具象を知らない）
 - `infrastructure/` が domain interface を実装する（Supabase 等）
 - コンテキスト間（`cakes` ↔ `orders` 等）の直接参照は禁止
+
+### 永続化モデルの命名規則（`domain` 多義使用の回避）
+
+`domain` という語は **業務概念（Domain Model）専用** に予約します。infrastructure 層に置く「DB 行を表す型」は **`Row` サフィックス** で命名し、`infrastructure/domain/` のようなディレクトリは作りません。
+
+| 種類 | レイヤ | 命名 | 例 |
+|---|---|---|---|
+| **Domain Model** | `domain/` | サフィックスなし | `Cake`（振る舞いを持つ Entity） |
+| **Persistence Model** | `infrastructure/`（ファイルローカル） | `*Row` | `CakeRow`（DB 行のシェイプのみ） |
+
+```typescript
+// app/modules/cakes/infrastructure/cake.supabase-repository.ts
+interface CakeRow {           // ← Persistence Model（infrastructure 層に閉じる）
+  id: string;
+  name: string;
+  price: number;
+  stock: number;
+}
+// この型は Repository 内でのみ使い、domain / application には漏らさない
+```
+
+**理由**: Hexagonal / Clean / Onion Architecture が共通して採る原則として、`domain` という単語は **コードベースに 1 箇所しか存在してはいけない**。同じ語を別の意味で使うと設計意図が読めなくなり、DB の都合（snake_case / timestamp 文字列等）が業務ルールに漏れる原因になる。本プロジェクトでは `Row` サフィックスで物理的に区別する。
+
+| サフィックス | 意味 |
+|---|---|
+| `*Row` | RDB の 1 行（本プロジェクトの基本） |
+| `*Schema` | テーブル構造定義（必要時） |
+| `*State` | Aggregate の状態スナップショット（Vernon 流・将来必要時） |
+
+> **禁止**: `infrastructure/domain/` ディレクトリの作成、`Cake`（Persistence Model 用）と `Cake`（Domain Model）の同名衝突、`infrastructure/` から `domain/` の Entity を **データ転送目的で** import すること（変換用に Mapper 経由で参照するのは OK）。
 
 ---
 

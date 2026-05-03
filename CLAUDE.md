@@ -11,6 +11,13 @@
 **ドメイン**: ケーキ屋の商品・顧客・注文管理
 **採用アーキテクチャ**: **DDD-lite（モジュラモノリス × 4層構造）**
 
+### 想定利用シーン
+
+- **典型構成**: Next.js（Vercel）等のフロントエンドから JWT (Supabase Auth) で本 API を呼び出す **バックエンド API 単体**
+- **認証方式**: Supabase Auth が発行する JWT を `Authorization: Bearer <token>` で受け取るステートレス方式（Phase 6 で実装）
+- **ランタイム非依存**: Hono が Web 標準ベースのため Node.js / Cloudflare Workers / Vercel Edge / Bun / Deno に展開可能。本リポでは Node.js 22 を採用
+- **スコープ外**: フロントエンド実装・専用 SDK・IaC（フロントは別リポジトリで Next.js 想定）
+
 ### 学習ゴール
 
 - DDD-lite による境界づけられたコンテキスト・レイヤ分離・依存方向の制御
@@ -269,6 +276,45 @@ import { AppError } from '@/shared/domain/errors';
 | `*.vo.ts` | `domain/` | Value Object |
 | `*.errors.ts` | `domain/` | ドメイン例外 |
 
+#### 永続化モデルの型命名規約（`domain` 多義使用の回避）
+
+`domain` という語は **業務概念（Domain Model）専用** に予約する。infrastructure 層で DB 行を表す型は **`*Row` サフィックス** を付け、`infrastructure/domain/` のようなディレクトリは作らない。
+
+| 種類 | レイヤ | 命名 | 例 | 振る舞い |
+|---|---|---|---|---|
+| Domain Model | `domain/` | サフィックスなし | `Cake`, `Price` | あり |
+| Persistence Model | `infrastructure/`（ファイルローカル） | `*Row` | `CakeRow` | なし（データ構造のみ） |
+
+```typescript
+// ✅ infrastructure 層: Persistence Model は Row サフィックス + ファイルローカル
+// app/modules/cakes/infrastructure/cake.supabase-repository.ts
+interface CakeRow {
+  id: string;
+  name: string;
+  price: number;
+  stock: number;
+}
+
+// ❌ infrastructure/domain/ ディレクトリの作成は禁止
+// ❌ Persistence Model を Cake のように Domain Model と同名にすることは禁止
+```
+
+**禁止事項**:
+
+- `infrastructure/domain/` のようなディレクトリ作成
+- Persistence Model を Domain Model と同名にする（`Cake` vs `Cake` の衝突）
+- Persistence Model を `domain/` や `application/` に export する（infrastructure 内に閉じる）
+
+**理由**: Hexagonal / Clean / Onion Architecture では `domain` は単一意味で予約する。同じ語を別レイヤで再利用すると、DB の都合（snake_case / timestamptz 文字列等）が業務概念に混入する温床になる。`Row` サフィックスで物理的に区別する。
+
+**他のサフィックス候補**（必要時のみ採用）:
+
+| サフィックス | 用途 |
+|---|---|
+| `*Row` | RDB の 1 行（本プロジェクトの基本） |
+| `*Schema` | テーブル構造定義 / Drizzle 等の Schema |
+| `*State` | Aggregate の状態スナップショット（Vernon 流） |
+
 ### コメントの書き方
 
 コメントは **「なぜ（Why）」を書く**。「何をするか（What）」はコードから読める。
@@ -333,6 +379,7 @@ import { Cake } from '@/modules/cakes/domain/cake';      // orders/ では NG
 - マイグレーションファイルの**編集**禁止（新規追加のみ）
 - `/v1` プレフィックスなしの業務エンドポイント追加禁止
 - `any` 型の使用禁止
+- `infrastructure/domain/` ディレクトリ作成禁止（`domain` の多義使用回避。Persistence Model は `*Row` サフィックスで命名）
 
 ---
 
