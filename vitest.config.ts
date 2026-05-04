@@ -1,6 +1,17 @@
 import { defineConfig } from 'vitest/config';
 import { resolve } from 'node:path';
 
+// Node.js 22 標準機能で .env を process.env に注入する。
+// vite の loadEnv() を使う案もあるが、pnpm の hoist 設定に依存して動かないことが
+// あるため、外部依存ゼロの組み込み機能を採用する。
+// - .env がある（ローカル開発）: 実 Supabase キーが入る → infrastructure テストが実 DB を叩ける
+// - .env が無い（CI 等）:        ENOENT を黙って無視 → 下のフォールバック値が使われる
+try {
+  process.loadEnvFile();
+} catch {
+  // .env が存在しない場合は何もしない（フォールバック値で動かす）
+}
+
 export default defineConfig({
   test: {
     // テストファイルのパターン
@@ -14,13 +25,16 @@ export default defineConfig({
     // describe/it/expect をグローバルに使えるようにする（import 省略可）
     globals: true,
 
+    // env の優先順位:
+    //   1. .env の値（あれば必ず採用 — infrastructure テストはこのキーで実 Supabase に接続）
+    //   2. フォールバックのダミー値（domain / application 単体テスト用。Zod 検証を通すだけ）
     // トップレベルで `export const env = loadEnv()` が走るため、
     // テスト実行時にも required な env を満たす必要がある。
-    // 個別テスト内では loadEnv() に raw env を渡して上書きできる。
     env: {
-      SUPABASE_URL: 'http://localhost:54321',
-      SUPABASE_ANON_KEY: 'test-anon-key',
-      SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
+      SUPABASE_URL: process.env.SUPABASE_URL ?? 'http://localhost:54321',
+      SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY ?? 'test-anon-key',
+      SUPABASE_SERVICE_ROLE_KEY:
+        process.env.SUPABASE_SERVICE_ROLE_KEY ?? 'test-service-role-key',
     },
 
     // カバレッジ設定
