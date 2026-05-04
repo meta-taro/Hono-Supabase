@@ -40,7 +40,8 @@ Hono × Supabase × TypeScript で構築する、実務志向の軽量 REST API 
 ```
 
 - **認証は Supabase Auth が発行する JWT** を `Authorization: Bearer <token>` ヘッダで受け取る方式（ステートレス）。Next.js 側で `@supabase/supabase-js` を使って取得した JWT をそのまま本 API に渡せる
-- **API はランタイム非依存**（Hono は Web 標準 API ベース）。Node.js / Cloudflare Workers / Vercel Edge / Bun / Deno のいずれにもデプロイ可能
+- **本番デプロイ先は Cloudflare Workers**（V8 Isolate 上のグローバルエッジ実行）。Hono が Web 標準 API ベースで Workers ネイティブに動くため、`@hono/node-server` を使わずに `export default app` 形式で展開する
+- **ローカル開発・自動テストは Node.js 22**（tsx watch + Vitest）で快適に進め、本番経路だけ Workers に切り替える二段構え。同一の `app.ts` がランタイム非依存で動作（Vercel Edge / Bun / Deno への展開も理論上可能）
 - **クロスドメイン構成 OK**（CORS 対応は Phase 6 で導入予定）
 
 ### 単体動作も可能
@@ -80,15 +81,17 @@ Next.js が無くても、本 API 単体で以下のように利用可能:
 
 | カテゴリ | 採用 | 選定理由 |
 |---|---|---|
-| Runtime | Node.js 22 LTS | Active LTS。安定性とモダン機能の両立 |
-| Framework | [Hono](https://hono.dev/) 4.x | 軽量・高速・型安全。Edge / Node 両対応 |
+| **本番ランタイム** | **[Cloudflare Workers](https://workers.cloudflare.com/)**（V8 Isolate） | グローバルエッジ・ゼロダウンタイムデプロイ・$0〜$5/月クラスの低コスト |
+| **本番ビルド/デプロイ** | **[Wrangler](https://developers.cloudflare.com/workers/wrangler/)** | `wrangler deploy` 1 コマンドで本番反映（Phase 7 で導入予定） |
+| ローカル開発ランタイム | Node.js 22 LTS | TDD・デバッグ・型チェックを Node 上で完結。tsx watch でホットリロード |
+| Framework | [Hono](https://hono.dev/) 4.x | 軽量・高速・型安全。**同一コードで Workers / Node / Vercel Edge / Bun / Deno** に展開可能 |
 | OpenAPI | [@hono/zod-openapi](https://github.com/honojs/middleware/tree/main/packages/zod-openapi) | コードと仕様の二重管理を回避 |
 | Validation | [Zod](https://zod.dev/) | TypeScript ネイティブのスキーマ検証 |
-| Database | Supabase (PostgreSQL 15) | Auth / RLS / リアルタイムまで含む BaaS |
-| Logger | [pino](https://getpino.io/) | 構造化 JSON、本番運用標準 |
+| Database | Supabase (PostgreSQL 15) | Auth / RLS / Realtime まで含む BaaS。Workers から **REST 経由**で接続可能 |
+| Logger | [pino](https://getpino.io/) (Node) / Workers 互換実装（本番）| ローカルは pino + pino-pretty、本番は Workers 互換ロガーに差し替え |
 | Test | [Vitest](https://vitest.dev/) | Vite ベース、ESM ネイティブ、高速 |
 | Package Manager | pnpm 9.15.0 (via corepack) | ディスク効率・モノレポ対応・速度 |
-| Container | Docker Compose（アプリのみ）+ Supabase CLI（DB） | 役割を明確に分離 |
+| Container | Docker Compose（アプリのみ・ローカル学習用途）+ Supabase CLI（DB） | 本番は Workers なのでコンテナ不要 |
 
 ---
 

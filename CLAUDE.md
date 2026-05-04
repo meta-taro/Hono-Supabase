@@ -15,7 +15,9 @@
 
 - **典型構成**: Next.js（Vercel）等のフロントエンドから JWT (Supabase Auth) で本 API を呼び出す **バックエンド API 単体**
 - **認証方式**: Supabase Auth が発行する JWT を `Authorization: Bearer <token>` で受け取るステートレス方式（Phase 6 で実装）
-- **ランタイム非依存**: Hono が Web 標準ベースのため Node.js / Cloudflare Workers / Vercel Edge / Bun / Deno に展開可能。本リポでは Node.js 22 を採用
+- **本番デプロイ先**: **Cloudflare Workers**（V8 Isolate 上のグローバルエッジ実行）。Hono が Web 標準ベースで Workers ネイティブに動くため、`@hono/node-server` を使わずに `export default app` 形式で展開する
+- **ローカル開発ランタイム**: Node.js 22 LTS。学習中の TDD・デバッグ・型チェックは Node 上で完結させ、本番経路だけ Workers に切り替える二段構え
+- **データ層**: Supabase（PostgreSQL）は **Cloudflare Workers から Supabase REST API（`@supabase/supabase-js`）経由で接続**。TCP 直接続不可な Workers 環境でもそのまま動く（PostgreSQL 直接続が必要になったら Cloudflare Hyperdrive を後付け検討）
 - **スコープ外**: フロントエンド実装・専用 SDK・IaC（フロントは別リポジトリで Next.js 想定）
 
 ### 学習ゴール
@@ -24,9 +26,10 @@
 - API バージョニング設計（`/v1` プレフィックス）
 - `@hono/zod-openapi` による型安全な API 設計と OpenAPI 仕様の自動生成
 - Supabase Auth + RLS（Row Level Security）によるアクセス制御
-- pino による本番対応構造化ログ
+- 構造化ログ（**Workers 互換ロガー** + Node ローカル時の pino-pretty 切替）
 - Vitest を使った TDD（テスト駆動開発）
 - Docker + Supabase CLI による再現性ある開発環境
+- **Cloudflare Workers ネイティブ動作のための制約理解**（`fs` / `child_process` 等の Node 専用 API を使わない、ロガーは Workers 互換、cold start を意識した依存最小化）
 
 ---
 
@@ -34,16 +37,20 @@
 
 | カテゴリ | 技術 | バージョン | 選定理由 |
 |---------|------|-----------|---------|
-| Runtime | Node.js | 22 LTS | Active LTS。安定性とモダン機能のバランス最良 |
-| Framework | Hono | ^4.x | 軽量・高速・型安全。Edge/Node 両対応 |
+| **本番ランタイム** | **Cloudflare Workers**（V8 Isolate） | latest | グローバルエッジ・ゼロダウンタイムデプロイ・$0〜$5/月クラスの低コスト。Hono の真骨頂 |
+| **本番ビルド/デプロイ** | **Wrangler**（Cloudflare 公式 CLI） | ^3.x | `wrangler deploy` 1 コマンドで本番反映。`wrangler dev` でローカルでも Workers 環境シミュレート可能 |
+| **ローカル開発ランタイム** | Node.js | 22 LTS | TDD・デバッグ・Vitest 実行を快適に行うため。tsx watch でホットリロード |
+| Framework | Hono | ^4.x | 軽量・高速・型安全。**同一コードで Workers / Node / Vercel Edge / Bun / Deno** に展開可能 |
 | OpenAPI | @hono/zod-openapi | ^0.x | Zod スキーマから OpenAPI 仕様を自動生成。二重管理不要 |
 | Validation | Zod | ^3.x | TypeScript ネイティブのスキーマバリデーション |
-| Database | Supabase (PostgreSQL 15) | — | Auth + RLS + リアルタイム込みの BaaS |
-| DB Client | @supabase/supabase-js | ^2.x | Supabase 公式クライアント |
-| Logger | pino + pino-pretty | ^9.x | 本番対応の構造化 JSON ログ。障害対応・QA 対応が可能なレベル |
-| Test | Vitest | ^3.x | Vite ベース。高速・ESM ネイティブ・型安全 |
-| Package Mgr | pnpm | ^9.x | 高速・ディスク効率・モノレポ対応。業界採用急増中 |
-| Container | Docker Compose | — | アプリコンテナのみ管理。Supabase は CLI に任せる |
+| Database | Supabase (PostgreSQL 15) | — | Auth + RLS + Realtime 込みの BaaS。Workers から **REST 経由**で接続するため TCP 直接続不可問題を回避 |
+| DB Client | @supabase/supabase-js | ^2.x | Supabase 公式クライアント。fetch ベースで Workers ネイティブ動作 |
+| Logger（本番 / Workers） | `console` ベース or [pino] の Workers 互換モード | — | Workers 環境では `fs` / `pino-pretty` が使えない。Phase 6 の本番化時に Workers 互換ロガーに切替検討 |
+| Logger（ローカル開発 / Node） | pino + pino-pretty | ^9.x | Node ローカル開発時は構造化 JSON + 整形表示。Workers 用と差し替え可能な抽象化を `app/shared/infrastructure/logger.ts` に置く |
+| Workers 型定義 | @cloudflare/workers-types | ^4.x | Phase 7 で Workers 化する際に追加。`Env` バインディング型を提供 |
+| Test | Vitest | ^3.x | Vite ベース。高速・ESM ネイティブ・型安全。`@cloudflare/vitest-pool-workers` で Workers 環境テストにも拡張可能 |
+| Package Mgr | pnpm | ^9.x | 高速・ディスク効率・モノレポ対応 |
+| Container | Docker Compose | — | アプリコンテナのみ管理（**ローカル学習用途**）。本番は Workers なのでコンテナ不要 |
 | Supabase Dev | Supabase CLI | latest | ローカル環境・マイグレーション管理の公式ツール |
 
 ---
@@ -380,6 +387,8 @@ import { Cake } from '@/modules/cakes/domain/cake';      // orders/ では NG
 - `/v1` プレフィックスなしの業務エンドポイント追加禁止
 - `any` 型の使用禁止
 - `infrastructure/domain/` ディレクトリ作成禁止（`domain` の多義使用回避。Persistence Model は `*Row` サフィックスで命名）
+- **Cloudflare Workers 互換性を壊す Node 専用 API の使用禁止**（`fs`, `child_process`, `net` 生 TCP, `process.cwd()` 等）。本番デプロイ先が Workers のため、これらに依存すると本番で動かなくなる。どうしても Node 環境に閉じた処理が必要なら `app/index.node.ts` 側だけに置き、共通ロジック（`app.ts` 以下）には漏らさない
+- **ネイティブモジュール（C 拡張）の依存禁止**（`bcrypt`, `sharp`, `pino-pretty` の本番投入等）。Workers では動かない。本番ロジックには Web 標準 API ベースのライブラリのみ採用
 
 ---
 
@@ -443,23 +452,35 @@ import { Cake } from '@/modules/cakes/domain/cake';      // orders/ では NG
 
 ---
 
-## Logger Usage（pino）
+## Logger Usage
 
 障害対応・QA 対応ができるよう、構造化ログで文脈情報を残す。
 
 ```typescript
 import { logger } from '@/shared/infrastructure/logger';
 
-// ✅ 構造化ログ（JSON 形式。Datadog / CloudWatch で検索可能）
+// ✅ 構造化ログ（JSON 形式。Cloudflare Logs / Datadog 等で検索可能）
 logger.info({ orderId, customerId }, 'Order created successfully');
 logger.error({ err, orderId }, 'Failed to create order');
 logger.warn({ userId, path: '/v1/orders' }, 'Unauthorized access attempt');
 
-// ❌ console.log 禁止（コミット不可）
+// ❌ console.log の直書き禁止（コミット不可。logger 経由で出す）
 console.log('order created');
 ```
 
 **ログを書く場所**: `application/` または `infrastructure/`（`domain/` は副作用ゼロを保つため不可）。
+
+### ランタイム別の実装方針
+
+本プロジェクトはローカル = Node、本番 = **Cloudflare Workers** の二段構えのため、ロガーも環境別に実装を切り替える。`logger.ts` の **interface（`info` / `warn` / `error` / `debug` / `child` 等）はランタイム共通**にして、コンテキスト側のコードは差し替えに気付かないように保つ。
+
+| 環境 | 実装 | 補足 |
+|---|---|---|
+| ローカル開発（Node 22）| **pino + pino-pretty** | 整形表示で TDD・デバッグを快適に。`pino-pretty` は **devDependency 限定** |
+| 自動テスト（Vitest）| **pino（silent）** または ダミー実装 | 統合テストで `pino({ level: 'silent' })` を注入、ログ汚染を防ぐ |
+| **本番（Cloudflare Workers）** | **Workers 互換ロガー**（Phase 7 で導入）| `console.log(JSON.stringify(...))` ベースの軽量実装、または `@logtape/logtape` のようなランタイム不問ライブラリ。**`pino-pretty` / `fs` 依存は禁止** |
+
+`shared/infrastructure/logger.ts` は **factory function（`createLogger(env)`）** で実装を分岐できる構造を維持し、`composition-root` / `index.workers.ts` 側で本番実装を注入する。
 
 ### ログレベル基準
 
@@ -516,6 +537,13 @@ console.log('order created');
 - [ ] **Phase 4**: `customers` Bounded Context（同構造）
 - [ ] **Phase 5**: `orders` Bounded Context（Domain Event + Postgres Function でアトミック在庫減算）
 - [ ] **Phase 6**: 認証（Supabase Auth + RLS + 認証ミドルウェア）+ OpenAPI 仕上げ
+- [ ] **Phase 7**: **Cloudflare Workers 化**（本番デプロイ想定の最終段）
+  - エントリ書換: `app/index.ts` の `serve()` ベースを `export default app` ベースの Workers エントリに分岐（`app/index.node.ts` / `app/index.workers.ts` の二系統）
+  - `wrangler.toml` 追加・`@cloudflare/workers-types` 導入・`pnpm wrangler deploy` の整備
+  - **ロガー差し替え**: pino を Workers 互換実装（`console.log` ベース or `@logtape/logtape` 等）に切替。`logger.ts` の interface はそのまま、実装だけ DI で切替できる構造に
+  - 環境変数の移行: `.env` → `wrangler secret put`（本番）/ `.dev.vars`（Workers ローカル）
+  - GitHub Actions で `cloudflare/wrangler-action` 経由の自動デプロイ
+  - Versioned Deployments（カナリア 10% → 100%）の体験
 
 ---
 
@@ -553,22 +581,52 @@ supabase db push
 # Supabase 停止
 supabase stop
 
-# Docker Compose（アプリのみ）
+# Docker Compose（アプリのみ・ローカル学習用途）
 docker compose up -d
 docker compose down
+
+# --- Cloudflare Workers（Phase 7 で導入予定） ---
+
+# Workers ローカル起動（V8 Isolate を再現する公式ツール）
+pnpm wrangler dev
+
+# 本番デプロイ
+pnpm wrangler deploy
+
+# シークレット登録（本番環境変数）
+pnpm wrangler secret put SUPABASE_URL
+pnpm wrangler secret put SUPABASE_ANON_KEY
+pnpm wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+
+# バージョン管理（カナリアリリース）
+pnpm wrangler versions upload
+pnpm wrangler versions deploy --percentage 10
+pnpm wrangler rollback
 ```
 
 ---
 
 ## Environment Variables
 
-`.env.example` を参照。本番値は**絶対にコミットしない**。
+本番値は**絶対にコミットしない**。
+
+### ランタイム別の管理方法
+
+| ランタイム | 管理方法 | ファイル |
+|---|---|---|
+| ローカル開発（Node）| `.env`（Node 22 の `--env-file` で読み込み）| `.env`（gitignore 済）/ `.env.example` |
+| 自動テスト（Vitest） | `process.loadEnvFile()` で `.env` を注入 | `vitest.config.ts` 内 |
+| **本番（Cloudflare Workers）** | **`wrangler secret put` でクラウド側に登録** | `.dev.vars`（Workers ローカル用、gitignore 必須）|
+
+### 主な環境変数
 
 | 変数名 | 説明 | 例 |
 |--------|------|----|
-| `SUPABASE_URL` | Supabase プロジェクト URL | `http://localhost:54321` |
+| `SUPABASE_URL` | Supabase プロジェクト URL | `http://localhost:54321`（ローカル）/ `https://xxx.supabase.co`（本番）|
 | `SUPABASE_ANON_KEY` | 匿名キー（公開可・RLS で保護） | `eyJ...` |
 | `SUPABASE_SERVICE_ROLE_KEY` | サービスロールキー（RLS バイパス・厳重管理） | `eyJ...` |
-| `PORT` | サーバーポート | `3010` |
-| `NODE_ENV` | 実行環境 | `development` / `production` / `test` |
+| `PORT` | サーバーポート（**Node ローカル時のみ使用**。Workers は無関係）| `3010` |
+| `NODE_ENV` | 実行環境（**Node ローカル時のみ**。Workers は `wrangler.toml` の env 機能で代替）| `development` / `production` / `test` |
 | `LOG_LEVEL` | ログ出力レベル | `debug` / `info` / `warn` / `error` |
+
+> **Phase 7 で Cloudflare Workers 化する際の補足**: Workers では `process.env` ではなく **第二引数の `Env` バインディング**から変数を取得する設計になる。`@/shared/http/env` の loadEnv も Workers 側では `c.env` を受け取る形に分岐させる（interface はそのまま、入力源だけ差し替え）。
