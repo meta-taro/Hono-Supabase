@@ -12,6 +12,11 @@ import { createListCakesUseCase } from '@/modules/cakes/application/list-cakes.u
 import { createCreateCakeUseCase } from '@/modules/cakes/application/create-cake.usecase';
 import { InMemoryCakeRepository } from '@/modules/cakes/application/__test-helpers__/in-memory-cake.repository';
 import { Customer } from '@/modules/customers/domain/customer';
+import { createPlaceOrderUseCase } from '@/modules/orders/application/place-order.usecase';
+import { createGetOrderUseCase } from '@/modules/orders/application/get-order.usecase';
+import { createOrderController } from '@/modules/orders/presentation/order.controller';
+import { createOrderRouter } from '@/modules/orders/presentation/order.routes';
+import { InMemoryOrderRepository } from '@/modules/orders/application/__test-helpers__/in-memory-order.repository';
 
 // ---------------------------------------------------------------------------
 // この統合テストの目的:
@@ -39,7 +44,7 @@ const buildTestApp = (): TestApp => {
   const customerController = createCustomerController({ listCustomers, createCustomer });
   const customersRouter = createCustomerRouter(customerController);
 
-  // createApp() の AppModules インターフェースを満たすため、cakes 側もダミーで組み立てる。
+  // createApp() の AppModules インターフェースを満たすため、他コンテキストもダミーで組み立てる。
   // これは customers 統合テストでは触らないが、app の構造を本番と一致させるために必要。
   const cakesRepo = new InMemoryCakeRepository();
   const cakesController = createCakeController({
@@ -48,7 +53,14 @@ const buildTestApp = (): TestApp => {
   });
   const cakesRouter = createCakeRouter(cakesController);
 
-  const app = createApp({ cakesRouter, customersRouter });
+  const ordersRepo = new InMemoryOrderRepository();
+  const ordersController = createOrderController({
+    placeOrder: createPlaceOrderUseCase(ordersRepo, silentLogger),
+    getOrder: createGetOrderUseCase(ordersRepo),
+  });
+  const ordersRouter = createOrderRouter(ordersController);
+
+  const app = createApp({ cakesRouter, customersRouter, ordersRouter });
   return { app, repo };
 };
 

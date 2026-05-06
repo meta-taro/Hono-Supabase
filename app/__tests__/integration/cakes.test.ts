@@ -12,6 +12,11 @@ import { createCreateCustomerUseCase } from '@/modules/customers/application/cre
 import { createCustomerController } from '@/modules/customers/presentation/customer.controller';
 import { createCustomerRouter } from '@/modules/customers/presentation/customer.routes';
 import { InMemoryCustomerRepository } from '@/modules/customers/application/__test-helpers__/in-memory-customer.repository';
+import { createPlaceOrderUseCase } from '@/modules/orders/application/place-order.usecase';
+import { createGetOrderUseCase } from '@/modules/orders/application/get-order.usecase';
+import { createOrderController } from '@/modules/orders/presentation/order.controller';
+import { createOrderRouter } from '@/modules/orders/presentation/order.routes';
+import { InMemoryOrderRepository } from '@/modules/orders/application/__test-helpers__/in-memory-order.repository';
 
 // ---------------------------------------------------------------------------
 // この統合テストの目的:
@@ -43,7 +48,7 @@ const buildTestApp = (): TestApp => {
   const controller = createCakeController({ listCakes, createCake });
   const cakesRouter = createCakeRouter(controller);
 
-  // createApp() の AppModules インターフェースを満たすため、customers 側もダミーで組み立てる。
+  // createApp() の AppModules インターフェースを満たすため、他コンテキストもダミーで組み立てる。
   // この cakes 統合テストでは触らないが、app の構造を本番と一致させるために必要。
   const customersRepo = new InMemoryCustomerRepository();
   const customersController = createCustomerController({
@@ -52,7 +57,14 @@ const buildTestApp = (): TestApp => {
   });
   const customersRouter = createCustomerRouter(customersController);
 
-  const app = createApp({ cakesRouter, customersRouter });
+  const ordersRepo = new InMemoryOrderRepository();
+  const ordersController = createOrderController({
+    placeOrder: createPlaceOrderUseCase(ordersRepo, silentLogger),
+    getOrder: createGetOrderUseCase(ordersRepo),
+  });
+  const ordersRouter = createOrderRouter(ordersController);
+
+  const app = createApp({ cakesRouter, customersRouter, ordersRouter });
   return { app, repo };
 };
 

@@ -22,6 +22,7 @@ export const createApp = (modules?: AppModules): OpenAPIHono => {
   if (modules) {
     app.route('/v1/cakes', modules.cakesRouter);
     app.route('/v1/customers', modules.customersRouter);
+    app.route('/v1/orders', modules.ordersRouter);
   }
 
   app.onError(errorHandler);

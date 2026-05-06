@@ -12,6 +12,11 @@ import { createListCustomersUseCase } from '@/modules/customers/application/list
 import { createCreateCustomerUseCase } from '@/modules/customers/application/create-customer.usecase';
 import { createCustomerController } from '@/modules/customers/presentation/customer.controller';
 import { createCustomerRouter } from '@/modules/customers/presentation/customer.routes';
+import { OrderSupabaseRepository } from '@/modules/orders/infrastructure/order.supabase-repository';
+import { createPlaceOrderUseCase } from '@/modules/orders/application/place-order.usecase';
+import { createGetOrderUseCase } from '@/modules/orders/application/get-order.usecase';
+import { createOrderController } from '@/modules/orders/presentation/order.controller';
+import { createOrderRouter } from '@/modules/orders/presentation/order.routes';
 
 // ---------------------------------------------------------------------------
 // composition-root = アプリケーション全体の DI を組み立てる中心地。
@@ -55,15 +60,28 @@ export const buildCustomersModule = (deps: ModuleDeps): OpenAPIHono => {
   return createCustomerRouter(controller);
 };
 
+// orders Bounded Context を組み立てて Router を返す。
+// 注文確定（place_order RPC）は SECURITY DEFINER 関数で動くため、
+// service_role でなくても Phase 6 移行時に anon でそのまま呼べる設計になっている。
+export const buildOrdersModule = (deps: ModuleDeps): OpenAPIHono => {
+  const sb = createAdminClient(deps.env);
+  const repo = new OrderSupabaseRepository(sb);
+  const placeOrder = createPlaceOrderUseCase(repo, deps.logger);
+  const getOrder = createGetOrderUseCase(repo);
+  const controller = createOrderController({ placeOrder, getOrder });
+  return createOrderRouter(controller);
+};
+
 // アプリ全体の DI を 1 か所で組み立てる。
-// 将来 orders を追加するときは、ここに行を足すだけで済む。
+// 新しい Bounded Context を足すときは、ここに行を 1 つ追加するだけで済む。
 export interface AppModules {
   cakesRouter: OpenAPIHono;
   customersRouter: OpenAPIHono;
-  // ordersRouter: OpenAPIHono;     // Phase 5
+  ordersRouter: OpenAPIHono;
 }
 
 export const buildAppModules = (deps: ModuleDeps): AppModules => ({
   cakesRouter: buildCakesModule(deps),
   customersRouter: buildCustomersModule(deps),
+  ordersRouter: buildOrdersModule(deps),
 });
