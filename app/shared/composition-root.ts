@@ -7,6 +7,11 @@ import { createListCakesUseCase } from '@/modules/cakes/application/list-cakes.u
 import { createCreateCakeUseCase } from '@/modules/cakes/application/create-cake.usecase';
 import { createCakeController } from '@/modules/cakes/presentation/cake.controller';
 import { createCakeRouter } from '@/modules/cakes/presentation/cake.routes';
+import { CustomerSupabaseRepository } from '@/modules/customers/infrastructure/customer.supabase-repository';
+import { createListCustomersUseCase } from '@/modules/customers/application/list-customers.usecase';
+import { createCreateCustomerUseCase } from '@/modules/customers/application/create-customer.usecase';
+import { createCustomerController } from '@/modules/customers/presentation/customer.controller';
+import { createCustomerRouter } from '@/modules/customers/presentation/customer.routes';
 
 // ---------------------------------------------------------------------------
 // composition-root = アプリケーション全体の DI を組み立てる中心地。
@@ -38,14 +43,27 @@ export const buildCakesModule = (deps: ModuleDeps): OpenAPIHono => {
   return createCakeRouter(controller);
 };
 
+// customers Bounded Context を組み立てて Router を返す。
+// 現状は service_role で組み立てる（Phase 6 で「sign-up は anon、list は authenticated」へ
+// リクエストごとのクライアント切替に移行予定）。
+export const buildCustomersModule = (deps: ModuleDeps): OpenAPIHono => {
+  const sb = createAdminClient(deps.env);
+  const repo = new CustomerSupabaseRepository(sb);
+  const listCustomers = createListCustomersUseCase(repo);
+  const createCustomer = createCreateCustomerUseCase(repo, deps.logger);
+  const controller = createCustomerController({ listCustomers, createCustomer });
+  return createCustomerRouter(controller);
+};
+
 // アプリ全体の DI を 1 か所で組み立てる。
-// 将来 customers / orders を追加するときは、ここに行を足すだけで済む。
+// 将来 orders を追加するときは、ここに行を足すだけで済む。
 export interface AppModules {
   cakesRouter: OpenAPIHono;
-  // customersRouter: OpenAPIHono;  // Phase 4
+  customersRouter: OpenAPIHono;
   // ordersRouter: OpenAPIHono;     // Phase 5
 }
 
 export const buildAppModules = (deps: ModuleDeps): AppModules => ({
   cakesRouter: buildCakesModule(deps),
+  customersRouter: buildCustomersModule(deps),
 });

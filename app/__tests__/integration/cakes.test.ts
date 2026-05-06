@@ -7,6 +7,11 @@ import { createCakeController } from '@/modules/cakes/presentation/cake.controll
 import { createCakeRouter } from '@/modules/cakes/presentation/cake.routes';
 import { InMemoryCakeRepository } from '@/modules/cakes/application/__test-helpers__/in-memory-cake.repository';
 import { Cake } from '@/modules/cakes/domain/cake';
+import { createListCustomersUseCase } from '@/modules/customers/application/list-customers.usecase';
+import { createCreateCustomerUseCase } from '@/modules/customers/application/create-customer.usecase';
+import { createCustomerController } from '@/modules/customers/presentation/customer.controller';
+import { createCustomerRouter } from '@/modules/customers/presentation/customer.routes';
+import { InMemoryCustomerRepository } from '@/modules/customers/application/__test-helpers__/in-memory-customer.repository';
 
 // ---------------------------------------------------------------------------
 // この統合テストの目的:
@@ -37,7 +42,17 @@ const buildTestApp = (): TestApp => {
   const createCake = createCreateCakeUseCase(repo, silentLogger);
   const controller = createCakeController({ listCakes, createCake });
   const cakesRouter = createCakeRouter(controller);
-  const app = createApp({ cakesRouter });
+
+  // createApp() の AppModules インターフェースを満たすため、customers 側もダミーで組み立てる。
+  // この cakes 統合テストでは触らないが、app の構造を本番と一致させるために必要。
+  const customersRepo = new InMemoryCustomerRepository();
+  const customersController = createCustomerController({
+    listCustomers: createListCustomersUseCase(customersRepo),
+    createCustomer: createCreateCustomerUseCase(customersRepo, silentLogger),
+  });
+  const customersRouter = createCustomerRouter(customersController);
+
+  const app = createApp({ cakesRouter, customersRouter });
   return { app, repo };
 };
 

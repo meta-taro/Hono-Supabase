@@ -21,6 +21,7 @@ export const createApp = (modules?: AppModules): OpenAPIHono => {
   // Hono の app.route() は OpenAPI 定義込みでサブルーターを取り込んでくれる。
   if (modules) {
     app.route('/v1/cakes', modules.cakesRouter);
+    app.route('/v1/customers', modules.customersRouter);
   }
 
   app.onError(errorHandler);
