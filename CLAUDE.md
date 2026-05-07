@@ -536,7 +536,7 @@ console.log('order created');
 - [ ] **Phase 3**: `cakes` Bounded Context（domain → application → infrastructure → presentation の縦切り完成）
 - [ ] **Phase 4**: `customers` Bounded Context（同構造）
 - [x] **Phase 5**: `orders` Bounded Context（Domain Event + Postgres Function でアトミック在庫減算）
-- [ ] **Phase 6**: 認証（Supabase Auth + RLS + 認証ミドルウェア）+ OpenAPI 仕上げ
+- [x] **Phase 6**: 認証（Supabase Auth + RLS + 認証ミドルウェア）+ OpenAPI 仕上げ
 - [ ] **Phase 7**: **Cloudflare Workers 化**（本番デプロイ想定の最終段）
   - エントリ書換: `app/index.ts` の `serve()` ベースを `export default app` ベースの Workers エントリに分岐（`app/index.node.ts` / `app/index.workers.ts` の二系統）
   - `wrangler.toml` 追加・`@cloudflare/workers-types` 導入・`pnpm wrangler deploy` の整備
