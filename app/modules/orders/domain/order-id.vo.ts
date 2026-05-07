@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { InvalidOrderError } from './order.errors';
 
 const UUID_V4_REGEX =
@@ -7,11 +6,14 @@ const UUID_V4_REGEX =
 // OrderId は orders Bounded Context が所有する識別子。
 // cakes / customers のそれと実装が酷似するが、CLAUDE.md の依存ルールに従い
 // 「コンテキストごとに自前で持つ」を貫くために再定義している（共有しない）。
+//
+// crypto.randomUUID は Web Crypto API。Node 19+ / Cloudflare Workers / ブラウザ
+// すべてでグローバルに利用可能。node:crypto を import すると Workers 互換性を壊すので避ける。
 export class OrderId {
   private constructor(public readonly value: string) {}
 
   static generate(): OrderId {
-    return new OrderId(randomUUID());
+    return new OrderId(crypto.randomUUID());
   }
 
   static from(value: string): OrderId {

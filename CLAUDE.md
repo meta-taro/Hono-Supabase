@@ -533,17 +533,20 @@ console.log('order created');
 - [x] **Phase 1**: 設定ファイル群・プロジェクト初期化
 - [x] **Phase 2**: Hono アプリ骨格 + `/health` + 統一エラー + 構造化ログ + env 検証
 - [x] **Phase 2.5（軌道修正）**: DDD-lite 4 層構造への移行（`app/lib/` → `app/shared/`、`app/modules/{cakes,customers,orders}` 骨格）
-- [ ] **Phase 3**: `cakes` Bounded Context（domain → application → infrastructure → presentation の縦切り完成）
-- [ ] **Phase 4**: `customers` Bounded Context（同構造）
+- [x] **Phase 3**: `cakes` Bounded Context（domain → application → infrastructure → presentation の縦切り完成）
+- [x] **Phase 4**: `customers` Bounded Context（同構造）
 - [x] **Phase 5**: `orders` Bounded Context（Domain Event + Postgres Function でアトミック在庫減算）
 - [x] **Phase 6**: 認証（Supabase Auth + RLS + 認証ミドルウェア）+ OpenAPI 仕上げ
 - [ ] **Phase 7**: **Cloudflare Workers 化**（本番デプロイ想定の最終段）
-  - エントリ書換: `app/index.ts` の `serve()` ベースを `export default app` ベースの Workers エントリに分岐（`app/index.node.ts` / `app/index.workers.ts` の二系統）
-  - `wrangler.toml` 追加・`@cloudflare/workers-types` 導入・`pnpm wrangler deploy` の整備
-  - **ロガー差し替え**: pino を Workers 互換実装（`console.log` ベース or `@logtape/logtape` 等）に切替。`logger.ts` の interface はそのまま、実装だけ DI で切替できる構造に
-  - 環境変数の移行: `.env` → `wrangler secret put`（本番）/ `.dev.vars`（Workers ローカル）
-  - GitHub Actions で `cloudflare/wrangler-action` 経由の自動デプロイ
-  - Versioned Deployments（カナリア 10% → 100%）の体験
+  - [x] **Step 1**: エントリ二系統化（`app/index.ts` → `app/index.node.ts` リネーム + `app/index.workers.ts` 新設 + 共通組立を `app/bootstrap.ts` に切出）
+  - [x] **Step 2**: `wrangler.toml` 追加・`@cloudflare/workers-types` 導入・`wrangler` 4.88.0 + `pnpm wrangler:dev` / `wrangler:deploy` / `wrangler:tail` 整備（**`compatibility_flags = []` を維持し `nodejs_compat` に逃げない方針**）
+  - [x] **Step 3**: 環境変数の移行（ローカル）— `.dev.vars` 導入 + `.dev.vars.example` 配布 + `.gitignore` 追記（`.dev.vars` / `.wrangler/`）
+  - [x] **Step 4**: ロガー差し替え — pino 依存を `app/shared/infrastructure/node-pino-logger.ts` に隔離。`logger.ts` は `AppLogger` interface + `createWorkersLogger`（`console.log(JSON.stringify(...))` ベース）+ `createSilentLogger` のみ。Workers バンドルから pino を完全除去
+  - [x] **Step 5**: jose JWKS fetch を `JwksFetcherProvider` で per-request DI 化。Workers 側は `caches.default` + `ctx.waitUntil` で SWR キャッシュ。Node 側は jose 内蔵キャッシュをそのまま使用
+  - [x] **Step 6**: `wrangler dev` で `GET /health` / `GET /v1/cakes` 200 OK 確認（Hono + Supabase REST が Workers V8 Isolate 上で動作）。33 テスト / 250 テスト全緑、typecheck OK
+  - [ ] **Step 7**: Cloudflare アカウント取得 + `wrangler secret put` + `wrangler deploy` で初回本番デプロイ
+  - [ ] **Step 8**: 環境分離（`wrangler.toml` の `[env.staging]` / `[env.production]` を埋める + 各 env への secret 登録）
+  - [ ] **Step 9**: GitHub Actions（`cloudflare/wrangler-action@v3`）で自動デプロイ + Versioned Deployments（カナリア 10% → 100%）の体験
 
 ---
 
