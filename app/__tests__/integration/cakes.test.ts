@@ -1,76 +1,122 @@
 import { describe, it, expect } from 'vitest';
 import pino from 'pino';
+import type { MiddlewareHandler } from 'hono';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { createApp } from '@/app';
 import { createListCakesUseCase } from '@/modules/cakes/application/list-cakes.usecase';
 import { createCreateCakeUseCase } from '@/modules/cakes/application/create-cake.usecase';
 import { createCakeController } from '@/modules/cakes/presentation/cake.controller';
-import { createCakeRouter } from '@/modules/cakes/presentation/cake.routes';
 import { InMemoryCakeRepository } from '@/modules/cakes/application/__test-helpers__/in-memory-cake.repository';
 import { Cake } from '@/modules/cakes/domain/cake';
 import { createListCustomersUseCase } from '@/modules/customers/application/list-customers.usecase';
-import { createCreateCustomerUseCase } from '@/modules/customers/application/create-customer.usecase';
+import { createSignUpCustomerUseCase } from '@/modules/customers/application/sign-up-customer.usecase';
 import { createCustomerController } from '@/modules/customers/presentation/customer.controller';
-import { createCustomerRouter } from '@/modules/customers/presentation/customer.routes';
 import { InMemoryCustomerRepository } from '@/modules/customers/application/__test-helpers__/in-memory-customer.repository';
+import { FakeCustomerAuth } from '@/modules/customers/application/__test-helpers__/fake-customer-auth';
 import { createPlaceOrderUseCase } from '@/modules/orders/application/place-order.usecase';
 import { createGetOrderUseCase } from '@/modules/orders/application/get-order.usecase';
 import { createOrderController } from '@/modules/orders/presentation/order.controller';
-import { createOrderRouter } from '@/modules/orders/presentation/order.routes';
 import { InMemoryOrderRepository } from '@/modules/orders/application/__test-helpers__/in-memory-order.repository';
+import {
+  createFakeAuthMiddleware,
+  requireAuth,
+  requireAdmin,
+} from '@/shared/http/auth.middleware';
+import type { AppEnv, AuthUser, RequestModules } from '@/shared/http/request-context';
 
 // ---------------------------------------------------------------------------
 // この統合テストの目的:
 //   presentation 層（routes / controller / dto）の HTTP 動作を確認する。
+//   Phase 6 で auth ガードが入ったため、role 別の挙動も検証する。
+//
 //   - Zod 検証 → 400 統一エラー形式
 //   - 正常系のステータス / レスポンス形
-//   - domain 例外（ConflictError 等）→ 適切な HTTP ステータス
+//   - admin ガード（401 / 403）
 //
 // なぜ Supabase に繋がないのか:
 //   infrastructure 層は cake.supabase-repository.test.ts で実 Supabase に対して
 //   既に検証済み。ここでは「HTTP → UseCase → Response」の経路だけを高速・決定的に確認する。
-//   InMemoryCakeRepository を使うことで、DB 抜きで上から下までフルスタックで動かせる
-//   ＝ DDD-lite の利点（domain interface の差し替え可能性）の体現。
 // ---------------------------------------------------------------------------
 
-// ログ出力をテスト中に抑制（pino の silent レベル）。
-// テスト失敗時のデバッグで一時的に 'info' に変えると log が見える。
 const silentLogger = pino({ level: 'silent' });
 
 interface TestApp {
   app: ReturnType<typeof createApp>;
-  repo: InMemoryCakeRepository;
+  cakesRepo: InMemoryCakeRepository;
 }
 
-const buildTestApp = (): TestApp => {
-  const repo = new InMemoryCakeRepository();
-  const listCakes = createListCakesUseCase(repo);
-  const createCake = createCreateCakeUseCase(repo, silentLogger);
-  const controller = createCakeController({ listCakes, createCake });
-  const cakesRouter = createCakeRouter(controller);
+const ADMIN_USER: AuthUser = {
+  id: '99999999-9999-4999-8999-999999999999',
+  email: 'admin@example.com',
+  role: 'admin',
+};
 
-  // createApp() の AppModules インターフェースを満たすため、他コンテキストもダミーで組み立てる。
-  // この cakes 統合テストでは触らないが、app の構造を本番と一致させるために必要。
+const REGULAR_USER: AuthUser = {
+  id: '11111111-1111-4111-8111-111111111111',
+  email: 'user@example.com',
+  role: 'authenticated',
+};
+
+const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
+  const cakesRepo = new InMemoryCakeRepository();
+  const cakesController = createCakeController({
+    listCakes: createListCakesUseCase(cakesRepo),
+    createCake: createCreateCakeUseCase(cakesRepo, silentLogger),
+  });
+
   const customersRepo = new InMemoryCustomerRepository();
+  const customerAuth = new FakeCustomerAuth(customersRepo);
   const customersController = createCustomerController({
     listCustomers: createListCustomersUseCase(customersRepo),
-    createCustomer: createCreateCustomerUseCase(customersRepo, silentLogger),
+    signUpCustomer: createSignUpCustomerUseCase(
+      customerAuth,
+      customersRepo,
+      silentLogger,
+    ),
   });
-  const customersRouter = createCustomerRouter(customersController);
 
   const ordersRepo = new InMemoryOrderRepository();
   const ordersController = createOrderController({
     placeOrder: createPlaceOrderUseCase(ordersRepo, silentLogger),
     getOrder: createGetOrderUseCase(ordersRepo),
+    resolveCustomerId: async (authUserId) => {
+      const c = await customersRepo.findByAuthUserId(authUserId);
+      return c?.id.value ?? null;
+    },
   });
-  const ordersRouter = createOrderRouter(ordersController);
 
-  const app = createApp({ cakesRouter, customersRouter, ordersRouter });
-  return { app, repo };
+  const modules: RequestModules = {
+    cakes: cakesController,
+    customers: customersController,
+    orders: ordersController,
+  };
+
+  // テストでは sb を実体として持たないので null 相当のスタブを積む。
+  // routes 層は c.get('modules') 経由で controller を引くため、sb を直接触らない。
+  const stubSb = null as unknown as SupabaseClient;
+  const fakeModulesMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
+    c.set('sb', stubSb);
+    c.set('modules', modules);
+    await next();
+  };
+
+  const app = createApp({
+    rootMiddlewares: [
+      createFakeAuthMiddleware(params.user ?? null),
+      fakeModulesMiddleware,
+    ],
+    guards: {
+      adminGuard: [requireAuth(), requireAdmin()],
+      authGuard: [requireAuth()],
+    },
+  });
+
+  return { app, cakesRepo };
 };
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-describe('GET /v1/cakes', () => {
+describe('GET /v1/cakes（認証不要）', () => {
   it('リポジトリが空のときは空配列を返す', async () => {
     const { app } = buildTestApp();
 
@@ -81,8 +127,8 @@ describe('GET /v1/cakes', () => {
   });
 
   it('保存済みケーキを Response DTO 形式で返す', async () => {
-    const { app, repo } = buildTestApp();
-    await repo.save(Cake.create({ name: 'モンブラン', price: 600, stock: 10 }));
+    const { app, cakesRepo } = buildTestApp();
+    await cakesRepo.save(Cake.create({ name: 'モンブラン', price: 600, stock: 10 }));
 
     const res = await app.request('/v1/cakes');
 
@@ -96,14 +142,19 @@ describe('GET /v1/cakes', () => {
       price: 600,
       stock: 10,
     });
-    // id は UUID v4 形式である
     expect(body.cakes[0]?.id).toMatch(UUID_REGEX);
+  });
+
+  it('認証なしでもアクセスできる', async () => {
+    const { app } = buildTestApp({ user: null });
+    const res = await app.request('/v1/cakes');
+    expect(res.status).toBe(200);
   });
 });
 
-describe('POST /v1/cakes', () => {
-  it('201 と作成されたケーキを返す（Cake.create で UUID 自動採番）', async () => {
-    const { app } = buildTestApp();
+describe('POST /v1/cakes（admin 専用）', () => {
+  it('admin で 201 と作成されたケーキを返す', async () => {
+    const { app } = buildTestApp({ user: ADMIN_USER });
 
     const res = await app.request('/v1/cakes', {
       method: 'POST',
@@ -127,8 +178,7 @@ describe('POST /v1/cakes', () => {
   });
 
   it('保存後に GET /v1/cakes で取得できる（ラウンドトリップ）', async () => {
-    // POST → GET の連鎖で、状態が UseCase / Repository を経由して保たれることを確認する。
-    const { app } = buildTestApp();
+    const { app } = buildTestApp({ user: ADMIN_USER });
 
     const postRes = await app.request('/v1/cakes', {
       method: 'POST',
@@ -142,9 +192,39 @@ describe('POST /v1/cakes', () => {
     expect(body.cakes.map((c) => c.name)).toEqual(['ティラミス']);
   });
 
+  describe('admin ガード', () => {
+    it('未認証だと 401 + UNAUTHORIZED を返す', async () => {
+      const { app } = buildTestApp({ user: null });
+
+      const res = await app.request('/v1/cakes', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'X', price: 500, stock: 5 }),
+      });
+
+      expect(res.status).toBe(401);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('一般ユーザだと 403 + FORBIDDEN を返す', async () => {
+      const { app } = buildTestApp({ user: REGULAR_USER });
+
+      const res = await app.request('/v1/cakes', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'X', price: 500, stock: 5 }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('FORBIDDEN');
+    });
+  });
+
   describe('Zod バリデーション失敗', () => {
     it('name が空のとき 400 + VALIDATION_ERROR を返す', async () => {
-      const { app } = buildTestApp();
+      const { app } = buildTestApp({ user: ADMIN_USER });
 
       const res = await app.request('/v1/cakes', {
         method: 'POST',
@@ -165,7 +245,7 @@ describe('POST /v1/cakes', () => {
     });
 
     it('price が範囲外（0）のとき 400 を返す', async () => {
-      const { app } = buildTestApp();
+      const { app } = buildTestApp({ user: ADMIN_USER });
 
       const res = await app.request('/v1/cakes', {
         method: 'POST',
@@ -182,7 +262,7 @@ describe('POST /v1/cakes', () => {
     });
 
     it('stock が負のとき 400 を返す', async () => {
-      const { app } = buildTestApp();
+      const { app } = buildTestApp({ user: ADMIN_USER });
 
       const res = await app.request('/v1/cakes', {
         method: 'POST',
@@ -199,7 +279,7 @@ describe('POST /v1/cakes', () => {
     });
 
     it('複数フィールドが不正のとき details に複数件含まれる', async () => {
-      const { app } = buildTestApp();
+      const { app } = buildTestApp({ user: ADMIN_USER });
 
       const res = await app.request('/v1/cakes', {
         method: 'POST',
@@ -211,7 +291,6 @@ describe('POST /v1/cakes', () => {
       const body = (await res.json()) as {
         error: { details?: Array<{ field: string }> };
       };
-      // Zod は最初のエラーで止まらず全フィールドを検証する
       expect(body.error.details?.length).toBeGreaterThanOrEqual(2);
     });
   });

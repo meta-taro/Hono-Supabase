@@ -15,12 +15,20 @@ import { loadEnv } from '@/shared/http/env';
 // このテストは「実 Supabase ローカル + place_order Postgres Function 経由」で動く。
 // 起動済みの Supabase（`supabase start`）が必要。
 //
+// Phase 6 改定:
+//   - customers の INSERT は handle_new_user トリガ経由のみ（auth.users 作成 → トリガで customers 行が埋まる）
+//   - そのためテストでは sb.auth.admin.createUser() で顧客を seed する
+//   - cleanup は「orders を先に削除 → auth.admin.deleteUser」の順で踏む
+//     （customers→orders は本番上の理由から ON DELETE CASCADE にしておらず、auth.users 削除だけでは連鎖が止まる）
+//
 // テスト分離戦略:
-//   - 顧客 / 商品: name に `__test_orders_` プレフィックスを付け、テストデータを目印化
-//   - 注文 / 明細: name 列が無いため、テスト顧客の customer_id 経由で限定削除
-//   - 既存の cakes / customers のテストデータ（別プレフィックス）には絶対に触れない
+//   - 顧客: メールアドレスに `@test-orders.local` ドメインを付けて目印化
+//   - 商品:   name に `__test_orders_` プレフィックスを付けて目印化
+//   - 注文 / 明細: 顧客削除前に明示削除（order_items は ON DELETE CASCADE で連動）
+//   - 既存の cakes / customers のテストデータ（別プレフィックス／別ドメイン）には絶対に触れない
 
 const TEST_PREFIX = '__test_orders_';
+const TEST_EMAIL_DOMAIN = '@test-orders.local';
 
 const env = loadEnv();
 const sbAdmin: SupabaseClient = createClient(
@@ -29,34 +37,57 @@ const sbAdmin: SupabaseClient = createClient(
   { auth: { persistSession: false, autoRefreshToken: false } },
 );
 
+// 削除順序の設計（重要）:
+//   FK の ON DELETE 指定は次のとおりで、auth.users 削除だけでは連鎖が orders で止まる:
+//     - auth.users → customers      : ON DELETE CASCADE（0004）
+//     - customers  → orders         : 指定なし（= RESTRICT）— 本番で顧客削除＝注文履歴消失は望ましくないためあえて CASCADE にしない
+//     - orders     → order_items    : ON DELETE CASCADE（0003）
+//   そのため「顧客を消すなら注文を先に始末する」という本番でも踏むべき手順をテスト側でも踏む:
+//     1. テスト対象の auth.users → customers.id を逆引き
+//     2. 該当 customers の orders を先に DELETE（→ order_items も CASCADE で消える）
+//     3. auth.admin.deleteUser で auth.users を削除（→ customers も CASCADE で消える）
+//     4. テスト用 cakes 行を削除（cakes は auth 系列と独立）
 const cleanupTestRows = async (): Promise<void> => {
-  // テスト顧客の id を集める
-  const { data: testCustomers } = await sbAdmin
-    .from('customers')
-    .select('id')
-    .like('name', `${TEST_PREFIX}%`);
+  const { data, error } = await sbAdmin.auth.admin.listUsers({ perPage: 200 });
+  if (error) {
+    throw new Error(`auth.users 一覧取得に失敗: ${error.message}`);
+  }
 
-  const customerIds = (testCustomers ?? []).map((c) => c.id as string);
+  const testAuthUserIds = data.users
+    .filter((u) => u.email?.endsWith(TEST_EMAIL_DOMAIN))
+    .map((u) => u.id);
 
-  // 注文を削除（order_items は ON DELETE CASCADE で連動削除される）
-  if (customerIds.length > 0) {
-    const { error: ordersErr } = await sbAdmin
-      .from('orders')
-      .delete()
-      .in('customer_id', customerIds);
-    if (ordersErr) {
-      throw new Error(`テスト注文の削除に失敗: ${ordersErr.message}`);
-    }
-    const { error: customersErr } = await sbAdmin
+  if (testAuthUserIds.length > 0) {
+    // auth_user_id 経由で対応する customers.id を取得
+    const { data: customerRows, error: cListErr } = await sbAdmin
       .from('customers')
-      .delete()
-      .in('id', customerIds);
-    if (customersErr) {
-      throw new Error(`テスト顧客の削除に失敗: ${customersErr.message}`);
+      .select('id')
+      .in('auth_user_id', testAuthUserIds);
+    if (cListErr) {
+      throw new Error(`テスト顧客の逆引きに失敗: ${cListErr.message}`);
+    }
+    const testCustomerIds = (customerRows ?? []).map((r) => r.id as string);
+
+    // orders を先に削除（order_items は ON DELETE CASCADE で連動）
+    if (testCustomerIds.length > 0) {
+      const { error: oErr } = await sbAdmin
+        .from('orders')
+        .delete()
+        .in('customer_id', testCustomerIds);
+      if (oErr) {
+        throw new Error(`テスト注文の削除に失敗: ${oErr.message}`);
+      }
+    }
+
+    // auth.users を削除（customers は ON DELETE CASCADE で連動）
+    for (const id of testAuthUserIds) {
+      const del = await sbAdmin.auth.admin.deleteUser(id);
+      if (del.error) {
+        throw new Error(`auth.users 削除に失敗 (id=${id}): ${del.error.message}`);
+      }
     }
   }
 
-  // テスト商品の削除
   const { error: cakesErr } = await sbAdmin
     .from('cakes')
     .delete()
@@ -66,24 +97,37 @@ const cleanupTestRows = async (): Promise<void> => {
   }
 };
 
-// テストごとに「顧客 1 名 + 商品 N 件」を投入してから検証に入る。
 interface SeedResult {
   customerId: string;
   cakeIds: string[];
 }
+
+// auth.admin.createUser で auth.users を作り、handle_new_user トリガで customers 行が
+// 同一トランザクション内に作成される。トリガが入れた customers.id を読み戻して返す。
 const seedFixtures = async (
   cakes: { name: string; price: number; stock: number }[],
 ): Promise<SeedResult> => {
+  const email = `buyer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${TEST_EMAIL_DOMAIN}`;
+  const { data: authData, error: authErr } = await sbAdmin.auth.admin.createUser({
+    email,
+    password: 'TestPassword123!',
+    email_confirm: true,
+    user_metadata: { name: `${TEST_PREFIX}buyer` },
+  });
+  if (authErr || !authData.user) {
+    throw new Error(`テスト顧客の投入に失敗: ${authErr?.message ?? '空応答'}`);
+  }
+
+  // トリガが作った customers.id を auth_user_id 経由で取得する
   const { data: customer, error: cErr } = await sbAdmin
     .from('customers')
-    .insert({
-      name: `${TEST_PREFIX}buyer`,
-      email: `${TEST_PREFIX}${Date.now()}@example.com`,
-    })
     .select('id')
+    .eq('auth_user_id', authData.user.id)
     .single();
   if (cErr || !customer) {
-    throw new Error(`テスト顧客の投入に失敗: ${cErr?.message}`);
+    throw new Error(
+      `customers 行の取得に失敗（トリガ未動作？）: ${cErr?.message}`,
+    );
   }
 
   const { data: cakeRows, error: kErr } = await sbAdmin

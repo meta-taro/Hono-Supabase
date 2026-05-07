@@ -9,5 +9,7 @@ export interface CustomerRepository {
   // メール重複チェックを application 層で行うために提供する。
   // 実装側はインデックス付きの単一行クエリで O(1) を期待する。
   findByEmail(email: Email): Promise<Customer | null>;
-  save(customer: Customer): Promise<void>;
+  // Phase 6: JWT subject (auth.users.id) から業務 customer を引くために必要。
+  // orders 等の認証必須経路で「現在のユーザの customer 行」を取得するときに使う。
+  findByAuthUserId(authUserId: string): Promise<Customer | null>;
 }

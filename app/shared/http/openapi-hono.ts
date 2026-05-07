@@ -1,5 +1,7 @@
 import { OpenAPIHono } from '@hono/zod-openapi';
+import type { Env } from 'hono';
 import { ValidationError } from '@/shared/domain/errors';
+import type { AppEnv } from './request-context';
 
 // ---------------------------------------------------------------------------
 // OpenAPIHono のデフォルト挙動を CLAUDE.md 統一エラーレスポンス形式に合わせるラッパー。
@@ -18,8 +20,10 @@ import { ValidationError } from '@/shared/domain/errors';
 //   すべてのサブルーターで Zod 検証エラー / ドメイン例外が同じ JSON 形に整う。
 //   API クライアントは error.code だけ見れば種別判定できる。
 // ---------------------------------------------------------------------------
-export const createOpenAPIHono = (): OpenAPIHono => {
-  return new OpenAPIHono({
+// Variables / Bindings 共有のため、デフォルトでは AppEnv を流す。
+// テスト等で別 Env を使いたければ generic で上書きできる。
+export const createOpenAPIHono = <E extends Env = AppEnv>(): OpenAPIHono<E> => {
+  return new OpenAPIHono<E>({
     defaultHook: (result) => {
       if (!result.success) {
         throw new ValidationError(

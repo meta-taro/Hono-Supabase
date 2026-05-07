@@ -1,36 +1,34 @@
-import type { OpenAPIHono } from '@hono/zod-openapi';
+import type { MiddlewareHandler } from 'hono';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Logger } from 'pino';
 import type { Env } from '@/shared/http/env';
-import { createAdminClient } from '@/shared/infrastructure/supabase';
+import type { AppEnv, RequestModules } from '@/shared/http/request-context';
 import { CakeSupabaseRepository } from '@/modules/cakes/infrastructure/cake.supabase-repository';
 import { createListCakesUseCase } from '@/modules/cakes/application/list-cakes.usecase';
 import { createCreateCakeUseCase } from '@/modules/cakes/application/create-cake.usecase';
 import { createCakeController } from '@/modules/cakes/presentation/cake.controller';
-import { createCakeRouter } from '@/modules/cakes/presentation/cake.routes';
 import { CustomerSupabaseRepository } from '@/modules/customers/infrastructure/customer.supabase-repository';
+import { SupabaseCustomerAuthAdapter } from '@/modules/customers/infrastructure/supabase-customer-auth.adapter';
 import { createListCustomersUseCase } from '@/modules/customers/application/list-customers.usecase';
-import { createCreateCustomerUseCase } from '@/modules/customers/application/create-customer.usecase';
+import { createSignUpCustomerUseCase } from '@/modules/customers/application/sign-up-customer.usecase';
 import { createCustomerController } from '@/modules/customers/presentation/customer.controller';
-import { createCustomerRouter } from '@/modules/customers/presentation/customer.routes';
 import { OrderSupabaseRepository } from '@/modules/orders/infrastructure/order.supabase-repository';
 import { createPlaceOrderUseCase } from '@/modules/orders/application/place-order.usecase';
 import { createGetOrderUseCase } from '@/modules/orders/application/get-order.usecase';
 import { createOrderController } from '@/modules/orders/presentation/order.controller';
-import { createOrderRouter } from '@/modules/orders/presentation/order.routes';
 
 // ---------------------------------------------------------------------------
 // composition-root = アプリケーション全体の DI を組み立てる中心地。
 //   ここでだけ「具象クラスのインスタンス化」が行われる。
 //   本番経路で唯一 infrastructure の具象を import する場所。
 //
-// なぜ手動 DI なのか:
-//   tsyringe / inversify などの DI コンテナは強力だが、学習が分岐するため不採用。
-//   factory 関数の連鎖だけで十分（CLAUDE.md「DI 戦略」参照）。
+// Phase 6 改定:
+//   sb（Supabase クライアント）はリクエストごとに JWT が異なるため、
+//   モジュール（Repository / UseCase / Controller）の組み立ては
+//   per-request にしないと「他人の権限で動く」事故が起きうる。
 //
-// Phase 6 で変わる点:
-//   現状は service_role キーで RLS をバイパスしている（認証ミドルウェア未実装のため）。
-//   Phase 6 では「リクエストの JWT に基づく anon クライアント」をリクエストごとに
-//   生成する形に変える（cakes module も含めて build を遅延化する設計に移行）。
+//   → buildRequestModules(sb, deps) をミドルウェアから呼び、
+//      c.var.modules に積む形にする。routes はそこから controller を取り出す。
 // ---------------------------------------------------------------------------
 
 export interface ModuleDeps {
@@ -38,50 +36,56 @@ export interface ModuleDeps {
   logger: Logger;
 }
 
-// cakes Bounded Context を組み立てて Router を返す。
-export const buildCakesModule = (deps: ModuleDeps): OpenAPIHono => {
-  const sb = createAdminClient(deps.env);
-  const repo = new CakeSupabaseRepository(sb);
-  const listCakes = createListCakesUseCase(repo);
-  const createCake = createCreateCakeUseCase(repo, deps.logger);
-  const controller = createCakeController({ listCakes, createCake });
-  return createCakeRouter(controller);
+// per-request の Bounded Context 別 Controller 集合を組み立てる。
+// この関数は「sb が何の権限で動いているか」を意識しない（与えられたものを使うだけ）。
+export const buildRequestModules = (
+  sb: SupabaseClient,
+  deps: ModuleDeps,
+): RequestModules => {
+  // cakes
+  const cakeRepo = new CakeSupabaseRepository(sb);
+  const cakes = createCakeController({
+    listCakes: createListCakesUseCase(cakeRepo),
+    createCake: createCreateCakeUseCase(cakeRepo, deps.logger),
+  });
+
+  // customers
+  const customerRepo = new CustomerSupabaseRepository(sb);
+  const customerAuth = new SupabaseCustomerAuthAdapter(sb);
+  const customers = createCustomerController({
+    listCustomers: createListCustomersUseCase(customerRepo),
+    signUpCustomer: createSignUpCustomerUseCase(
+      customerAuth,
+      customerRepo,
+      deps.logger,
+    ),
+  });
+
+  // orders
+  const orderRepo = new OrderSupabaseRepository(sb);
+  const orders = createOrderController({
+    placeOrder: createPlaceOrderUseCase(orderRepo, deps.logger),
+    getOrder: createGetOrderUseCase(orderRepo),
+    // authUserId → customers.id の解決は customers リポジトリを使う。
+    // controller は port (ResolveCustomerId) のみに依存し、
+    // customers コンテキストの中身（Customer Entity 等）は知らない。
+    resolveCustomerId: async (authUserId) => {
+      const customer = await customerRepo.findByAuthUserId(authUserId);
+      return customer ? customer.id.value : null;
+    },
+  });
+
+  return { cakes, customers, orders };
 };
 
-// customers Bounded Context を組み立てて Router を返す。
-// 現状は service_role で組み立てる（Phase 6 で「sign-up は anon、list は authenticated」へ
-// リクエストごとのクライアント切替に移行予定）。
-export const buildCustomersModule = (deps: ModuleDeps): OpenAPIHono => {
-  const sb = createAdminClient(deps.env);
-  const repo = new CustomerSupabaseRepository(sb);
-  const listCustomers = createListCustomersUseCase(repo);
-  const createCustomer = createCreateCustomerUseCase(repo, deps.logger);
-  const controller = createCustomerController({ listCustomers, createCustomer });
-  return createCustomerRouter(controller);
+// per-request にモジュールを組み立てて c.var.modules に積むミドルウェア。
+// auth + requestSupabase の後に通すこと。
+export const createModulesMiddleware = (
+  deps: ModuleDeps,
+): MiddlewareHandler<AppEnv> => {
+  return async (c, next) => {
+    const sb = c.get('sb');
+    c.set('modules', buildRequestModules(sb, deps));
+    await next();
+  };
 };
-
-// orders Bounded Context を組み立てて Router を返す。
-// 注文確定（place_order RPC）は SECURITY DEFINER 関数で動くため、
-// service_role でなくても Phase 6 移行時に anon でそのまま呼べる設計になっている。
-export const buildOrdersModule = (deps: ModuleDeps): OpenAPIHono => {
-  const sb = createAdminClient(deps.env);
-  const repo = new OrderSupabaseRepository(sb);
-  const placeOrder = createPlaceOrderUseCase(repo, deps.logger);
-  const getOrder = createGetOrderUseCase(repo);
-  const controller = createOrderController({ placeOrder, getOrder });
-  return createOrderRouter(controller);
-};
-
-// アプリ全体の DI を 1 か所で組み立てる。
-// 新しい Bounded Context を足すときは、ここに行を 1 つ追加するだけで済む。
-export interface AppModules {
-  cakesRouter: OpenAPIHono;
-  customersRouter: OpenAPIHono;
-  ordersRouter: OpenAPIHono;
-}
-
-export const buildAppModules = (deps: ModuleDeps): AppModules => ({
-  cakesRouter: buildCakesModule(deps),
-  customersRouter: buildCustomersModule(deps),
-  ordersRouter: buildOrdersModule(deps),
-});

@@ -1,25 +1,22 @@
 import type { OpenAPIHono } from '@hono/zod-openapi';
 import { createRoute } from '@hono/zod-openapi';
+import type { MiddlewareHandler } from 'hono';
 import { createOpenAPIHono } from '@/shared/http/openapi-hono';
+import type { AppEnv } from '@/shared/http/request-context';
 import {
   CakeResponseSchema,
   CreateCakeRequestSchema,
   ErrorResponseSchema,
   ListCakesResponseSchema,
 } from './cake.dto';
-import type { CakeController } from './cake.controller';
 
 // ---------------------------------------------------------------------------
 // Route 定義
-//   `createRoute()` は Hono に「OpenAPI 仕様付きの型安全なルート」を登録するための関数。
-//   Zod スキーマをここに紐付けることで、
-//     - ハンドラ内で c.req.valid('json') が型推論される
-//     - /openapi.json 自動生成（Phase 6 で公開）
-//     - リクエスト Zod 検証失敗時に自動で 400 + 統一エラーレスポンス
-//   が同時に得られる。
-//
 //   path は '/' にする — このルーターは app.ts 側で `app.route('/v1/cakes', ...)` で
 //   マウントされるため、ここでは相対パスを使う（重複定義防止）。
+//
+//   Phase 6 で controller はリクエストごとに c.get('modules').cakes から取得する。
+//   ルーター本体は副作用を持たず、ミドルウェア構成だけを受け取る。
 // ---------------------------------------------------------------------------
 
 const listCakesRoute = createRoute({
@@ -27,8 +24,7 @@ const listCakesRoute = createRoute({
   path: '/',
   tags: ['cakes'],
   summary: 'ケーキ一覧を取得する',
-  description:
-    'すべてのケーキを名前昇順で返す。認証不要（Phase 6 で確認）。',
+  description: 'すべてのケーキを名前昇順で返す。認証不要。',
   responses: {
     200: {
       description: 'ケーキ一覧',
@@ -41,9 +37,10 @@ const createCakeRoute = createRoute({
   method: 'post',
   path: '/',
   tags: ['cakes'],
-  summary: 'ケーキを登録する',
+  summary: 'ケーキを登録する（管理者専用）',
   description:
-    '新しいケーキをカタログに追加する。Phase 6 で管理者ロール必須に変更予定。',
+    '新しいケーキをカタログに追加する。admin ロール必須（authMiddleware + requireAdmin）。',
+  security: [{ bearerAuth: [] }],
   request: {
     body: {
       required: true,
@@ -59,6 +56,14 @@ const createCakeRoute = createRoute({
       description: 'リクエストパラメータが不正',
       content: { 'application/json': { schema: ErrorResponseSchema } },
     },
+    401: {
+      description: '未認証',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+    403: {
+      description: '管理者権限なし',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
     409: {
       description: 'ID が重複している',
       content: { 'application/json': { schema: ErrorResponseSchema } },
@@ -66,23 +71,23 @@ const createCakeRoute = createRoute({
   },
 });
 
-// ---------------------------------------------------------------------------
-// Router ファクトリ
-//   Controller を引数にもらうことで、本番でも統合テストでも同じ構造で組める。
-//   - 本番:    composition-root が実 UseCase を渡す
-//   - テスト:  モック UseCase で組んだ Controller を渡す（HTTP 層だけ検証）
-// ---------------------------------------------------------------------------
-export const createCakeRouter = (controller: CakeController): OpenAPIHono => {
-  // createOpenAPIHono を使うことで、Zod 検証失敗が自動的に ValidationError → 400 統一形式に変換される
-  const router = createOpenAPIHono();
+export interface CakeRouterDeps {
+  // POST /v1/cakes の前に挟むミドルウェア配列（認証 + admin 強制）。
+  adminGuard: MiddlewareHandler<AppEnv>[];
+}
+
+export const createCakeRouter = (deps: CakeRouterDeps): OpenAPIHono<AppEnv> => {
+  const router = createOpenAPIHono<AppEnv>();
 
   router.openapi(listCakesRoute, async (c) => {
+    const controller = c.get('modules').cakes;
     const body = await controller.list();
     return c.json(body, 200);
   });
 
+  router.use(createCakeRoute.getRoutingPath(), ...deps.adminGuard);
   router.openapi(createCakeRoute, async (c) => {
-    // c.req.valid('json') は Zod 検証通過後の型付き値を返す（CreateCakeRequest 型）
+    const controller = c.get('modules').cakes;
     const input = c.req.valid('json');
     const body = await controller.create(input);
     return c.json(body, 201);

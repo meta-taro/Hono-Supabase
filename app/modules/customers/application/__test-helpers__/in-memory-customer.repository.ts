@@ -5,6 +5,9 @@ import type { Email } from '../../domain/email.vo';
 // テスト専用のメモリ実装。
 // DDD-lite の利点: UseCase を Supabase 抜きで叩ける（高速・決定的）。
 // 本番ロジックには絶対に紛れ込ませないため __test-helpers__ ディレクトリに隔離する。
+//
+// Phase 6 で interface から save() が外れたが、テストの seed 用ヘルパとして
+// クラス内に残す（interface には公開せず、明示的に「テスト由来である」と分かる形にする）。
 export class InMemoryCustomerRepository implements CustomerRepository {
   private readonly store = new Map<string, Customer>();
 
@@ -21,11 +24,23 @@ export class InMemoryCustomerRepository implements CustomerRepository {
     return null;
   }
 
-  async save(customer: Customer): Promise<void> {
+  async findByAuthUserId(authUserId: string): Promise<Customer | null> {
+    for (const customer of this.store.values()) {
+      if (customer.authUserId === authUserId) {
+        return customer;
+      }
+    }
+    return null;
+  }
+
+  // テストアサーション / セットアップ用ヘルパ（インターフェース外）。
+  // Phase 6 では本番経路の保存は handle_new_user トリガが担うため、
+  // 本番リポジトリ実装には save() を持たせない。テストでは Customer.reconstruct
+  // 等で組み立てた Entity をこのヘルパで投入してシナリオを準備する。
+  seed(customer: Customer): void {
     this.store.set(customer.id.value, customer);
   }
 
-  // テストアサーション用のヘルパ（インターフェース外。テストからのみ呼ぶ）
   size(): number {
     return this.store.size;
   }

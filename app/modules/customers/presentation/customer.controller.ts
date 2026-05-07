@@ -1,9 +1,9 @@
 import type { Customer } from '../domain/customer';
 import type { ListCustomersUseCase } from '../application/list-customers.usecase';
 import type {
-  CreateCustomerUseCase,
-  CreateCustomerInput,
-} from '../application/create-customer.usecase';
+  SignUpCustomerUseCase,
+  SignUpCustomerInput,
+} from '../application/sign-up-customer.usecase';
 import type { CustomerResponse } from './customer.dto';
 
 // Controller の責務:
@@ -20,20 +20,20 @@ const toCustomerResponse = (customer: Customer): CustomerResponse => ({
 
 export interface CustomerControllerDeps {
   listCustomers: ListCustomersUseCase;
-  createCustomer: CreateCustomerUseCase;
+  signUpCustomer: SignUpCustomerUseCase;
 }
 
 export const createCustomerController = (deps: CustomerControllerDeps) => ({
-  // GET /v1/customers
+  // GET /v1/customers — Phase 6 で admin ロール必須（routes 層で guard）
   list: async (): Promise<{ customers: CustomerResponse[] }> => {
     const customers = await deps.listCustomers();
     return { customers: customers.map(toCustomerResponse) };
   },
 
-  // POST /v1/customers
+  // POST /v1/customers — サインアップ（認証不要）
   // 入力は routes 側で Zod により検証済み。ここでは UseCase に流すだけ。
-  create: async (input: CreateCustomerInput): Promise<CustomerResponse> => {
-    const customer = await deps.createCustomer(input);
+  signUp: async (input: SignUpCustomerInput): Promise<CustomerResponse> => {
+    const customer = await deps.signUpCustomer(input);
     return toCustomerResponse(customer);
   },
 });

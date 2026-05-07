@@ -47,8 +47,9 @@ export type OrderResponse = z.infer<typeof OrderResponseSchema>;
 //   ここで弾けば壊れた入力が UseCase まで届かないので、ハッピーパスが綺麗になる。
 //   ただし domain も同じ検証を持つことで、HTTP 層をバイパスした経路でも不変条件は守られる。
 //
-//   customerId は Phase 5 では body 由来。
-//   Phase 6 で JWT subject を採用したらこのフィールドは無くす予定。
+//   Phase 6 で customerId は body から外した:
+//     - サーバー側で JWT subject (auth.users.id) → customer 行を解決する
+//     - body で customerId を受け取ると「他人の名義で注文できる」改竄が成立してしまう
 // ---------------------------------------------------------------------------
 export const CreateOrderItemRequestSchema = z.object({
   cakeId: z.string().uuid({ message: 'cakeId は UUID である必要があります' }),
@@ -61,10 +62,6 @@ export const CreateOrderItemRequestSchema = z.object({
 
 export const CreateOrderRequestSchema = z
   .object({
-    customerId: z
-      .string()
-      .uuid({ message: 'customerId は UUID である必要があります' })
-      .openapi({ example: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }),
     items: z
       .array(CreateOrderItemRequestSchema)
       .min(1, { message: '注文には商品が 1 つ以上必要です' })

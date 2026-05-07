@@ -41,7 +41,11 @@ export const ListCustomersResponseSchema = z
 //   ただし domain も同じ検証を持つことで、HTTP 層をバイパスした経路（CLI / job）でも
 //   不変条件は守られる（多重防御）。
 // ---------------------------------------------------------------------------
-export const CreateCustomerRequestSchema = z
+// Phase 6 でサインアップ仕様に変更:
+//   - password を追加（Supabase Auth に渡す）
+//   - email/name の制約は domain 層と一致
+//   - パスワード長は Supabase Auth のデフォルト最小値（6 文字）に揃える
+export const SignUpCustomerRequestSchema = z
   .object({
     name: z
       .string()
@@ -53,10 +57,15 @@ export const CreateCustomerRequestSchema = z
       .email({ message: 'メールアドレスの形式が不正です' })
       .max(254, { message: 'メールアドレスは 254 文字以内です' })
       .openapi({ example: 'tanaka@example.com' }),
+    password: z
+      .string()
+      .min(6, { message: 'パスワードは 6 文字以上である必要があります' })
+      .max(72, { message: 'パスワードは 72 文字以内である必要があります' })
+      .openapi({ example: 'secret-password' }),
   })
-  .openapi('CreateCustomerRequest');
+  .openapi('SignUpCustomerRequest');
 
-export type CreateCustomerRequest = z.infer<typeof CreateCustomerRequestSchema>;
+export type SignUpCustomerRequest = z.infer<typeof SignUpCustomerRequestSchema>;
 
 // ---------------------------------------------------------------------------
 // 共通: エラーレスポンス（CLAUDE.md の統一形式に対応）

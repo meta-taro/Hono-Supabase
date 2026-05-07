@@ -1,29 +1,37 @@
 import { describe, it, expect } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import pino from 'pino';
+import type { MiddlewareHandler } from 'hono';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { createApp } from '@/app';
 import { createListCakesUseCase } from '@/modules/cakes/application/list-cakes.usecase';
 import { createCreateCakeUseCase } from '@/modules/cakes/application/create-cake.usecase';
 import { createCakeController } from '@/modules/cakes/presentation/cake.controller';
-import { createCakeRouter } from '@/modules/cakes/presentation/cake.routes';
 import { InMemoryCakeRepository } from '@/modules/cakes/application/__test-helpers__/in-memory-cake.repository';
 import { createListCustomersUseCase } from '@/modules/customers/application/list-customers.usecase';
-import { createCreateCustomerUseCase } from '@/modules/customers/application/create-customer.usecase';
+import { createSignUpCustomerUseCase } from '@/modules/customers/application/sign-up-customer.usecase';
 import { createCustomerController } from '@/modules/customers/presentation/customer.controller';
-import { createCustomerRouter } from '@/modules/customers/presentation/customer.routes';
 import { InMemoryCustomerRepository } from '@/modules/customers/application/__test-helpers__/in-memory-customer.repository';
+import { FakeCustomerAuth } from '@/modules/customers/application/__test-helpers__/fake-customer-auth';
+import { Customer } from '@/modules/customers/domain/customer';
 import { createPlaceOrderUseCase } from '@/modules/orders/application/place-order.usecase';
 import { createGetOrderUseCase } from '@/modules/orders/application/get-order.usecase';
 import { createOrderController } from '@/modules/orders/presentation/order.controller';
-import { createOrderRouter } from '@/modules/orders/presentation/order.routes';
 import { InMemoryOrderRepository } from '@/modules/orders/application/__test-helpers__/in-memory-order.repository';
+import {
+  createFakeAuthMiddleware,
+  requireAuth,
+  requireAdmin,
+} from '@/shared/http/auth.middleware';
+import type { AppEnv, AuthUser, RequestModules } from '@/shared/http/request-context';
 
 // ---------------------------------------------------------------------------
 // この統合テストの目的:
 //   presentation 層（routes / controller / dto）の HTTP 動作を確認する。
-//   - Zod 検証 → 400 統一エラー形式
-//   - 正常系のステータス / レスポンス形（PLACED / totalAmount / items）
-//   - domain 例外（在庫不足 → 409、cake/customer 欠損 → 404、Order 欠損 → 404）
+//   Phase 6 で大きく変わった点:
+//     - 全エンドポイントが認証必須（401 / FORBIDDEN）
+//     - body から customerId を排除（identity spoofing 対策）
+//     - controller の resolveCustomerId(authUserId) で業務 customer を解決
 //
 // なぜ Supabase に繋がないのか:
 //   infrastructure 層は order.supabase-repository.test.ts で実 Supabase（place_order RPC 含む）
@@ -37,50 +45,98 @@ const silentLogger = pino({ level: 'silent' });
 interface TestApp {
   app: ReturnType<typeof createApp>;
   ordersRepo: InMemoryOrderRepository;
+  customersRepo: InMemoryCustomerRepository;
+  // テスト用に「認証ユーザー → 業務 customer」の結びつけを準備するヘルパ。
+  // 本番では handle_new_user トリガが行う処理を、テスト側でも 1 行で再現する。
+  seedCustomer: (authUserId: string) => Customer;
 }
 
-const buildTestApp = (): TestApp => {
-  const ordersRepo = new InMemoryOrderRepository();
-  const placeOrder = createPlaceOrderUseCase(ordersRepo, silentLogger);
-  const getOrder = createGetOrderUseCase(ordersRepo);
-  const ordersController = createOrderController({ placeOrder, getOrder });
-  const ordersRouter = createOrderRouter(ordersController);
+// 共有のテストユーザー。authUserId として Customer に紐付ける。
+const AUTH_USER: AuthUser = {
+  id: '11111111-1111-4111-8111-111111111111',
+  email: 'user@example.com',
+  role: 'authenticated',
+};
 
-  // createApp() の AppModules インターフェースを満たすため、他コンテキストもダミーで組み立てる。
-  // この orders 統合テストでは触らないが、app の構造を本番と一致させるために必要。
+const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
+  const customersRepo = new InMemoryCustomerRepository();
+  const customerAuth = new FakeCustomerAuth(customersRepo);
+  const customersController = createCustomerController({
+    listCustomers: createListCustomersUseCase(customersRepo),
+    signUpCustomer: createSignUpCustomerUseCase(
+      customerAuth,
+      customersRepo,
+      silentLogger,
+    ),
+  });
+
   const cakesRepo = new InMemoryCakeRepository();
   const cakesController = createCakeController({
     listCakes: createListCakesUseCase(cakesRepo),
     createCake: createCreateCakeUseCase(cakesRepo, silentLogger),
   });
-  const cakesRouter = createCakeRouter(cakesController);
 
-  const customersRepo = new InMemoryCustomerRepository();
-  const customersController = createCustomerController({
-    listCustomers: createListCustomersUseCase(customersRepo),
-    createCustomer: createCreateCustomerUseCase(customersRepo, silentLogger),
+  const ordersRepo = new InMemoryOrderRepository();
+  const ordersController = createOrderController({
+    placeOrder: createPlaceOrderUseCase(ordersRepo, silentLogger),
+    getOrder: createGetOrderUseCase(ordersRepo),
+    resolveCustomerId: async (authUserId) => {
+      const c = await customersRepo.findByAuthUserId(authUserId);
+      return c?.id.value ?? null;
+    },
   });
-  const customersRouter = createCustomerRouter(customersController);
 
-  const app = createApp({ cakesRouter, customersRouter, ordersRouter });
-  return { app, ordersRepo };
+  const modules: RequestModules = {
+    cakes: cakesController,
+    customers: customersController,
+    orders: ordersController,
+  };
+
+  const stubSb = null as unknown as SupabaseClient;
+  const fakeModulesMiddleware: MiddlewareHandler<AppEnv> = async (c, next) => {
+    c.set('sb', stubSb);
+    c.set('modules', modules);
+    await next();
+  };
+
+  const app = createApp({
+    rootMiddlewares: [
+      createFakeAuthMiddleware(params.user ?? null),
+      fakeModulesMiddleware,
+    ],
+    guards: {
+      adminGuard: [requireAuth(), requireAdmin()],
+      authGuard: [requireAuth()],
+    },
+  });
+
+  const seedCustomer = (authUserId: string): Customer => {
+    const c = Customer.create({
+      authUserId,
+      name: 'テスト顧客',
+      email: `customer-${authUserId.slice(0, 8)}@example.com`,
+    });
+    customersRepo.seed(c);
+    return c;
+  };
+
+  return { app, ordersRepo, customersRepo, seedCustomer };
 };
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-describe('POST /v1/orders', () => {
+describe('POST /v1/orders（要認証）', () => {
   it('201 と作成された注文を返す（在庫が減算され、PLACED 状態）', async () => {
-    const { app, ordersRepo } = buildTestApp();
+    const { app, ordersRepo, seedCustomer } = buildTestApp({ user: AUTH_USER });
+    const customer = seedCustomer(AUTH_USER.id);
     const cakeId = randomUUID();
-    const customerId = randomUUID();
     ordersRepo.seedCake({ cakeId, price: 600, stock: 10 });
 
     const res = await app.request('/v1/orders', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        customerId,
         items: [{ cakeId, quantity: 2 }],
       }),
     });
@@ -100,7 +156,8 @@ describe('POST /v1/orders', () => {
       }>;
     };
     expect(body.id).toMatch(UUID_REGEX);
-    expect(body.customerId).toBe(customerId);
+    // controller が JWT subject から resolveCustomerId 経由で取得した customer.id が入る
+    expect(body.customerId).toBe(customer.id.value);
     expect(body.status).toBe('PLACED');
     expect(body.totalAmount).toBe(1200);
     expect(body.items).toHaveLength(1);
@@ -115,7 +172,8 @@ describe('POST /v1/orders', () => {
   });
 
   it('複数明細で totalAmount は subtotal の合計になる', async () => {
-    const { app, ordersRepo } = buildTestApp();
+    const { app, ordersRepo, seedCustomer } = buildTestApp({ user: AUTH_USER });
+    seedCustomer(AUTH_USER.id);
     const cake1 = randomUUID();
     const cake2 = randomUUID();
     ordersRepo.seedCake({ cakeId: cake1, price: 600, stock: 5 });
@@ -125,7 +183,6 @@ describe('POST /v1/orders', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        customerId: randomUUID(),
         items: [
           { cakeId: cake1, quantity: 2 },
           { cakeId: cake2, quantity: 1 },
@@ -139,9 +196,50 @@ describe('POST /v1/orders', () => {
     expect(body.totalAmount).toBe(2000);
   });
 
+  describe('認証ガード', () => {
+    it('未認証だと 401 + UNAUTHORIZED を返す', async () => {
+      const { app } = buildTestApp({ user: null });
+
+      const res = await app.request('/v1/orders', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          items: [{ cakeId: randomUUID(), quantity: 1 }],
+        }),
+      });
+
+      expect(res.status).toBe(401);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('認証ユーザーに対応する customer がいないと 404 + NOT_FOUND を返す', async () => {
+      // user は認証済みだが seedCustomer を呼ばない（auth_user_id に紐づく customers 行がない）
+      const { app } = buildTestApp({ user: AUTH_USER });
+      const cakeId = randomUUID();
+
+      const res = await app.request('/v1/orders', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          items: [{ cakeId, quantity: 1 }],
+        }),
+      });
+
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as {
+        error: { code: string; message: string };
+      };
+      expect(body.error.code).toBe('NOT_FOUND');
+      // CustomerNotFoundInOrderError は authUserId を含むメッセージ
+      expect(body.error.message).toContain(AUTH_USER.id);
+    });
+  });
+
   describe('業務エラー', () => {
     it('在庫不足のとき 409 + CONFLICT を返す', async () => {
-      const { app, ordersRepo } = buildTestApp();
+      const { app, ordersRepo, seedCustomer } = buildTestApp({ user: AUTH_USER });
+      seedCustomer(AUTH_USER.id);
       const cakeId = randomUUID();
       ordersRepo.seedCake({ cakeId, price: 600, stock: 1 });
 
@@ -149,7 +247,6 @@ describe('POST /v1/orders', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          customerId: randomUUID(),
           items: [{ cakeId, quantity: 5 }],
         }),
       });
@@ -165,7 +262,8 @@ describe('POST /v1/orders', () => {
     });
 
     it('存在しない cake を含むと 404 + NOT_FOUND を返す', async () => {
-      const { app, ordersRepo } = buildTestApp();
+      const { app, ordersRepo, seedCustomer } = buildTestApp({ user: AUTH_USER });
+      seedCustomer(AUTH_USER.id);
       const existingCakeId = randomUUID();
       const missingCakeId = randomUUID();
       ordersRepo.seedCake({ cakeId: existingCakeId, price: 600, stock: 5 });
@@ -174,7 +272,6 @@ describe('POST /v1/orders', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          customerId: randomUUID(),
           items: [
             { cakeId: existingCakeId, quantity: 1 },
             { cakeId: missingCakeId, quantity: 1 },
@@ -193,7 +290,8 @@ describe('POST /v1/orders', () => {
     });
 
     it('同一 cakeId が複数行に分かれているとき 400 + VALIDATION_ERROR を返す', async () => {
-      const { app, ordersRepo } = buildTestApp();
+      const { app, ordersRepo, seedCustomer } = buildTestApp({ user: AUTH_USER });
+      seedCustomer(AUTH_USER.id);
       const cakeId = randomUUID();
       ordersRepo.seedCake({ cakeId, price: 600, stock: 10 });
 
@@ -201,7 +299,6 @@ describe('POST /v1/orders', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          customerId: randomUUID(),
           items: [
             { cakeId, quantity: 1 },
             { cakeId, quantity: 2 },
@@ -217,13 +314,13 @@ describe('POST /v1/orders', () => {
 
   describe('Zod バリデーション失敗', () => {
     it('items が空のとき 400 + VALIDATION_ERROR を返す', async () => {
-      const { app } = buildTestApp();
+      const { app, seedCustomer } = buildTestApp({ user: AUTH_USER });
+      seedCustomer(AUTH_USER.id);
 
       const res = await app.request('/v1/orders', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          customerId: randomUUID(),
           items: [],
         }),
       });
@@ -236,15 +333,15 @@ describe('POST /v1/orders', () => {
       expect(body.error.details?.some((d) => d.field === 'items')).toBe(true);
     });
 
-    it('customerId が UUID でないとき 400 を返す', async () => {
-      const { app } = buildTestApp();
+    it('cakeId が UUID でないとき 400 を返す', async () => {
+      const { app, seedCustomer } = buildTestApp({ user: AUTH_USER });
+      seedCustomer(AUTH_USER.id);
 
       const res = await app.request('/v1/orders', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          customerId: 'not-a-uuid',
-          items: [{ cakeId: randomUUID(), quantity: 1 }],
+          items: [{ cakeId: 'not-a-uuid', quantity: 1 }],
         }),
       });
 
@@ -253,17 +350,19 @@ describe('POST /v1/orders', () => {
         error: { code: string; details?: Array<{ field: string }> };
       };
       expect(body.error.code).toBe('VALIDATION_ERROR');
-      expect(body.error.details?.some((d) => d.field.includes('customerId'))).toBe(true);
+      expect(
+        body.error.details?.some((d) => d.field.includes('cakeId')),
+      ).toBe(true);
     });
 
     it('quantity が 0 のとき 400 を返す', async () => {
-      const { app } = buildTestApp();
+      const { app, seedCustomer } = buildTestApp({ user: AUTH_USER });
+      seedCustomer(AUTH_USER.id);
 
       const res = await app.request('/v1/orders', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          customerId: randomUUID(),
           items: [{ cakeId: randomUUID(), quantity: 0 }],
         }),
       });
@@ -276,13 +375,13 @@ describe('POST /v1/orders', () => {
     });
 
     it('quantity が 100 を超えるとき 400 を返す', async () => {
-      const { app } = buildTestApp();
+      const { app, seedCustomer } = buildTestApp({ user: AUTH_USER });
+      seedCustomer(AUTH_USER.id);
 
       const res = await app.request('/v1/orders', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          customerId: randomUUID(),
           items: [{ cakeId: randomUUID(), quantity: 101 }],
         }),
       });
@@ -294,9 +393,10 @@ describe('POST /v1/orders', () => {
   });
 });
 
-describe('GET /v1/orders/:id', () => {
+describe('GET /v1/orders/:id（要認証）', () => {
   it('保存された注文を取得できる（POST → GET ラウンドトリップ）', async () => {
-    const { app, ordersRepo } = buildTestApp();
+    const { app, ordersRepo, seedCustomer } = buildTestApp({ user: AUTH_USER });
+    seedCustomer(AUTH_USER.id);
     const cakeId = randomUUID();
     ordersRepo.seedCake({ cakeId, price: 700, stock: 5 });
 
@@ -304,7 +404,6 @@ describe('GET /v1/orders/:id', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        customerId: randomUUID(),
         items: [{ cakeId, quantity: 2 }],
       }),
     });
@@ -328,7 +427,8 @@ describe('GET /v1/orders/:id', () => {
   });
 
   it('存在しない注文を取得すると 404 + NOT_FOUND を返す', async () => {
-    const { app } = buildTestApp();
+    const { app, seedCustomer } = buildTestApp({ user: AUTH_USER });
+    seedCustomer(AUTH_USER.id);
 
     const res = await app.request(`/v1/orders/${randomUUID()}`);
 
@@ -340,7 +440,8 @@ describe('GET /v1/orders/:id', () => {
   });
 
   it('id が UUID でないとき 400 + VALIDATION_ERROR を返す', async () => {
-    const { app } = buildTestApp();
+    const { app, seedCustomer } = buildTestApp({ user: AUTH_USER });
+    seedCustomer(AUTH_USER.id);
 
     const res = await app.request('/v1/orders/not-a-uuid');
 
@@ -348,4 +449,15 @@ describe('GET /v1/orders/:id', () => {
     const body = (await res.json()) as { error: { code: string } };
     expect(body.error.code).toBe('VALIDATION_ERROR');
   });
+
+  it('未認証だと 401 + UNAUTHORIZED を返す', async () => {
+    const { app } = buildTestApp({ user: null });
+
+    const res = await app.request(`/v1/orders/${randomUUID()}`);
+
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('UNAUTHORIZED');
+  });
 });
+
