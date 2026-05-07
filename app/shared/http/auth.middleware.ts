@@ -1,7 +1,17 @@
 import type { MiddlewareHandler } from 'hono';
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
+import {
+  createRemoteJWKSet,
+  customFetch,
+  jwtVerify,
+  type JWTPayload,
+} from 'jose';
 import { createClient } from '@supabase/supabase-js';
 import type { Env } from '@/shared/http/env';
+import type {
+  JwksFetcher,
+  JwksFetcherProvider,
+  ExecCtxLike,
+} from '@/shared/infrastructure/jwks-fetcher';
 import { UnauthorizedError, ForbiddenError } from '@/shared/domain/errors';
 import type {
   AppEnv,
@@ -27,18 +37,21 @@ import type {
 const SUPABASE_JWKS_PATH = '/auth/v1/.well-known/jwks.json';
 const BEARER_PREFIX = 'Bearer ';
 
-// JWKS は Env ごと（= Supabase プロジェクトごと）に 1 インスタンスだけ作って再利用する。
-// jose がキー回転に追従する内部キャッシュを持つので、毎リクエスト作り直さない。
-const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
-
-const getJwks = (env: Env) => {
+// jose の createRemoteJWKSet インスタンスはミドルウェア生成時に env ベースで 1 つ作る。
+// 内部キャッシュは Workers 側では Cache API（fetcher 内部）に肩代わりさせるので、
+// jose インスタンスは customFetch 経由で「都度最新の fetcher」を呼ぶラッパに作っておく。
+//
+// なぜ「ラッパ fetch」を customFetch に渡すのか:
+//   Workers 版 fetcher は ExecutionContext に依存するため、リクエストごとに別物。
+//   jose インスタンスを毎リクエスト作るのは避けたいので、jose には固定の薄い関数を
+//   渡し、その関数の中で per-request に取得した fetcher.fetch を呼ぶ形にする。
+//   per-request の fetcher は AsyncLocalStorage 不要 — middleware がローカル変数で
+//   保持して closure に渡せば十分。
+const buildJwks = (env: Env, getCurrentFetcher: () => JwksFetcher) => {
   const url = `${env.SUPABASE_URL}${SUPABASE_JWKS_PATH}`;
-  let jwks = jwksCache.get(url);
-  if (!jwks) {
-    jwks = createRemoteJWKSet(new URL(url));
-    jwksCache.set(url, jwks);
-  }
-  return jwks;
+  return createRemoteJWKSet(new URL(url), {
+    [customFetch]: (input, init) => getCurrentFetcher().fetch(input, init),
+  });
 };
 
 const extractRole = (payload: JWTPayload): AppRole => {
@@ -68,13 +81,36 @@ const toAuthUser = (payload: JWTPayload): AuthUser | null => {
 //   「JWT があれば user 情報を載せる」挙動になり、
 //   sb（per-request クライアント）に Authorization ヘッダを乗せられる。
 // ---------------------------------------------------------------------------
+
+export interface AuthMiddlewareDeps {
+  env: Env;
+  jwksFetcherProvider: JwksFetcherProvider;
+}
+
 export const createOptionalAuthMiddleware = (
-  env: Env,
+  deps: AuthMiddlewareDeps,
 ): MiddlewareHandler<AppEnv> => {
-  const jwks = getJwks(env);
+  const { env, jwksFetcherProvider } = deps;
   const issuer = `${env.SUPABASE_URL}/auth/v1`;
 
+  // jose インスタンスは middleware 生成時に 1 つ作る。
+  // customFetch には「最新の per-request fetcher を引く」ラッパを渡し、
+  // per-request 状態は middleware の closure で受け渡す。
+  let currentFetcher: JwksFetcher | null = null;
+  const jwks = buildJwks(env, () => {
+    if (!currentFetcher) {
+      // ここに到達するのは middleware 外から jose を呼んだケースのみ。
+      // 安全側に倒し、ctx なしの fallback fetcher を生成する。
+      currentFetcher = jwksFetcherProvider();
+    }
+    return currentFetcher;
+  });
+
   return async (c, next) => {
+    // c.executionCtx は Workers ランタイム時のみ存在する（ExecCtxLike 互換）。
+    // Node ランタイムでは undefined のまま渡る（provider が ctx を無視する）。
+    currentFetcher = jwksFetcherProvider(c.executionCtx as ExecCtxLike | undefined);
+
     const auth = c.req.header('Authorization');
     if (auth?.startsWith(BEARER_PREFIX)) {
       const token = auth.slice(BEARER_PREFIX.length).trim();

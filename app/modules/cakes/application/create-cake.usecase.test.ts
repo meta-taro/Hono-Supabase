@@ -1,11 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import pino from 'pino';
+import { createSilentLogger } from '@/shared/infrastructure/logger';
 import { createCreateCakeUseCase } from './create-cake.usecase';
 import { InMemoryCakeRepository } from './__test-helpers__/in-memory-cake.repository';
 import { InvalidCakeError, InvalidPriceError } from '../domain/cake.errors';
 
-// テスト用に出力を捨てる silent ロガー（pino の標準オプション）
-const silentLogger = pino({ level: 'silent' });
+// テスト用に出力を捨てる silent ロガー（AppLogger no-op 実装）
+const silentLogger = createSilentLogger();
 
 describe('createCakeUseCase', () => {
   it('正しい入力で Cake を生成し、リポジトリに保存される', async () => {

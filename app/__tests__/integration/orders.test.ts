@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import pino from 'pino';
+import { createSilentLogger } from '@/shared/infrastructure/logger';
 import type { MiddlewareHandler } from 'hono';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createApp } from '@/app';
@@ -40,7 +40,7 @@ import type { AppEnv, AuthUser, RequestModules } from '@/shared/http/request-con
 //   セマンティクスを JS で再現しているため、上から下まで通しで動かせる。
 // ---------------------------------------------------------------------------
 
-const silentLogger = pino({ level: 'silent' });
+const silentLogger = createSilentLogger();
 
 interface TestApp {
   app: ReturnType<typeof createApp>;

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import pino from 'pino';
+import { createSilentLogger } from '@/shared/infrastructure/logger';
 import { createSignUpCustomerUseCase } from './sign-up-customer.usecase';
 import { InMemoryCustomerRepository } from './__test-helpers__/in-memory-customer.repository';
 import { FakeCustomerAuth } from './__test-helpers__/fake-customer-auth';
@@ -11,8 +11,8 @@ import {
   SignUpFailedError,
 } from '../domain/customer.errors';
 
-// テスト用に出力を捨てる silent ロガー（pino の標準オプション）
-const silentLogger = pino({ level: 'silent' });
+// テスト用に出力を捨てる silent ロガー（AppLogger no-op 実装）
+const silentLogger = createSilentLogger();
 
 const SAMPLE_AUTH_USER_ID = '11111111-1111-4111-8111-111111111111';
 

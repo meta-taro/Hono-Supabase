@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import pino from 'pino';
+import { createSilentLogger } from '@/shared/infrastructure/logger';
 import type { MiddlewareHandler } from 'hono';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createApp } from '@/app';
@@ -38,7 +38,7 @@ import type { AppEnv, AuthUser, RequestModules } from '@/shared/http/request-con
 //   FakeCustomerAuth が Supabase Auth + handle_new_user トリガを JS で再現する。
 // ---------------------------------------------------------------------------
 
-const silentLogger = pino({ level: 'silent' });
+const silentLogger = createSilentLogger();
 
 interface TestApp {
   app: ReturnType<typeof createApp>;

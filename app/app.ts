@@ -1,8 +1,12 @@
 import type { OpenAPIHono } from '@hono/zod-openapi';
 import type { MiddlewareHandler } from 'hono';
-import { errorHandler } from '@/shared/http/error-handler';
+import { createErrorHandler } from '@/shared/http/error-handler';
 import { createOpenAPIHono } from '@/shared/http/openapi-hono';
 import type { AppEnv } from '@/shared/http/request-context';
+import {
+  createSilentLogger,
+  type AppLogger,
+} from '@/shared/infrastructure/logger';
 import { createCakeRouter } from '@/modules/cakes/presentation/cake.routes';
 import { createCustomerRouter } from '@/modules/customers/presentation/customer.routes';
 import { createOrderRouter } from '@/modules/orders/presentation/order.routes';
@@ -32,6 +36,9 @@ export interface AppGuards {
 export interface AppOptions {
   rootMiddlewares: MiddlewareHandler<AppEnv>[];
   guards: AppGuards;
+  // onError ハンドラに渡す logger。省略時は silent（テストで明示注入したい場合のみ
+  // 指定を推奨）。Phase 7 で error-handler を factory 化したことに伴う追加引数。
+  logger?: AppLogger;
 }
 
 export const createApp = (options?: AppOptions): OpenAPIHono<AppEnv> => {
@@ -61,7 +68,7 @@ export const createApp = (options?: AppOptions): OpenAPIHono<AppEnv> => {
     );
   }
 
-  app.onError(errorHandler);
+  app.onError(createErrorHandler(options?.logger ?? createSilentLogger()));
 
   return app;
 };

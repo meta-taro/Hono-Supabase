@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { OpenAPIHono } from '@hono/zod-openapi';
-import { errorHandler } from '@/shared/http/error-handler';
+import { createErrorHandler } from '@/shared/http/error-handler';
+import { createSilentLogger } from '@/shared/infrastructure/logger';
 import { NotFoundError, ValidationError } from '@/shared/domain/errors';
 
 const buildTestApp = (): OpenAPIHono => {
@@ -16,7 +17,7 @@ const buildTestApp = (): OpenAPIHono => {
   app.get('/throw-unknown', () => {
     throw new Error('boom');
   });
-  app.onError(errorHandler);
+  app.onError(createErrorHandler(createSilentLogger()));
   return app;
 };
 

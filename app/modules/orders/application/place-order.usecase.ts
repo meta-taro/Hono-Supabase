@@ -1,4 +1,4 @@
-import type { Logger } from 'pino';
+import type { AppLogger } from '@/shared/infrastructure/logger';
 import type {
   OrderRepository,
   PlaceOrderItem,
@@ -30,7 +30,7 @@ export interface PlaceOrderInput {
 //   - Order.create() は in-memory リポジトリ + テスト経路でのみ使われる
 export const createPlaceOrderUseCase = (
   repo: OrderRepository,
-  logger: Logger,
+  logger: AppLogger,
 ) => {
   return async (input: PlaceOrderInput): Promise<Order> => {
     // 早期チェック: 明細 0 件は VO 変換前に弾く（VO 変換の例外より意味が明確）

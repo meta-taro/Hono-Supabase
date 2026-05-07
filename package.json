@@ -9,9 +9,9 @@
   },
   "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "dev": "tsx watch --env-file=.env app/index.ts",
-    "build": "tsup app/index.ts --format esm --dts --out-dir dist --platform node",
-    "start": "node --env-file=.env dist/index.js",
+    "dev": "tsx watch --env-file=.env app/index.node.ts",
+    "build": "tsup app/index.node.ts --format esm --dts --out-dir dist --platform node",
+    "start": "node --env-file=.env dist/index.node.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -19,7 +19,11 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "wrangler:dev": "wrangler dev",
+    "wrangler:deploy": "wrangler deploy",
+    "wrangler:deploy:staging": "wrangler deploy --env staging",
+    "wrangler:tail": "wrangler tail"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
@@ -31,6 +35,7 @@
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260507.1",
     "@types/node": "^22.0.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
@@ -41,6 +46,7 @@
     "tsup": "^8.3.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "wrangler": "^4.20.0"
   }
 }

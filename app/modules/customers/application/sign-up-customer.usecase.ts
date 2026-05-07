@@ -1,4 +1,4 @@
-import type { Logger } from 'pino';
+import type { AppLogger } from '@/shared/infrastructure/logger';
 import type { Customer } from '../domain/customer';
 import { Email } from '../domain/email.vo';
 import {
@@ -33,7 +33,7 @@ export interface SignUpCustomerInput {
 export const createSignUpCustomerUseCase = (
   auth: CustomerAuthPort,
   repo: CustomerRepository,
-  logger: Logger,
+  logger: AppLogger,
 ) => {
   return async (input: SignUpCustomerInput): Promise<Customer> => {
     const email = Email.of(input.email);

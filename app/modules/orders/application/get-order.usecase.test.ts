@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import pino from 'pino';
+import { createSilentLogger } from '@/shared/infrastructure/logger';
 import { createGetOrderUseCase } from './get-order.usecase';
 import { createPlaceOrderUseCase } from './place-order.usecase';
 import { InMemoryOrderRepository } from './__test-helpers__/in-memory-order.repository';
@@ -8,7 +8,7 @@ import {
   OrderNotFoundError,
 } from '../domain/order.errors';
 
-const silentLogger = pino({ level: 'silent' });
+const silentLogger = createSilentLogger();
 
 const CUSTOMER = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const CAKE_A = '11111111-1111-4111-8111-111111111111';

@@ -1,6 +1,6 @@
 import type { MiddlewareHandler } from 'hono';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { Logger } from 'pino';
+import type { AppLogger } from '@/shared/infrastructure/logger';
 import type { Env } from '@/shared/http/env';
 import type { AppEnv, RequestModules } from '@/shared/http/request-context';
 import { CakeSupabaseRepository } from '@/modules/cakes/infrastructure/cake.supabase-repository';
@@ -33,7 +33,7 @@ import { createOrderController } from '@/modules/orders/presentation/order.contr
 
 export interface ModuleDeps {
   env: Env;
-  logger: Logger;
+  logger: AppLogger;
 }
 
 // per-request の Bounded Context 別 Controller 集合を組み立てる。

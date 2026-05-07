@@ -17,7 +17,14 @@ const envSchema = z.object({
 
 export type Env = z.infer<typeof envSchema>;
 
-// テスト用に raw env を差し替えられるよう関数化している。
-export const loadEnv = (raw: NodeJS.ProcessEnv = process.env): Env => envSchema.parse(raw);
+// raw env を差し替えられるよう関数化している。
+//   - Node では `process.env` を、Cloudflare Workers では `c.env`（バインディング）を渡せる。
+//   - 型は両者を満たす最小公約数の `Record<string, string | undefined>` に緩める。
+//     `process.env`（NodeJS.ProcessEnv）も Workers の env オブジェクトも、これに代入互換。
+export type RawEnv = Record<string, string | undefined>;
 
-export const env = loadEnv();
+// 注意: ここで `export const env = loadEnv()` のような即時実行はしない。
+// Cloudflare Workers の bundle に乗せるとモジュール評価時に process.env を読み、
+// `process is not defined` でクラッシュする。ランタイムごとのエントリ
+// （index.node.ts / index.workers.ts）で明示的に loadEnv() を呼ぶ。
+export const loadEnv = (raw: RawEnv = process.env): Env => envSchema.parse(raw);
