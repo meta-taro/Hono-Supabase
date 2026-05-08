@@ -79,19 +79,32 @@ Next.js が無くても、本 API 単体で以下のように利用可能:
 
 ## 技術スタック
 
-| カテゴリ | 採用 | 選定理由 |
-|---|---|---|
-| **本番ランタイム** | **[Cloudflare Workers](https://workers.cloudflare.com/)**（V8 Isolate） | グローバルエッジ・ゼロダウンタイムデプロイ・$0〜$5/月クラスの低コスト |
-| **本番ビルド/デプロイ** | **[Wrangler](https://developers.cloudflare.com/workers/wrangler/)** | `wrangler deploy` 1 コマンドで本番反映（Phase 7 で導入予定） |
-| ローカル開発ランタイム | Node.js 22 LTS | TDD・デバッグ・型チェックを Node 上で完結。tsx watch でホットリロード |
-| Framework | [Hono](https://hono.dev/) 4.x | 軽量・高速・型安全。**同一コードで Workers / Node / Vercel Edge / Bun / Deno** に展開可能 |
-| OpenAPI | [@hono/zod-openapi](https://github.com/honojs/middleware/tree/main/packages/zod-openapi) | コードと仕様の二重管理を回避 |
-| Validation | [Zod](https://zod.dev/) | TypeScript ネイティブのスキーマ検証 |
-| Database | Supabase (PostgreSQL 15) | Auth / RLS / Realtime まで含む BaaS。Workers から **REST 経由**で接続可能 |
-| Logger | [pino](https://getpino.io/) (Node) / Workers 互換実装（本番）| ローカルは pino + pino-pretty、本番は Workers 互換ロガーに差し替え |
-| Test | [Vitest](https://vitest.dev/) | Vite ベース、ESM ネイティブ、高速 |
-| Package Manager | pnpm 9.15.0 (via corepack) | ディスク効率・モノレポ対応・速度 |
-| Container | Docker Compose（アプリのみ・ローカル学習用途）+ Supabase CLI（DB） | 本番は Workers なのでコンテナ不要 |
+| カテゴリ                | 採用                                                                                     | 選定理由                                                                                                                                                           |
+| ----------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **本番ランタイム**      | **[Cloudflare Workers](https://workers.cloudflare.com/)**（V8 Isolate）                  | グローバルエッジ・ゼロダウンタイムデプロイ・$0〜$5/月クラスの低コスト                                                                                              |
+| **本番ビルド/デプロイ** | **[Wrangler](https://developers.cloudflare.com/workers/wrangler/)**                      | `wrangler deploy` 1 コマンドで本番反映                                                                                                                             |
+| ローカル開発ランタイム  | Node.js 22 LTS                                                                           | TDD・デバッグ・型チェックを Node 上で完結。tsx watch でホットリロード                                                                                              |
+| Framework               | [Hono](https://hono.dev/) 4.x                                                            | 軽量・高速・型安全。**同一コードで Workers / Node / Vercel Edge / Bun / Deno** に展開可能                                                                          |
+| OpenAPI                 | [@hono/zod-openapi](https://github.com/honojs/middleware/tree/main/packages/zod-openapi) | コードと仕様の二重管理を回避                                                                                                                                       |
+| Validation              | [Zod](https://zod.dev/)                                                                  | TypeScript ネイティブのスキーマ検証                                                                                                                                |
+| Database                | Supabase (PostgreSQL 15)                                                                 | Auth / RLS / Realtime まで含む BaaS。Workers から **REST 経由**で接続可能                                                                                          |
+| Logger                  | Workers 互換実装（本番）/ [pino](https://getpino.io/) + pino-pretty（ローカル開発）      | 本番（Workers）は `console.log(JSON.stringify(...))` ベースの軽量実装。ローカル開発時のみ pino を `devDependencies` として併用し、整形ログで TDD・デバッグを快適に |
+| Test                    | [Vitest](https://vitest.dev/)                                                            | Vite ベース、ESM ネイティブ、高速                                                                                                                                  |
+| Package Manager         | pnpm 9.15.0 (via corepack)                                                               | ディスク効率・モノレポ対応・速度                                                                                                                                   |
+| Container               | Docker Compose（アプリのみ・ローカル学習用途）+ Supabase CLI（DB）                       | 本番は Workers なのでコンテナ不要                                                                                                                                  |
+
+### 依存パッケージの方針（`dependencies` vs `devDependencies`）
+
+本プロジェクトは **本番 = Cloudflare Workers / ローカル開発・テスト = Node.js** の二段構えで動かすため、**本番（Workers バンドル）に乗らない Node 専用パッケージは `devDependencies` に分離**しています。
+
+| パッケージ                                                              | 配置              | 理由                                                                                                                                                                                                                                       |
+| ----------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `hono` / `zod` / `@supabase/supabase-js` / `jose` / `@hono/zod-openapi` | `dependencies`    | Workers / Node 双方で利用                                                                                                                                                                                                                  |
+| `pino` / `pino-pretty`                                                  | `devDependencies` | **Node ローカル開発時の整形ログ専用**。`worker_threads` / `fs` 依存があり Workers では動かないため、`app/shared/infrastructure/node-pino-logger.ts` に物理隔離して `app/index.node.ts` からのみ import。Workers バンドルには一切混入しない |
+| `@hono/node-server`                                                     | `devDependencies` | Node ランタイムで HTTP サーバを起動するためのアダプタ。Workers では `export default app` 形式で動くため不要                                                                                                                                |
+| `wrangler` / `@cloudflare/workers-types` / `tsx` / `tsup` / `vitest` 等 | `devDependencies` | ビルド・テスト・型ツール                                                                                                                                                                                                                   |
+
+> **「`node-pino-logger.ts` で `import pino` しているのに `dependencies` にない」のは意図通り**です。Workers ランタイムへの混入を物理的に防ぐため、Node 側のエントリだけが pino を読みます。本番デプロイ（`wrangler deploy`）は Workers バンドルしか作らないので pino を解決する必要がありません。
 
 ---
 
@@ -146,17 +159,17 @@ open http://localhost:54323
 
 ## 主要コマンド
 
-| コマンド | 用途 |
-|---|---|
-| `pnpm dev` | 開発サーバー起動（tsx watch） |
-| `pnpm build` | 本番ビルド（tsup） |
-| `pnpm start` | ビルド済みアプリの起動 |
-| `pnpm test` | テスト実行 |
-| `pnpm test:coverage` | カバレッジ計測（閾値 80%） |
-| `pnpm typecheck` | TypeScript 型チェック |
-| `pnpm lint` / `pnpm format` | ESLint / Prettier |
-| `supabase start` / `stop` | ローカル Supabase の起動 / 停止 |
-| `supabase db push` | マイグレーション適用 |
+| コマンド                    | 用途                            |
+| --------------------------- | ------------------------------- |
+| `pnpm dev`                  | 開発サーバー起動（tsx watch）   |
+| `pnpm build`                | 本番ビルド（tsup）              |
+| `pnpm start`                | ビルド済みアプリの起動          |
+| `pnpm test`                 | テスト実行                      |
+| `pnpm test:coverage`        | カバレッジ計測（閾値 80%）      |
+| `pnpm typecheck`            | TypeScript 型チェック           |
+| `pnpm lint` / `pnpm format` | ESLint / Prettier               |
+| `supabase start` / `stop`   | ローカル Supabase の起動 / 停止 |
+| `supabase db push`          | マイグレーション適用            |
 
 ---
 
@@ -205,14 +218,15 @@ presentation → application → domain
 
 `domain` という語は **業務概念（Domain Model）専用** に予約します。infrastructure 層に置く「DB 行を表す型」は **`Row` サフィックス** で命名し、`infrastructure/domain/` のようなディレクトリは作りません。
 
-| 種類 | レイヤ | 命名 | 例 |
-|---|---|---|---|
-| **Domain Model** | `domain/` | サフィックスなし | `Cake`（振る舞いを持つ Entity） |
-| **Persistence Model** | `infrastructure/`（ファイルローカル） | `*Row` | `CakeRow`（DB 行のシェイプのみ） |
+| 種類                  | レイヤ                                | 命名             | 例                               |
+| --------------------- | ------------------------------------- | ---------------- | -------------------------------- |
+| **Domain Model**      | `domain/`                             | サフィックスなし | `Cake`（振る舞いを持つ Entity）  |
+| **Persistence Model** | `infrastructure/`（ファイルローカル） | `*Row`           | `CakeRow`（DB 行のシェイプのみ） |
 
 ```typescript
 // app/modules/cakes/infrastructure/cake.supabase-repository.ts
-interface CakeRow {           // ← Persistence Model（infrastructure 層に閉じる）
+interface CakeRow {
+  // ← Persistence Model（infrastructure 層に閉じる）
   id: string;
   name: string;
   price: number;
@@ -223,11 +237,11 @@ interface CakeRow {           // ← Persistence Model（infrastructure 層に�
 
 **理由**: Hexagonal / Clean / Onion Architecture が共通して採る原則として、`domain` という単語は **コードベースに 1 箇所しか存在してはいけない**。同じ語を別の意味で使うと設計意図が読めなくなり、DB の都合（snake_case / timestamp 文字列等）が業務ルールに漏れる原因になる。本プロジェクトでは `Row` サフィックスで物理的に区別する。
 
-| サフィックス | 意味 |
-|---|---|
-| `*Row` | RDB の 1 行（本プロジェクトの基本） |
-| `*Schema` | テーブル構造定義（必要時） |
-| `*State` | Aggregate の状態スナップショット（Vernon 流・将来必要時） |
+| サフィックス | 意味                                                      |
+| ------------ | --------------------------------------------------------- |
+| `*Row`       | RDB の 1 行（本プロジェクトの基本）                       |
+| `*Schema`    | テーブル構造定義（必要時）                                |
+| `*State`     | Aggregate の状態スナップショット（Vernon 流・将来必要時） |
 
 > **禁止**: `infrastructure/domain/` ディレクトリの作成、`Cake`（Persistence Model 用）と `Cake`（Domain Model）の同名衝突、`infrastructure/` から `domain/` の Entity を **データ転送目的で** import すること（変換用に Mapper 経由で参照するのは OK）。
 
@@ -243,15 +257,15 @@ interface CakeRow {           // ← Persistence Model（infrastructure 層に�
 
 ### エンドポイント
 
-| Method | Path | 認証 | 概要 |
-|---|---|---|---|
-| GET | `/health` | 不要 | ヘルスチェック |
-| GET | `/v1/cakes` | 不要 | ケーキ一覧 |
-| POST | `/v1/cakes` | 管理者 | ケーキ登録 |
-| POST | `/v1/customers` | 不要 | 顧客サインアップ |
-| GET | `/v1/customers` | 管理者 | 顧客一覧 |
-| POST | `/v1/orders` | 必須 | 注文作成 |
-| GET | `/v1/orders/:id` | 本人 | 注文詳細 |
+| Method | Path             | 認証   | 概要             |
+| ------ | ---------------- | ------ | ---------------- |
+| GET    | `/health`        | 不要   | ヘルスチェック   |
+| GET    | `/v1/cakes`      | 不要   | ケーキ一覧       |
+| POST   | `/v1/cakes`      | 管理者 | ケーキ登録       |
+| POST   | `/v1/customers`  | 不要   | 顧客サインアップ |
+| GET    | `/v1/customers`  | 管理者 | 顧客一覧         |
+| POST   | `/v1/orders`     | 必須   | 注文作成         |
+| GET    | `/v1/orders/:id` | 本人   | 注文詳細         |
 
 ### 統一エラーレスポンス
 
@@ -260,33 +274,31 @@ interface CakeRow {           // ← Persistence Model（infrastructure 層に�
   "error": {
     "code": "VALIDATION_ERROR",
     "message": "リクエストパラメータが不正です",
-    "details": [
-      { "field": "price", "message": "0より大きい整数を指定してください" }
-    ]
+    "details": [{ "field": "price", "message": "0より大きい整数を指定してください" }]
   }
 }
 ```
 
-| HTTP | Code | 意味 |
-|---|---|---|
-| 400 | `VALIDATION_ERROR` | Zod 検証失敗 |
-| 401 | `UNAUTHORIZED` | 認証情報なし／不正 |
-| 403 | `FORBIDDEN` | 権限なし（RLS 違反） |
-| 404 | `NOT_FOUND` | リソースなし |
-| 409 | `CONFLICT` | 一意制約違反 |
-| 500 | `INTERNAL_SERVER_ERROR` | 想定外エラー |
+| HTTP | Code                    | 意味                 |
+| ---- | ----------------------- | -------------------- |
+| 400  | `VALIDATION_ERROR`      | Zod 検証失敗         |
+| 401  | `UNAUTHORIZED`          | 認証情報なし／不正   |
+| 403  | `FORBIDDEN`             | 権限なし（RLS 違反） |
+| 404  | `NOT_FOUND`             | リソースなし         |
+| 409  | `CONFLICT`              | 一意制約違反         |
+| 500  | `INTERNAL_SERVER_ERROR` | 想定外エラー         |
 
 ---
 
 ## テスト方針
 
-| 種類 | ツール | 対象 | 配置 | DB |
-|---|---|---|---|---|
-| 単体（domain） | Vitest | Entity / VO / Repository interface | 実装と共置 | 不要 |
-| 単体（application） | Vitest | UseCase（in-memory repo で差し替え） | 実装と共置 | 不要 |
-| 単体（infrastructure） | Vitest | Repository 実装 | 実装と共置 | 必要（Supabase ローカル） |
-| 統合 | Vitest + Hono `app.request()` | routes / controllers / 跨り系 | `app/__tests__/integration/` | UseCase mock or 実 Supabase |
-| E2E | Bruno | 全エンドポイント疎通 | `bruno/` | 必要 |
+| 種類                   | ツール                        | 対象                                 | 配置                         | DB                          |
+| ---------------------- | ----------------------------- | ------------------------------------ | ---------------------------- | --------------------------- |
+| 単体（domain）         | Vitest                        | Entity / VO / Repository interface   | 実装と共置                   | 不要                        |
+| 単体（application）    | Vitest                        | UseCase（in-memory repo で差し替え） | 実装と共置                   | 不要                        |
+| 単体（infrastructure） | Vitest                        | Repository 実装                      | 実装と共置                   | 必要（Supabase ローカル）   |
+| 統合                   | Vitest + Hono `app.request()` | routes / controllers / 跨り系        | `app/__tests__/integration/` | UseCase mock or 実 Supabase |
+| E2E                    | Bruno                         | 全エンドポイント疎通                 | `bruno/`                     | 必要                        |
 
 カバレッジ閾値: **80%**（lines / functions / branches / statements 全て）。未達はビルドエラー扱い。
 

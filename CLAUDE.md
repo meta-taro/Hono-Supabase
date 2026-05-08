@@ -35,23 +35,23 @@
 
 ## Tech Stack（決定済み）
 
-| カテゴリ | 技術 | バージョン | 選定理由 |
-|---------|------|-----------|---------|
-| **本番ランタイム** | **Cloudflare Workers**（V8 Isolate） | latest | グローバルエッジ・ゼロダウンタイムデプロイ・$0〜$5/月クラスの低コスト。Hono の真骨頂 |
-| **本番ビルド/デプロイ** | **Wrangler**（Cloudflare 公式 CLI） | ^3.x | `wrangler deploy` 1 コマンドで本番反映。`wrangler dev` でローカルでも Workers 環境シミュレート可能 |
-| **ローカル開発ランタイム** | Node.js | 22 LTS | TDD・デバッグ・Vitest 実行を快適に行うため。tsx watch でホットリロード |
-| Framework | Hono | ^4.x | 軽量・高速・型安全。**同一コードで Workers / Node / Vercel Edge / Bun / Deno** に展開可能 |
-| OpenAPI | @hono/zod-openapi | ^0.x | Zod スキーマから OpenAPI 仕様を自動生成。二重管理不要 |
-| Validation | Zod | ^3.x | TypeScript ネイティブのスキーマバリデーション |
-| Database | Supabase (PostgreSQL 15) | — | Auth + RLS + Realtime 込みの BaaS。Workers から **REST 経由**で接続するため TCP 直接続不可問題を回避 |
-| DB Client | @supabase/supabase-js | ^2.x | Supabase 公式クライアント。fetch ベースで Workers ネイティブ動作 |
-| Logger（本番 / Workers） | `console` ベース or [pino] の Workers 互換モード | — | Workers 環境では `fs` / `pino-pretty` が使えない。Phase 6 の本番化時に Workers 互換ロガーに切替検討 |
-| Logger（ローカル開発 / Node） | pino + pino-pretty | ^9.x | Node ローカル開発時は構造化 JSON + 整形表示。Workers 用と差し替え可能な抽象化を `app/shared/infrastructure/logger.ts` に置く |
-| Workers 型定義 | @cloudflare/workers-types | ^4.x | Phase 7 で Workers 化する際に追加。`Env` バインディング型を提供 |
-| Test | Vitest | ^3.x | Vite ベース。高速・ESM ネイティブ・型安全。`@cloudflare/vitest-pool-workers` で Workers 環境テストにも拡張可能 |
-| Package Mgr | pnpm | ^9.x | 高速・ディスク効率・モノレポ対応 |
-| Container | Docker Compose | — | アプリコンテナのみ管理（**ローカル学習用途**）。本番は Workers なのでコンテナ不要 |
-| Supabase Dev | Supabase CLI | latest | ローカル環境・マイグレーション管理の公式ツール |
+| カテゴリ                      | 技術                                                                       | バージョン | 選定理由                                                                                                                                                                            |
+| ----------------------------- | -------------------------------------------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **本番ランタイム**            | **Cloudflare Workers**（V8 Isolate）                                       | latest     | グローバルエッジ・ゼロダウンタイムデプロイ・$0〜$5/月クラスの低コスト。Hono の真骨頂                                                                                                |
+| **本番ビルド/デプロイ**       | **Wrangler**（Cloudflare 公式 CLI）                                        | ^3.x       | `wrangler deploy` 1 コマンドで本番反映。`wrangler dev` でローカルでも Workers 環境シミュレート可能                                                                                  |
+| **ローカル開発ランタイム**    | Node.js                                                                    | 22 LTS     | TDD・デバッグ・Vitest 実行を快適に行うため。tsx watch でホットリロード                                                                                                              |
+| Framework                     | Hono                                                                       | ^4.x       | 軽量・高速・型安全。**同一コードで Workers / Node / Vercel Edge / Bun / Deno** に展開可能                                                                                           |
+| OpenAPI                       | @hono/zod-openapi                                                          | ^0.x       | Zod スキーマから OpenAPI 仕様を自動生成。二重管理不要                                                                                                                               |
+| Validation                    | Zod                                                                        | ^3.x       | TypeScript ネイティブのスキーマバリデーション                                                                                                                                       |
+| Database                      | Supabase (PostgreSQL 15)                                                   | —          | Auth + RLS + Realtime 込みの BaaS。Workers から **REST 経由**で接続するため TCP 直接続不可問題を回避                                                                                |
+| DB Client                     | @supabase/supabase-js                                                      | ^2.x       | Supabase 公式クライアント。fetch ベースで Workers ネイティブ動作                                                                                                                    |
+| Logger（本番 / Workers）      | `console.log(JSON.stringify(...))` ベース軽量実装（`createWorkersLogger`） | —          | Workers 環境では `fs` / `worker_threads` が使えないため pino を入れない。pino と同じ呼び出しスタイル（`logger.info({ ...bindings }, 'msg')`）と pino 互換の出力（level=数値）を維持 |
+| Logger（ローカル開発 / Node） | pino + pino-pretty（**`devDependencies`**）                                | ^9.x       | Node ローカル開発時のみ整形ログ。`app/shared/infrastructure/node-pino-logger.ts` に物理隔離し、Workers バンドルに混入させない                                                       |
+| Workers 型定義                | @cloudflare/workers-types                                                  | ^4.x       | `Env` バインディング型を提供                                                                                                                                                        |
+| Test                          | Vitest                                                                     | ^3.x       | Vite ベース。高速・ESM ネイティブ・型安全。`@cloudflare/vitest-pool-workers` で Workers 環境テストにも拡張可能                                                                      |
+| Package Mgr                   | pnpm                                                                       | ^9.x       | 高速・ディスク効率・モノレポ対応                                                                                                                                                    |
+| Container                     | Docker Compose                                                             | —          | アプリコンテナのみ管理（**ローカル学習用途**）。本番は Workers なのでコンテナ不要                                                                                                   |
+| Supabase Dev                  | Supabase CLI                                                               | latest     | ローカル環境・マイグレーション管理の公式ツール                                                                                                                                      |
 
 ---
 
@@ -93,16 +93,16 @@
 
 ### 採用する DDD 戦術パターン
 
-| パターン | 採用 | 適用場所 |
-|---|---|---|
-| Aggregate / Entity | ✅ | 各コンテキストの `domain/` |
-| Value Object | ✅（要所のみ） | `Price`, `OrderQuantity`, `Email` |
-| Repository（interface + 実装） | ✅ 必須 | interface = `domain/`、実装 = `infrastructure/` |
-| UseCase（Application Service） | ✅ 必須 | 1 ユースケース = 1 ファイル |
-| Domain Event | ✅ 1 箇所 | `OrderPlaced` で在庫減算（Phase 5） |
-| Domain Service | △ 必要時 | 跨る計算（合計金額算出など） |
-| CQRS | ❌ | 規模に対して過剰 |
-| Specification パターン | ❌ | 同上 |
+| パターン                       | 採用           | 適用場所                                        |
+| ------------------------------ | -------------- | ----------------------------------------------- |
+| Aggregate / Entity             | ✅             | 各コンテキストの `domain/`                      |
+| Value Object                   | ✅（要所のみ） | `Price`, `OrderQuantity`, `Email`               |
+| Repository（interface + 実装） | ✅ 必須        | interface = `domain/`、実装 = `infrastructure/` |
+| UseCase（Application Service） | ✅ 必須        | 1 ユースケース = 1 ファイル                     |
+| Domain Event                   | ✅ 1 箇所      | `OrderPlaced` で在庫減算（Phase 5）             |
+| Domain Service                 | △ 必要時       | 跨る計算（合計金額算出など）                    |
+| CQRS                           | ❌             | 規模に対して過剰                                |
+| Specification パターン         | ❌             | 同上                                            |
 
 ### DI 戦略
 
@@ -221,21 +221,19 @@ GET  /v1/orders/:id         # 注文詳細（要認証・本人のみ）
   "error": {
     "code": "VALIDATION_ERROR",
     "message": "リクエストパラメータが不正です",
-    "details": [
-      { "field": "price", "message": "0より大きい整数を指定してください" }
-    ]
+    "details": [{ "field": "price", "message": "0より大きい整数を指定してください" }]
   }
 }
 ```
 
-| HTTP Status | Error Code | 意味 |
-|-------------|-----------|------|
-| 400 | `VALIDATION_ERROR` | Zod バリデーション失敗 |
-| 401 | `UNAUTHORIZED` | 認証トークン不正または未提供 |
-| 403 | `FORBIDDEN` | 権限なし（RLS ポリシー違反） |
-| 404 | `NOT_FOUND` | 指定リソースが存在しない |
-| 409 | `CONFLICT` | 一意制約違反（メール重複等） |
-| 500 | `INTERNAL_SERVER_ERROR` | 予期しないサーバーエラー |
+| HTTP Status | Error Code              | 意味                         |
+| ----------- | ----------------------- | ---------------------------- |
+| 400         | `VALIDATION_ERROR`      | Zod バリデーション失敗       |
+| 401         | `UNAUTHORIZED`          | 認証トークン不正または未提供 |
+| 403         | `FORBIDDEN`             | 権限なし（RLS ポリシー違反） |
+| 404         | `NOT_FOUND`             | 指定リソースが存在しない     |
+| 409         | `CONFLICT`              | 一意制約違反（メール重複等） |
+| 500         | `INTERNAL_SERVER_ERROR` | 予期しないサーバーエラー     |
 
 ---
 
@@ -262,35 +260,35 @@ import { AppError } from '@/shared/domain/errors';
 
 ### 命名規則
 
-| 対象 | 規則 | 例 |
-|------|------|----|
-| ファイル | kebab-case + suffix | `cake.repository.ts`, `list-cakes.usecase.ts`, `price.vo.ts` |
-| 関数・変数 | camelCase | `createCake`, `cakeId` |
-| 型・クラス | PascalCase | `Cake`, `Price`, `NotFoundError` |
-| 定数 | SCREAMING_SNAKE_CASE | `MAX_ORDER_QUANTITY` |
-| DB テーブル・カラム | snake_case | `order_items`, `unit_price` |
+| 対象                | 規則                 | 例                                                           |
+| ------------------- | -------------------- | ------------------------------------------------------------ |
+| ファイル            | kebab-case + suffix  | `cake.repository.ts`, `list-cakes.usecase.ts`, `price.vo.ts` |
+| 関数・変数          | camelCase            | `createCake`, `cakeId`                                       |
+| 型・クラス          | PascalCase           | `Cake`, `Price`, `NotFoundError`                             |
+| 定数                | SCREAMING_SNAKE_CASE | `MAX_ORDER_QUANTITY`                                         |
+| DB テーブル・カラム | snake_case           | `order_items`, `unit_price`                                  |
 
 #### ファイルサフィックス規約
 
-| サフィックス | 配置先 | 役割 |
-|---|---|---|
-| `*.repository.ts` | `domain/` | Repository interface |
-| `*.supabase-repository.ts` | `infrastructure/` | Repository 実装 |
-| `*.usecase.ts` | `application/` | UseCase |
-| `*.routes.ts` | `presentation/` | Hono ルート定義（OpenAPI 含む） |
-| `*.controller.ts` | `presentation/` | Controller（入出力変換） |
-| `*.dto.ts` | `presentation/` | Zod スキーマ（Request/Response） |
-| `*.vo.ts` | `domain/` | Value Object |
-| `*.errors.ts` | `domain/` | ドメイン例外 |
+| サフィックス               | 配置先            | 役割                             |
+| -------------------------- | ----------------- | -------------------------------- |
+| `*.repository.ts`          | `domain/`         | Repository interface             |
+| `*.supabase-repository.ts` | `infrastructure/` | Repository 実装                  |
+| `*.usecase.ts`             | `application/`    | UseCase                          |
+| `*.routes.ts`              | `presentation/`   | Hono ルート定義（OpenAPI 含む）  |
+| `*.controller.ts`          | `presentation/`   | Controller（入出力変換）         |
+| `*.dto.ts`                 | `presentation/`   | Zod スキーマ（Request/Response） |
+| `*.vo.ts`                  | `domain/`         | Value Object                     |
+| `*.errors.ts`              | `domain/`         | ドメイン例外                     |
 
 #### 永続化モデルの型命名規約（`domain` 多義使用の回避）
 
 `domain` という語は **業務概念（Domain Model）専用** に予約する。infrastructure 層で DB 行を表す型は **`*Row` サフィックス** を付け、`infrastructure/domain/` のようなディレクトリは作らない。
 
-| 種類 | レイヤ | 命名 | 例 | 振る舞い |
-|---|---|---|---|---|
-| Domain Model | `domain/` | サフィックスなし | `Cake`, `Price` | あり |
-| Persistence Model | `infrastructure/`（ファイルローカル） | `*Row` | `CakeRow` | なし（データ構造のみ） |
+| 種類              | レイヤ                                | 命名             | 例              | 振る舞い               |
+| ----------------- | ------------------------------------- | ---------------- | --------------- | ---------------------- |
+| Domain Model      | `domain/`                             | サフィックスなし | `Cake`, `Price` | あり                   |
+| Persistence Model | `infrastructure/`（ファイルローカル） | `*Row`           | `CakeRow`       | なし（データ構造のみ） |
 
 ```typescript
 // ✅ infrastructure 層: Persistence Model は Row サフィックス + ファイルローカル
@@ -316,11 +314,11 @@ interface CakeRow {
 
 **他のサフィックス候補**（必要時のみ採用）:
 
-| サフィックス | 用途 |
-|---|---|
-| `*Row` | RDB の 1 行（本プロジェクトの基本） |
-| `*Schema` | テーブル構造定義 / Drizzle 等の Schema |
-| `*State` | Aggregate の状態スナップショット（Vernon 流） |
+| サフィックス | 用途                                          |
+| ------------ | --------------------------------------------- |
+| `*Row`       | RDB の 1 行（本プロジェクトの基本）           |
+| `*Schema`    | テーブル構造定義 / Drizzle 等の Schema        |
+| `*State`     | Aggregate の状態スナップショット（Vernon 流） |
 
 ### コメントの書き方
 
@@ -370,10 +368,10 @@ import { createClient } from '@supabase/supabase-js';
 
 // ❌ domain 層から外側を import（禁止 — 純粋層を保つ）
 import { logger } from '@/shared/infrastructure/logger'; // domain/ では NG
-import { Hono } from 'hono';                              // domain/ では NG
+import { Hono } from 'hono'; // domain/ では NG
 
 // ❌ コンテキスト間の直接参照（禁止）
-import { Cake } from '@/modules/cakes/domain/cake';      // orders/ では NG
+import { Cake } from '@/modules/cakes/domain/cake'; // orders/ では NG
 ```
 
 **禁止項目まとめ**:
@@ -389,6 +387,7 @@ import { Cake } from '@/modules/cakes/domain/cake';      // orders/ では NG
 - `infrastructure/domain/` ディレクトリ作成禁止（`domain` の多義使用回避。Persistence Model は `*Row` サフィックスで命名）
 - **Cloudflare Workers 互換性を壊す Node 専用 API の使用禁止**（`fs`, `child_process`, `net` 生 TCP, `process.cwd()` 等）。本番デプロイ先が Workers のため、これらに依存すると本番で動かなくなる。どうしても Node 環境に閉じた処理が必要なら `app/index.node.ts` 側だけに置き、共通ロジック（`app.ts` 以下）には漏らさない
 - **ネイティブモジュール（C 拡張）の依存禁止**（`bcrypt`, `sharp`, `pino-pretty` の本番投入等）。Workers では動かない。本番ロジックには Web 標準 API ベースのライブラリのみ採用
+- **Node 専用パッケージは `devDependencies` に配置**（`pino`, `pino-pretty`, `@hono/node-server` 等）。`dependencies` には Workers / Node 双方で動くものだけを置く。`pino` は `app/shared/infrastructure/node-pino-logger.ts` に隔離して `app/index.node.ts` からのみ import すること（`app/shared/infrastructure/logger.ts` から pino を import すると Workers で `process is not defined` で落ちる）
 
 ---
 
@@ -402,14 +401,14 @@ import { Cake } from '@/modules/cakes/domain/cake';      // orders/ では NG
 
 ### テスト分類と配置
 
-| 種類 | 対象 | 配置 | DB |
-|------|------|------|----|
-| 単体（domain） | Entity / VO / Repository interface | 実装と共置（`*.test.ts`） | 不要 |
-| 単体（application） | UseCase（in-memory repo で差し替え） | 実装と共置 | 不要 |
-| 単体（infrastructure） | Repository 実装 | 実装と共置 | **必要**（Supabase ローカル） |
-| 統合（presentation） | routes / controllers | `app/__tests__/integration/` | UseCase mock or 実 Supabase |
-| 統合（shared 跨り） | error-handler 等 | `app/__tests__/integration/` | 不要 |
-| E2E | 全エンドポイント疎通 | `bruno/` | 必要 |
+| 種類                   | 対象                                 | 配置                         | DB                            |
+| ---------------------- | ------------------------------------ | ---------------------------- | ----------------------------- |
+| 単体（domain）         | Entity / VO / Repository interface   | 実装と共置（`*.test.ts`）    | 不要                          |
+| 単体（application）    | UseCase（in-memory repo で差し替え） | 実装と共置                   | 不要                          |
+| 単体（infrastructure） | Repository 実装                      | 実装と共置                   | **必要**（Supabase ローカル） |
+| 統合（presentation）   | routes / controllers                 | `app/__tests__/integration/` | UseCase mock or 実 Supabase   |
+| 統合（shared 跨り）    | error-handler 等                     | `app/__tests__/integration/` | 不要                          |
+| E2E                    | 全エンドポイント疎通                 | `bruno/`                     | 必要                          |
 
 ### 共置テストの利点（DDD-lite で重要）
 
@@ -474,22 +473,22 @@ console.log('order created');
 
 本プロジェクトはローカル = Node、本番 = **Cloudflare Workers** の二段構えのため、ロガーも環境別に実装を切り替える。`logger.ts` の **interface（`info` / `warn` / `error` / `debug` / `child` 等）はランタイム共通**にして、コンテキスト側のコードは差し替えに気付かないように保つ。
 
-| 環境 | 実装 | 補足 |
-|---|---|---|
-| ローカル開発（Node 22）| **pino + pino-pretty** | 整形表示で TDD・デバッグを快適に。`pino-pretty` は **devDependency 限定** |
-| 自動テスト（Vitest）| **pino（silent）** または ダミー実装 | 統合テストで `pino({ level: 'silent' })` を注入、ログ汚染を防ぐ |
-| **本番（Cloudflare Workers）** | **Workers 互換ロガー**（Phase 7 で導入）| `console.log(JSON.stringify(...))` ベースの軽量実装、または `@logtape/logtape` のようなランタイム不問ライブラリ。**`pino-pretty` / `fs` 依存は禁止** |
+| 環境                           | 実装                                     | 補足                                                                                                                                                 |
+| ------------------------------ | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ローカル開発（Node 22）        | **pino + pino-pretty**                   | 整形表示で TDD・デバッグを快適に。`pino-pretty` は **devDependency 限定**                                                                            |
+| 自動テスト（Vitest）           | **pino（silent）** または ダミー実装     | 統合テストで `pino({ level: 'silent' })` を注入、ログ汚染を防ぐ                                                                                      |
+| **本番（Cloudflare Workers）** | **Workers 互換ロガー**（Phase 7 で導入） | `console.log(JSON.stringify(...))` ベースの軽量実装、または `@logtape/logtape` のようなランタイム不問ライブラリ。**`pino-pretty` / `fs` 依存は禁止** |
 
 `shared/infrastructure/logger.ts` は **factory function（`createLogger(env)`）** で実装を分岐できる構造を維持し、`composition-root` / `index.workers.ts` 側で本番実装を注入する。
 
 ### ログレベル基準
 
-| レベル | 使いどころ |
-|--------|----------|
-| `error` | 例外・障害（即時対応が必要） |
-| `warn` | 異常だが処理は継続できる |
-| `info` | 正常系のビジネスイベント（注文作成・顧客登録等） |
-| `debug` | 開発時のデバッグ情報（本番は無効化） |
+| レベル  | 使いどころ                                       |
+| ------- | ------------------------------------------------ |
+| `error` | 例外・障害（即時対応が必要）                     |
+| `warn`  | 異常だが処理は継続できる                         |
+| `info`  | 正常系のビジネスイベント（注文作成・顧客登録等） |
+| `debug` | 開発時のデバッグ情報（本番は無効化）             |
 
 ---
 
@@ -615,21 +614,21 @@ pnpm wrangler rollback
 
 ### ランタイム別の管理方法
 
-| ランタイム | 管理方法 | ファイル |
-|---|---|---|
-| ローカル開発（Node）| `.env`（Node 22 の `--env-file` で読み込み）| `.env`（gitignore 済）/ `.env.example` |
-| 自動テスト（Vitest） | `process.loadEnvFile()` で `.env` を注入 | `vitest.config.ts` 内 |
-| **本番（Cloudflare Workers）** | **`wrangler secret put` でクラウド側に登録** | `.dev.vars`（Workers ローカル用、gitignore 必須）|
+| ランタイム                     | 管理方法                                     | ファイル                                          |
+| ------------------------------ | -------------------------------------------- | ------------------------------------------------- |
+| ローカル開発（Node）           | `.env`（Node 22 の `--env-file` で読み込み） | `.env`（gitignore 済）/ `.env.example`            |
+| 自動テスト（Vitest）           | `process.loadEnvFile()` で `.env` を注入     | `vitest.config.ts` 内                             |
+| **本番（Cloudflare Workers）** | **`wrangler secret put` でクラウド側に登録** | `.dev.vars`（Workers ローカル用、gitignore 必須） |
 
 ### 主な環境変数
 
-| 変数名 | 説明 | 例 |
-|--------|------|----|
-| `SUPABASE_URL` | Supabase プロジェクト URL | `http://localhost:54321`（ローカル）/ `https://xxx.supabase.co`（本番）|
-| `SUPABASE_ANON_KEY` | 匿名キー（公開可・RLS で保護） | `eyJ...` |
-| `SUPABASE_SERVICE_ROLE_KEY` | サービスロールキー（RLS バイパス・厳重管理） | `eyJ...` |
-| `PORT` | サーバーポート（**Node ローカル時のみ使用**。Workers は無関係）| `3010` |
-| `NODE_ENV` | 実行環境（**Node ローカル時のみ**。Workers は `wrangler.toml` の env 機能で代替）| `development` / `production` / `test` |
-| `LOG_LEVEL` | ログ出力レベル | `debug` / `info` / `warn` / `error` |
+| 変数名                      | 説明                                                                              | 例                                                                      |
+| --------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `SUPABASE_URL`              | Supabase プロジェクト URL                                                         | `http://localhost:54321`（ローカル）/ `https://xxx.supabase.co`（本番） |
+| `SUPABASE_ANON_KEY`         | 匿名キー（公開可・RLS で保護）                                                    | `eyJ...`                                                                |
+| `SUPABASE_SERVICE_ROLE_KEY` | サービスロールキー（RLS バイパス・厳重管理）                                      | `eyJ...`                                                                |
+| `PORT`                      | サーバーポート（**Node ローカル時のみ使用**。Workers は無関係）                   | `3010`                                                                  |
+| `NODE_ENV`                  | 実行環境（**Node ローカル時のみ**。Workers は `wrangler.toml` の env 機能で代替） | `development` / `production` / `test`                                   |
+| `LOG_LEVEL`                 | ログ出力レベル                                                                    | `debug` / `info` / `warn` / `error`                                     |
 
 > **Phase 7 で Cloudflare Workers 化する際の補足**: Workers では `process.env` ではなく **第二引数の `Env` バインディング**から変数を取得する設計になる。`@/shared/http/env` の loadEnv も Workers 側では `c.env` を受け取る形に分岐させる（interface はそのまま、入力源だけ差し替え）。
