@@ -68,7 +68,7 @@ Next.js が無くても、本 API 単体で以下のように利用可能:
 - **Repository + UseCase パターン**: domain で interface を定義、infrastructure で Supabase 実装。UseCase は in-memory repo で爆速テスト
 - **API バージョニング**: 全業務エンドポイントを `/v1` 配下に配置（`/health` のみ非バージョン）
 - **型安全な API 設計**: `@hono/zod-openapi` で Zod スキーマから OpenAPI 仕様を自動生成（仕様の二重管理ゼロ）
-- **構造化ログ**: pino による JSON ログ。障害対応・QA 対応ができるレベルで `method` / `path` / `requestId` 等を残す
+- **構造化ログ（ランタイム適応）**: 本番（Cloudflare Workers）は `console.log(JSON.stringify(...))` ベースの軽量ロガー（pino 互換出力）、ローカル開発（Node）は pino + pino-pretty で整形表示。`AppLogger` interface を共通化し、呼び出し側コードはランタイムに気付かない
 - **統一エラーレスポンス**: `code` / `message` / `details` 形式で、クライアントがプログラム的にエラー種別を分岐可能
 - **fail-fast な env 検証**: 起動時に Zod で `process.env` を検証
 - **Supabase Auth + RLS**: JWT 認証ミドルウェア + Row Level Security でテーブル単位のアクセス制御
@@ -155,21 +155,56 @@ curl http://localhost:3010/health
 open http://localhost:54323
 ```
 
+### Cloudflare Workers ローカル実行（本番ランタイム再現）
+
+`pnpm dev` は Node ランタイム（tsx watch）で開発しますが、本番である Workers V8 Isolate を再現するには `wrangler dev` を使います。
+
+```bash
+# .dev.vars を作成（Workers ローカル時の環境変数）
+cp .dev.vars.example .dev.vars
+# 中身を編集（SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY）
+
+# Workers ランタイムでローカル起動
+pnpm wrangler:dev
+# => http://localhost:8787 で待ち受け
+```
+
+### 本番（Cloudflare Workers）
+
+```bash
+# 初回のみ: Cloudflare アカウント作成 + ログイン
+pnpm wrangler login
+
+# 本番 secret 登録（3 回実行）
+pnpm wrangler secret put SUPABASE_URL
+pnpm wrangler secret put SUPABASE_ANON_KEY
+pnpm wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+
+# デプロイ
+pnpm wrangler:deploy
+
+# ログ確認（リアルタイム tail）
+pnpm wrangler:tail
+```
+
 ---
 
 ## 主要コマンド
 
-| コマンド                    | 用途                            |
-| --------------------------- | ------------------------------- |
-| `pnpm dev`                  | 開発サーバー起動（tsx watch）   |
-| `pnpm build`                | 本番ビルド（tsup）              |
-| `pnpm start`                | ビルド済みアプリの起動          |
-| `pnpm test`                 | テスト実行                      |
-| `pnpm test:coverage`        | カバレッジ計測（閾値 80%）      |
-| `pnpm typecheck`            | TypeScript 型チェック           |
-| `pnpm lint` / `pnpm format` | ESLint / Prettier               |
-| `supabase start` / `stop`   | ローカル Supabase の起動 / 停止 |
-| `supabase db push`          | マイグレーション適用            |
+| コマンド                    | 用途                                                  |
+| --------------------------- | ----------------------------------------------------- |
+| `pnpm dev`                  | 開発サーバー起動（Node / tsx watch）                  |
+| `pnpm build`                | 本番ビルド（tsup）                                    |
+| `pnpm start`                | ビルド済みアプリの起動（Node）                        |
+| `pnpm test`                 | テスト実行                                            |
+| `pnpm test:coverage`        | カバレッジ計測（閾値 80%）                            |
+| `pnpm typecheck`            | TypeScript 型チェック                                 |
+| `pnpm lint` / `pnpm format` | ESLint / Prettier                                     |
+| `pnpm wrangler:dev`         | **Workers ローカル実行**（V8 Isolate を再現）         |
+| `pnpm wrangler:deploy`      | **Cloudflare Workers へ本番デプロイ**                 |
+| `pnpm wrangler:tail`        | 本番 Workers のログをリアルタイムで tail              |
+| `supabase start` / `stop`   | ローカル Supabase の起動 / 停止                       |
+| `supabase db push`          | マイグレーション適用（リンク済みプロジェクトに対し）  |
 
 ---
 
@@ -178,8 +213,10 @@ open http://localhost:54323
 ```
 .
 ├── app/
-│   ├── index.ts                                  # エントリーポイント
-│   ├── app.ts                                    # Hono インスタンス・ルート集約
+│   ├── index.node.ts                             # エントリ（Node ローカル開発・テスト用）
+│   ├── index.workers.ts                          # エントリ（Cloudflare Workers 本番用）
+│   ├── bootstrap.ts                              # 両エントリ共通の組立処理
+│   ├── app.ts                                    # Hono インスタンス・ルート集約（ランタイム非依存）
 │   ├── modules/                                  # = Bounded Contexts
 │   │   ├── cakes/
 │   │   │   ├── domain/                           # Entity / VO / Repository interface（純粋層）
@@ -190,8 +227,8 @@ open http://localhost:54323
 │   │   └── orders/                               # 同構造 + Domain Event
 │   ├── shared/                                   # 共有カーネル
 │   │   ├── domain/                               # AppError 等
-│   │   ├── infrastructure/                       # logger / Supabase クライアント
-│   │   └── http/                                 # env 検証 / error-handler
+│   │   ├── infrastructure/                       # logger（Workers 互換）/ node-pino-logger（Node 専用）/ Supabase クライアント / JwksFetcher
+│   │   └── http/                                 # env 検証 / error-handler / 認証ミドルウェア
 │   └── __tests__/integration/                    # 跨り系の統合テスト
 ├── supabase/
 │   ├── migrations/                               # SQL マイグレーション
@@ -311,10 +348,15 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
 - [x] **Phase 1**: 設定ファイル群・プロジェクト初期化
 - [x] **Phase 2**: Hono アプリ骨格 + `/health` + 統一エラー形式 + 構造化ログ + env 検証
 - [x] **Phase 2.5**: DDD-lite 4 層構造への移行（`shared/` 共有カーネル + `modules/{cakes,customers,orders}/` 骨格）
-- [ ] **Phase 3**: `cakes` Bounded Context（domain → application → infrastructure → presentation 縦切り完成）
-- [ ] **Phase 4**: `customers` Bounded Context（同構造）
-- [ ] **Phase 5**: `orders` Bounded Context（Domain Event + Postgres Function でアトミック在庫減算）
-- [ ] **Phase 6**: Supabase Auth + RLS + 認証ミドルウェア + OpenAPI 仕上げ
+- [x] **Phase 3**: `cakes` Bounded Context（domain → application → infrastructure → presentation 縦切り完成）
+- [x] **Phase 4**: `customers` Bounded Context（同構造）
+- [x] **Phase 5**: `orders` Bounded Context（Domain Event + Postgres Function でアトミック在庫減算）
+- [x] **Phase 6**: Supabase Auth + RLS + 認証ミドルウェア + OpenAPI 仕上げ
+- [ ] **Phase 7**: **Cloudflare Workers 化**（本番デプロイ想定の最終段）
+  - [x] Step 1〜6: エントリ二系統化 / `wrangler.toml` / `.dev.vars` / Workers 互換ロガー / JWKS DI / Workers ローカル疎通
+  - [x] Step 7: 初回本番デプロイ完了（Cloudflare アカウント取得 + Supabase Cloud 連携 + secret 登録 + `wrangler deploy`。`https://cake-shop-api.<account>.workers.dev/health` / `/v1/cakes` 200 OK 確認済み）
+  - [ ] Step 8: 環境分離（`[env.staging]` / `[env.production]` + 各 env 用 secret）
+  - [ ] Step 9: GitHub Actions（`cloudflare/wrangler-action@v3`）で自動デプロイ + Versioned Deployments
 
 ---
 

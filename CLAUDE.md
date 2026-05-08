@@ -543,7 +543,7 @@ console.log('order created');
   - [x] **Step 4**: ロガー差し替え — pino 依存を `app/shared/infrastructure/node-pino-logger.ts` に隔離。`logger.ts` は `AppLogger` interface + `createWorkersLogger`（`console.log(JSON.stringify(...))` ベース）+ `createSilentLogger` のみ。Workers バンドルから pino を完全除去
   - [x] **Step 5**: jose JWKS fetch を `JwksFetcherProvider` で per-request DI 化。Workers 側は `caches.default` + `ctx.waitUntil` で SWR キャッシュ。Node 側は jose 内蔵キャッシュをそのまま使用
   - [x] **Step 6**: `wrangler dev` で `GET /health` / `GET /v1/cakes` 200 OK 確認（Hono + Supabase REST が Workers V8 Isolate 上で動作）。33 テスト / 250 テスト全緑、typecheck OK
-  - [ ] **Step 7**: Cloudflare アカウント取得 + `wrangler secret put` + `wrangler deploy` で初回本番デプロイ
+  - [x] **Step 7**: Cloudflare アカウント取得 + Supabase Cloud プロジェクト作成 + `supabase db push`（4 マイグレーション適用）+ `wrangler secret put` ×3（URL / anon / service_role）+ `wrangler deploy` で初回本番デプロイ完了。`https://cake-shop-api.rzrhacympbmdkagoybba.workers.dev/health` / `/v1/cakes` 200 OK 確認（Workers V8 Isolate → Supabase Cloud REST の本番疎通成功）
   - [ ] **Step 8**: 環境分離（`wrangler.toml` の `[env.staging]` / `[env.production]` を埋める + 各 env への secret 登録）
   - [ ] **Step 9**: GitHub Actions（`cloudflare/wrangler-action@v3`）で自動デプロイ + Versioned Deployments（カナリア 10% → 100%）の体験
 
