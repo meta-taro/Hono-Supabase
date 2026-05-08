@@ -74,6 +74,42 @@ const LEVEL_NUMBERS: Record<Exclude<LogLevel, 'silent'>, number> = {
   fatal: 60,
 };
 
+// Error オブジェクトのシリアライズ。
+//   JSON.stringify(new Error('x')) === '{}' になる（message / stack / name が
+//   non-enumerable）ため、明示的に列挙プロパティへ移し替える。pino の標準
+//   err serializer と互換の形 { type, message, stack, ...拡張プロパティ } で出力。
+//   cause がある場合は再帰的にシリアライズ。
+const serializeError = (err: unknown): unknown => {
+  if (!(err instanceof Error)) return err;
+
+  const out: Record<string, unknown> = {
+    type: err.constructor.name,
+    message: err.message,
+    stack: err.stack,
+  };
+
+  // ドメイン例外の `code` 等のカスタム列挙プロパティを保持する。
+  for (const key of Object.keys(err)) {
+    if (key in out) continue;
+    out[key] = (err as unknown as Record<string, unknown>)[key];
+  }
+
+  if ('cause' in err && err.cause !== undefined) {
+    out.cause = serializeError(err.cause);
+  }
+  return out;
+};
+
+// bindings の浅い走査で Error を serialize する。深いネスト内の Error までは
+// 触らない（pino と同等の挙動）。
+const normalizeBindings = (bindings: object): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(bindings)) {
+    out[key] = value instanceof Error ? serializeError(value) : value;
+  }
+  return out;
+};
+
 interface WorkersLoggerOptions {
   level?: LogLevel;
   // 子ロガーが上から継承する bindings
@@ -82,9 +118,7 @@ interface WorkersLoggerOptions {
   now?: () => number;
 }
 
-export const createWorkersLogger = (
-  options: WorkersLoggerOptions = {},
-): AppLogger => {
+export const createWorkersLogger = (options: WorkersLoggerOptions = {}): AppLogger => {
   const level: LogLevel = options.level ?? 'info';
   const baseBindings = options.bindings ?? {};
   const now = options.now ?? Date.now;
@@ -92,11 +126,7 @@ export const createWorkersLogger = (
   // 設定 level よりも下位（数値が小さい）の出力は捨てる。
   const threshold = level === 'silent' ? Infinity : LEVEL_NUMBERS[level];
 
-  const log = (
-    levelName: Exclude<LogLevel, 'silent'>,
-    a: object | string,
-    b?: string,
-  ): void => {
+  const log = (levelName: Exclude<LogLevel, 'silent'>, a: object | string, b?: string): void => {
     const levelNumber = LEVEL_NUMBERS[levelName];
     if (levelNumber < threshold) return;
 
@@ -111,8 +141,8 @@ export const createWorkersLogger = (
     const record = {
       level: levelNumber,
       time: now(),
-      ...baseBindings,
-      ...bindings,
+      ...normalizeBindings(baseBindings),
+      ...normalizeBindings(bindings),
       ...(msg !== undefined ? { msg } : {}),
     };
 
@@ -159,4 +189,3 @@ export const createSilentLogger = (): AppLogger => {
   };
   return self;
 };
-

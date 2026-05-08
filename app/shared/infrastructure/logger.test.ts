@@ -155,6 +155,75 @@ describe('createWorkersLogger', () => {
 
     expect((lastRecord(spy) as { env: string }).env).toBe('call');
   });
+
+  // Error は message / stack / name が non-enumerable なので素朴な
+  // JSON.stringify では `{}` に潰れる。pino の err serializer 互換で
+  // 展開していることを保証する（本番障害解析の生命線）。
+  it('Error オブジェクトを type / message / stack に展開する', () => {
+    const spy = captureLog();
+    const log = createWorkersLogger({ now: () => 1 });
+
+    const err = new TypeError('boom');
+    log.error({ err }, 'failed');
+
+    const rec = lastRecord(spy) as {
+      err: { type: string; message: string; stack: string };
+      msg: string;
+    };
+    expect(rec.err.type).toBe('TypeError');
+    expect(rec.err.message).toBe('boom');
+    expect(typeof rec.err.stack).toBe('string');
+    expect(rec.err.stack).toContain('TypeError');
+    expect(rec.msg).toBe('failed');
+  });
+
+  it('Error の cause を再帰的にシリアライズする', () => {
+    const spy = captureLog();
+    const log = createWorkersLogger({ now: () => 1 });
+
+    const root = new Error('root cause');
+    const wrapped = new Error('wrapper', { cause: root });
+    log.error({ err: wrapped });
+
+    const rec = lastRecord(spy) as {
+      err: { message: string; cause: { message: string; type: string } };
+    };
+    expect(rec.err.message).toBe('wrapper');
+    expect(rec.err.cause.message).toBe('root cause');
+    expect(rec.err.cause.type).toBe('Error');
+  });
+
+  it('Error 派生クラスのカスタムプロパティを保持する', () => {
+    const spy = captureLog();
+    const log = createWorkersLogger({ now: () => 1 });
+
+    class DomainError extends Error {
+      constructor(
+        message: string,
+        public readonly code: string,
+      ) {
+        super(message);
+      }
+    }
+    log.error({ err: new DomainError('not found', 'NOT_FOUND') });
+
+    const rec = lastRecord(spy) as {
+      err: { type: string; message: string; code: string };
+    };
+    expect(rec.err.type).toBe('DomainError');
+    expect(rec.err.message).toBe('not found');
+    expect(rec.err.code).toBe('NOT_FOUND');
+  });
+
+  it('非 Error の値はそのまま素通しする', () => {
+    const spy = captureLog();
+    const log = createWorkersLogger({ now: () => 1 });
+
+    log.info({ count: 42, ok: true, items: ['a', 'b'] });
+
+    const rec = lastRecord(spy);
+    expect(rec).toMatchObject({ count: 42, ok: true, items: ['a', 'b'] });
+  });
 });
 
 // ---------------------------------------------------------------------------
