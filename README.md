@@ -251,25 +251,26 @@ pnpm wrangler:tail:production
 
 ## 主要コマンド
 
-| コマンド                            | 用途                                                                                     |
-| ----------------------------------- | ---------------------------------------------------------------------------------------- |
-| `pnpm dev`                          | 開発サーバー起動（Node / tsx watch）                                                     |
-| `pnpm build`                        | 本番ビルド（tsup）                                                                       |
-| `pnpm start`                        | ビルド済みアプリの起動（Node）                                                           |
-| `pnpm test`                         | テスト実行                                                                               |
-| `pnpm test:coverage`                | カバレッジ計測（閾値 80%）                                                               |
-| `pnpm typecheck`                    | TypeScript 型チェック                                                                    |
-| `pnpm lint` / `pnpm format`         | ESLint / Prettier                                                                        |
-| `pnpm wrangler:dev`                 | **Workers ローカル実行**（V8 Isolate を再現）                                            |
-| `pnpm wrangler:deploy:staging`      | staging 環境（`cake-shop-api-staging`）へデプロイ                                        |
-| `pnpm wrangler:deploy:production`   | 本番環境（`cake-shop-api`）へデプロイ                                                    |
-| `pnpm wrangler:secret:staging X`    | staging 環境の secret 登録（`X` = `SUPABASE_URL` 等）                                    |
-| `pnpm wrangler:secret:production X` | 本番環境の secret 登録                                                                   |
-| `pnpm wrangler:tail:staging`        | staging Workers のログをリアルタイムで tail                                              |
-| `pnpm wrangler:tail:production`     | 本番 Workers のログをリアルタイムで tail                                                 |
-| `supabase start` / `stop`           | ローカル Supabase の起動 / 停止                                                          |
-| `supabase db push`                  | マイグレーション適用（リンク済みプロジェクトに対し）                                     |
-| `supabase db query --linked -f F`   | リンク済みプロジェクトに SQL ファイル F を実行（Management API 経由・DB パスワード不要） |
+| コマンド                               | 用途                                                                                                                         |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm dev`                             | 開発サーバー起動（Node / tsx watch）                                                                                         |
+| `pnpm build`                           | 本番ビルド（tsup）                                                                                                           |
+| `pnpm start`                           | ビルド済みアプリの起動（Node）                                                                                               |
+| `pnpm test`                            | テスト実行                                                                                                                   |
+| `pnpm test:coverage`                   | カバレッジ計測（閾値 80%）                                                                                                   |
+| `pnpm typecheck`                       | TypeScript 型チェック                                                                                                        |
+| `pnpm lint` / `pnpm format`            | ESLint / Prettier                                                                                                            |
+| `pnpm wrangler:dev`                    | **Workers ローカル実行**（V8 Isolate を再現）                                                                                |
+| `pnpm wrangler:deploy:staging`         | staging 環境（`cake-shop-api-staging`）へデプロイ                                                                            |
+| `pnpm wrangler:deploy:production`      | 本番環境（`cake-shop-api`）へデプロイ                                                                                        |
+| `pnpm wrangler:secret:staging X`       | staging 環境の secret 登録（`X` = `SUPABASE_URL` 等）                                                                        |
+| `pnpm wrangler:secret:production X`    | 本番環境の secret 登録                                                                                                       |
+| `pnpm wrangler:tail:staging`           | staging Workers のログをリアルタイムで tail                                                                                  |
+| `pnpm wrangler:tail:production`        | 本番 Workers のログをリアルタイムで tail                                                                                     |
+| `supabase start` / `stop`              | ローカル Supabase の起動 / 停止                                                                                              |
+| `supabase db push`                     | マイグレーション適用（リンク済みプロジェクトに対し）                                                                         |
+| `supabase db query --linked -f F`      | リンク済みプロジェクトに SQL ファイル F を実行（Management API 経由・DB パスワード不要）                                     |
+| `pwsh scripts/zero-downtime-watch.ps1` | デプロイ中に `/health` を 0.2s 間隔で叩き続け、無停止切替を観察する体験用ループ（bash 版: `scripts/zero-downtime-watch.sh`） |
 
 ---
 
@@ -299,6 +300,7 @@ pnpm wrangler:tail:production
 │   ├── migrations/                               # SQL マイグレーション
 │   └── seed.sql                                  # 初期データ
 ├── bruno/                                        # API テストコレクション
+├── scripts/                                      # 体験用スクリプト（zero-downtime-watch.ps1 / .sh）
 ├── CLAUDE.md                                     # AI エージェント向け指示書（規約・進捗）
 └── docker-compose.yml                            # アプリ用コンテナ
 ```
@@ -422,7 +424,7 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
   - [x] Step 7: 初回本番デプロイ完了（Cloudflare アカウント取得 + Supabase Cloud 連携 + secret 登録 + `wrangler deploy`。`https://cake-shop-api.<account>.workers.dev/health` / `/v1/cakes` 200 OK 確認済み）
   - [x] Step 8: 環境分離（`wrangler.toml` に `[env.staging]` / `[env.production]` を明示定義し `--env` 必須運用へ。staging 用に別 Supabase プロジェクト `Hono-Supabase-STG` を作成 + 4 マイグレーション適用 + 「伏せた合成テストデータ」`seed.staging.sql` 投入 + `cake-shop-api-staging` Worker に secret 登録 + デプロイ。`https://cake-shop-api-staging.<account>.workers.dev/health` / `/v1/cakes` 動作確認済み）
   - [ ] Step 9: **CI/CD + リリース管理を一周**（実運用のリリースフロー体験）
-    - (a) `wrangler deploy` 中に curl ループでゼロダウンタイム切替を観察
+    - (a) `wrangler deploy` 中に curl ループでゼロダウンタイム切替を観察（体験用スクリプト `scripts/zero-downtime-watch.ps1` / `.sh`）
     - (b) `wrangler versions upload`（流量 0）でバージョン作成 → preview URL で動作確認
     - (c) `wrangler versions deploy --percentage 10/50/100` で段階展開（カナリア）
     - (d) わざとバグを入れて 100% リリース → `wrangler rollback` で直前バージョンへ即時巻き戻し
