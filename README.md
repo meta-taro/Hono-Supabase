@@ -249,28 +249,74 @@ pnpm wrangler:tail:production
 
 ---
 
+## 体験用スクリプト（`scripts/`）
+
+学習用に「動かして体感する」ためのスクリプトを `scripts/` に置いています。アプリ本体からは独立していて、消してもサービスには影響しません。
+
+| スクリプト                                                            | 何が体験できるか                                                                                                                                                                 |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scripts/zero-downtime-watch.ps1`<br>`scripts/zero-downtime-watch.sh` | **ゼロダウンタイムデプロイ**（Phase 7 Step 9 (a)）。Worker の `/health` を 0.2 秒間隔で叩き続けながら別ターミナルでデプロイし、切替の瞬間に 1 リクエストも落ちないことを目視する |
+
+### ゼロダウンタイムデプロイを見る（2 ターミナル）
+
+**ターミナル A — 監視ループ**（`Ctrl+C` で停止）
+
+```powershell
+# PowerShell 7（pwsh）が無い環境（Windows 標準の PowerShell 5.1）はこちら
+powershell -ExecutionPolicy Bypass -File .\scripts\zero-downtime-watch.ps1
+# pwsh があるなら:  pwsh scripts/zero-downtime-watch.ps1
+# bash:            bash scripts/zero-downtime-watch.sh
+```
+
+**ターミナル B — デプロイ**（A を流したまま）
+
+```powershell
+pnpm exec wrangler deployments list --env staging   # いまの稼働バージョンを確認（任意）
+pnpm wrangler:deploy:staging                        # ← 新バージョンに即時 100% 切替
+pnpm exec wrangler deployments list --env staging   # 新しい deployment が一覧の先頭に出たか確認
+```
+
+**ターミナル A に流れる出力（例）**
+
+```
+watching https://cake-shop-api-staging.<account>.workers.dev/health  (interval 0.2s, Ctrl+C to stop)
+17:12:46.965  200  {"status":"ok"}
+17:12:47.734  200  {"status":"ok"}
+17:12:47.885  200  {"status":"ok"}
+17:12:48.022  200  {"status":"ok"}
+...（ターミナル B でデプロイ）...
+17:12:49.310  200  {"status":"ok"}
+17:12:49.455  200  {"status":"ok"}
+```
+
+→ デプロイ前後を通して `200` が途切れず、`>>> ERROR` 行が 1 つも混ざらない ＝ 旧 Isolate → 新 Isolate の切替が無停止で行われた、ということ。`>>> ERROR` が出る場合はデプロイ自体の失敗（secret 不整合で 1101 等）が疑わしいので、その行のメッセージを確認する。
+
+> URL や間隔は引数で変えられます: `... zero-downtime-watch.ps1 -Url https://<本番URL>/health -IntervalSeconds 0.5`
+
+---
+
 ## 主要コマンド
 
-| コマンド                               | 用途                                                                                                                         |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm dev`                             | 開発サーバー起動（Node / tsx watch）                                                                                         |
-| `pnpm build`                           | 本番ビルド（tsup）                                                                                                           |
-| `pnpm start`                           | ビルド済みアプリの起動（Node）                                                                                               |
-| `pnpm test`                            | テスト実行                                                                                                                   |
-| `pnpm test:coverage`                   | カバレッジ計測（閾値 80%）                                                                                                   |
-| `pnpm typecheck`                       | TypeScript 型チェック                                                                                                        |
-| `pnpm lint` / `pnpm format`            | ESLint / Prettier                                                                                                            |
-| `pnpm wrangler:dev`                    | **Workers ローカル実行**（V8 Isolate を再現）                                                                                |
-| `pnpm wrangler:deploy:staging`         | staging 環境（`cake-shop-api-staging`）へデプロイ                                                                            |
-| `pnpm wrangler:deploy:production`      | 本番環境（`cake-shop-api`）へデプロイ                                                                                        |
-| `pnpm wrangler:secret:staging X`       | staging 環境の secret 登録（`X` = `SUPABASE_URL` 等）                                                                        |
-| `pnpm wrangler:secret:production X`    | 本番環境の secret 登録                                                                                                       |
-| `pnpm wrangler:tail:staging`           | staging Workers のログをリアルタイムで tail                                                                                  |
-| `pnpm wrangler:tail:production`        | 本番 Workers のログをリアルタイムで tail                                                                                     |
-| `supabase start` / `stop`              | ローカル Supabase の起動 / 停止                                                                                              |
-| `supabase db push`                     | マイグレーション適用（リンク済みプロジェクトに対し）                                                                         |
-| `supabase db query --linked -f F`      | リンク済みプロジェクトに SQL ファイル F を実行（Management API 経由・DB パスワード不要）                                     |
-| `pwsh scripts/zero-downtime-watch.ps1` | デプロイ中に `/health` を 0.2s 間隔で叩き続け、無停止切替を観察する体験用ループ（bash 版: `scripts/zero-downtime-watch.sh`） |
+| コマンド                                           | 用途                                                                                                                                                            |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm dev`                                         | 開発サーバー起動（Node / tsx watch）                                                                                                                            |
+| `pnpm build`                                       | 本番ビルド（tsup）                                                                                                                                              |
+| `pnpm start`                                       | ビルド済みアプリの起動（Node）                                                                                                                                  |
+| `pnpm test`                                        | テスト実行                                                                                                                                                      |
+| `pnpm test:coverage`                               | カバレッジ計測（閾値 80%）                                                                                                                                      |
+| `pnpm typecheck`                                   | TypeScript 型チェック                                                                                                                                           |
+| `pnpm lint` / `pnpm format`                        | ESLint / Prettier                                                                                                                                               |
+| `pnpm wrangler:dev`                                | **Workers ローカル実行**（V8 Isolate を再現）                                                                                                                   |
+| `pnpm wrangler:deploy:staging`                     | staging 環境（`cake-shop-api-staging`）へデプロイ                                                                                                               |
+| `pnpm wrangler:deploy:production`                  | 本番環境（`cake-shop-api`）へデプロイ                                                                                                                           |
+| `pnpm wrangler:secret:staging X`                   | staging 環境の secret 登録（`X` = `SUPABASE_URL` 等）                                                                                                           |
+| `pnpm wrangler:secret:production X`                | 本番環境の secret 登録                                                                                                                                          |
+| `pnpm wrangler:tail:staging`                       | staging Workers のログをリアルタイムで tail                                                                                                                     |
+| `pnpm wrangler:tail:production`                    | 本番 Workers のログをリアルタイムで tail                                                                                                                        |
+| `supabase start` / `stop`                          | ローカル Supabase の起動 / 停止                                                                                                                                 |
+| `supabase db push`                                 | マイグレーション適用（リンク済みプロジェクトに対し）                                                                                                            |
+| `supabase db query --linked -f F`                  | リンク済みプロジェクトに SQL ファイル F を実行（Management API 経由・DB パスワード不要）                                                                        |
+| `powershell -File scripts/zero-downtime-watch.ps1` | デプロイ中に `/health` を叩き続け無停止切替を観察する体験用ループ（→ [体験用スクリプト](#体験用スクリプトscripts) / bash 版: `scripts/zero-downtime-watch.sh`） |
 
 ---
 

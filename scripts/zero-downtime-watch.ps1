@@ -11,7 +11,9 @@
 #   使い方（ターミナルを 2 枚開く）:
 #     ── ターミナル A（このスクリプト = 監視ループ）──────────────────────
 #       pnpm exec wrangler deployments list --env staging   # いまの稼働バージョンを確認（任意）
-#       pwsh scripts/zero-downtime-watch.ps1                 # 監視開始（Ctrl+C で停止）
+#       # PowerShell 7（pwsh）が無い環境（Windows 標準の 5.1）:
+#       powershell -ExecutionPolicy Bypass -File .\scripts\zero-downtime-watch.ps1
+#       # pwsh があるなら:  pwsh scripts/zero-downtime-watch.ps1   （いずれも Ctrl+C で停止）
 #
 #     ── ターミナル B（デプロイを打つ側）────────────────────────────────
 #       pnpm wrangler:deploy:staging                        # ← これを実行（新バージョンに即時 100% 切替）
@@ -23,7 +25,7 @@
 #   オプション:
 #     -Url       叩く URL（既定: staging の /health）
 #     -IntervalSeconds  ポーリング間隔（既定: 0.2）
-#   例: pwsh scripts/zero-downtime-watch.ps1 -Url https://cake-shop-api.rzrhacympbmdkagoybba.workers.dev/health
+#   例: powershell -ExecutionPolicy Bypass -File .\scripts\zero-downtime-watch.ps1 -Url https://cake-shop-api.rzrhacympbmdkagoybba.workers.dev/health
 # =============================================================================
 [CmdletBinding()]
 param(
