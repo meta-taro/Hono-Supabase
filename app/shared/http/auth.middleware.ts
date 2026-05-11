@@ -107,9 +107,16 @@ export const createOptionalAuthMiddleware = (
   });
 
   return async (c, next) => {
-    // c.executionCtx は Workers ランタイム時のみ存在する（ExecCtxLike 互換）。
-    // Node ランタイムでは undefined のまま渡る（provider が ctx を無視する）。
-    currentFetcher = jwksFetcherProvider(c.executionCtx as ExecCtxLike | undefined);
+    // c.executionCtx は Workers ランタイム時のみ提供される。
+    // Hono は getter で実装しており Node 上では throw するため try/catch で吸収する
+    // （単純な truthy チェックでは到達前に例外が出る）。
+    let execCtx: ExecCtxLike | undefined;
+    try {
+      execCtx = c.executionCtx as ExecCtxLike | undefined;
+    } catch {
+      execCtx = undefined;
+    }
+    currentFetcher = jwksFetcherProvider(execCtx);
 
     const auth = c.req.header('Authorization');
     if (auth?.startsWith(BEARER_PREFIX)) {
