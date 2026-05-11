@@ -5,13 +5,22 @@
 # Node ローカル開発（pnpm dev）には一切影響しない — そちらは tsx watch +
 # app/index.node.ts のままで動く。Phase 7 の二段運用ポリシー。
 #
-# wrangler の動かし方:
-#   pnpm wrangler:dev      → ローカルで V8 isolate 上で起動（.dev.vars を読む）
-#   pnpm wrangler:deploy   → 本番デプロイ（Cloudflare に登録した secret を使う）
+# --- 環境運用ポリシー（Step 8）: --env 必須運用 ---
+#   wrangler は `--env <name>` を付けると、トップレベルの [vars] / [observability] を
+#   無視し、[env.<name>.*] だけを読む（main / compatibility_* などビルド設定は継承）。
+#   「素の wrangler deploy」と「wrangler deploy --env production」で挙動が変わる事故を
+#   防ぐため、本プロジェクトは必ず --env を付ける運用にする:
+#     pnpm wrangler:dev                → ローカル V8 isolate（.dev.vars を読む）
+#     pnpm wrangler:deploy:staging     → staging（name=cake-shop-api-staging）へ
+#     pnpm wrangler:deploy:production   → production（name=cake-shop-api）へ
+#   トップレベルの [vars] / [observability] は「--env 付け忘れ時のフォールバック
+#   （= production 相当）」という保険の位置づけ。
 #
 # secrets と vars の使い分け:
 #   - [vars]              … 機密でない設定（NODE_ENV, LOG_LEVEL 等）。コミット OK
 #   - wrangler secret put … 機密値（Supabase キー等）。Cloudflare 側に保管、ローカルは .dev.vars
+#   secret は Worker 名ごとに別ストア。staging へは `--env staging` を付けて登録する:
+#     pnpm wrangler:secret:staging SUPABASE_URL    （対話で値を入力）
 # =============================================================================
 
 name = "cake-shop-api"
@@ -22,25 +31,27 @@ compatibility_date = "2026-05-07"
 # nodejs_compat はあえて入れない:
 #   本プロジェクトは jose / @supabase/supabase-js とも Web 標準 fetch ベースなので
 #   Node ポリフィルは不要。これがないことが Workers 互換性の証拠でもある。
+# （compatibility_date / compatibility_flags / main は [env.*] にも継承される）
 compatibility_flags = []
 
-# 観測性: Workers の logs が dashboard 上で 24h 残る。本番ログは外部 (Logpush →
-# Datadog 等) に流す前段として有効化しておく。
-[observability]
-enabled = true
-
 # -----------------------------------------------------------------------------
-# 機密でない設定値。ここに書いた値は wrangler deploy 時に同梱される。
-# 本物の secrets（Supabase キー）は wrangler secret put で別経路で登録する。
+# トップレベルの [vars] / [observability]
+#   = `--env` を付けずに `wrangler deploy` した場合にだけ効く（= production 相当）。
+#   本プロジェクトは --env 必須運用なので、通常はこちらではなく [env.*] が使われる。
 # -----------------------------------------------------------------------------
 [vars]
 NODE_ENV = "production"
 LOG_LEVEL = "info"
 
+# 観測性: Workers の logs が dashboard 上で 24h 残る。Logpush → Datadog 等へ流す前段。
+[observability]
+enabled = true
+
 # -----------------------------------------------------------------------------
-# 環境別オーバーライド（Step 8 で本格運用予定）
-#   pnpm wrangler deploy --env staging  でこのブロックが適用される
-# 今は雛形だけ置いておく。
+# staging 環境
+#   pnpm wrangler:deploy:staging で name=cake-shop-api-staging に展開。
+#   本番に限りなく近い設定で動かす前段環境。LOG_LEVEL だけ debug にして観察しやすく。
+#   secret（Supabase キー ×3）は別ストアなので `--env staging` を付けて登録すること。
 # -----------------------------------------------------------------------------
 [env.staging]
 name = "cake-shop-api-staging"
@@ -49,9 +60,21 @@ name = "cake-shop-api-staging"
 NODE_ENV = "staging"
 LOG_LEVEL = "debug"
 
+[env.staging.observability]
+enabled = true
+
+# -----------------------------------------------------------------------------
+# production 環境
+#   pnpm wrangler:deploy:production で name=cake-shop-api（Step 7 でデプロイ済の本番）へ。
+#   Step 7 で `wrangler secret put`（--env なし）で登録した secret は、Worker 名が同じ
+#   "cake-shop-api" なので同じ Worker に紐づき、そのまま参照される。
+# -----------------------------------------------------------------------------
 [env.production]
 name = "cake-shop-api"
 
 [env.production.vars]
 NODE_ENV = "production"
 LOG_LEVEL = "info"
+
+[env.production.observability]
+enabled = true

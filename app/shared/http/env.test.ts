@@ -36,8 +36,20 @@ describe('loadEnv', () => {
       expect(env.NODE_ENV).toBe('development');
     });
 
+    it('staging を受理する（Cloudflare Workers の [env.staging] 用）', () => {
+      const env = loadEnv({ ...baseEnv, NODE_ENV: 'staging' });
+      expect(env.NODE_ENV).toBe('staging');
+    });
+
+    it('production / test も受理する', () => {
+      expect(loadEnv({ ...baseEnv, NODE_ENV: 'production' }).NODE_ENV).toBe(
+        'production',
+      );
+      expect(loadEnv({ ...baseEnv, NODE_ENV: 'test' }).NODE_ENV).toBe('test');
+    });
+
     it('想定外の値なら throw する', () => {
-      expect(() => loadEnv({ ...baseEnv, NODE_ENV: 'staging' })).toThrow();
+      expect(() => loadEnv({ ...baseEnv, NODE_ENV: 'qa' })).toThrow();
     });
   });
 

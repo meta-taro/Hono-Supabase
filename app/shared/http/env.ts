@@ -6,7 +6,12 @@ import { z } from 'zod';
 // アプリが本質的に機能しないため（部分起動を許すと事故の温床）。
 const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3010),
-  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  // staging は Cloudflare Workers の [env.staging] で使う値。
+  // 「本番に限りなく近い設定で動かす」前段環境という位置づけで、ランタイムの挙動
+  // （pino-pretty の有無等）は production と同じ扱いにする（node-pino-logger.ts 参照）。
+  NODE_ENV: z
+    .enum(['development', 'staging', 'production', 'test'])
+    .default('development'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 
   // Supabase 接続情報（ローカル: supabase status の出力を .env に転記）

@@ -23,6 +23,12 @@ describe('createNodePinoLogger', () => {
     expect(log.level).toBe('info');
   });
 
+  it('NODE_ENV=staging でも JSON 経路（pretty 非適用）で生成できる', () => {
+    // staging は本番相当の挙動 → pretty は適用しない（production と同じ扱い）。
+    const log = createNodePinoLogger({ NODE_ENV: 'staging' });
+    expect(log.level).toBe('info');
+  });
+
   it('NODE_ENV=development では pretty transport 経路で生成できる', () => {
     // pino-pretty は worker 起動を伴うが、生成自体は同期で完了する。
     const log = createNodePinoLogger({ NODE_ENV: 'development' });

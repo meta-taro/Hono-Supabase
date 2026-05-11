@@ -21,9 +21,12 @@
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
     "wrangler:dev": "wrangler dev",
-    "wrangler:deploy": "wrangler deploy",
     "wrangler:deploy:staging": "wrangler deploy --env staging",
-    "wrangler:tail": "wrangler tail"
+    "wrangler:deploy:production": "wrangler deploy --env production",
+    "wrangler:secret:staging": "wrangler secret put --env staging",
+    "wrangler:secret:production": "wrangler secret put --env production",
+    "wrangler:tail:staging": "wrangler tail --env staging",
+    "wrangler:tail:production": "wrangler tail --env production"
   },
   "dependencies": {
     "@hono/zod-openapi": "^0.18.0",
