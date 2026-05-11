@@ -356,7 +356,12 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
   - [x] Step 1〜6: エントリ二系統化 / `wrangler.toml` / `.dev.vars` / Workers 互換ロガー / JWKS DI / Workers ローカル疎通
   - [x] Step 7: 初回本番デプロイ完了（Cloudflare アカウント取得 + Supabase Cloud 連携 + secret 登録 + `wrangler deploy`。`https://cake-shop-api.<account>.workers.dev/health` / `/v1/cakes` 200 OK 確認済み）
   - [ ] Step 8: 環境分離（`[env.staging]` / `[env.production]` + 各 env 用 secret）
-  - [ ] Step 9: GitHub Actions（`cloudflare/wrangler-action@v3`）で自動デプロイ + Versioned Deployments
+  - [ ] Step 9: **CI/CD + リリース管理を一周**（実運用のリリースフロー体験）
+    - (a) `wrangler deploy` 中に curl ループでゼロダウンタイム切替を観察
+    - (b) `wrangler versions upload`（流量 0）でバージョン作成 → preview URL で動作確認
+    - (c) `wrangler versions deploy --percentage 10/50/100` で段階展開（カナリア）
+    - (d) わざとバグを入れて 100% リリース → `wrangler rollback` で直前バージョンへ即時巻き戻し
+    - (e) (a)〜(d) を GitHub Actions（`cloudflare/wrangler-action@v3`）に組み込み、main push → 自動 versions upload → 手動 approval → 段階展開のパイプラインに昇華
 
 ---
 
