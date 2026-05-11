@@ -201,7 +201,9 @@ pnpm dev
 ```bash
 # ヘルスチェック
 curl http://localhost:3010/health
-# => {"status":"ok"}
+# => {"status":"ok","version":"local"}
+#    version は Node ローカルでは "local"、Cloudflare Workers では version_metadata
+#    バインディング由来のデプロイ済みバージョン ID（段階展開中にどの版が応答したか観察できる）
 
 # Supabase Studio（DB 管理画面）
 open http://localhost:54323

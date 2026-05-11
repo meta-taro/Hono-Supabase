@@ -39,13 +39,20 @@ export interface AppOptions {
   // onError ハンドラに渡す logger。省略時は silent（テストで明示注入したい場合のみ
   // 指定を推奨）。Phase 7 で error-handler を factory 化したことに伴う追加引数。
   logger?: AppLogger;
+  // /health が晒すデプロイ識別子。Workers では version_metadata バインディング由来の
+  // バージョン ID（index.workers.ts が cold start 時に bindings から読んで渡す）。
+  // Node / テストでは 'local' 等。これにより段階展開（カナリア）中にどのバージョンが
+  // 応答したかをクライアント側（curl ループ等）から観察できる。
+  appVersion?: string;
 }
 
 export const createApp = (options?: AppOptions): OpenAPIHono<AppEnv> => {
   const app = createOpenAPIHono<AppEnv>();
 
+  const appVersion = options?.appVersion ?? 'local';
+
   // /health は非バージョン・認証不要（CLAUDE.md API 設計）。
-  app.get('/health', (c) => c.json({ status: 'ok' }));
+  app.get('/health', (c) => c.json({ status: 'ok', version: appVersion }));
 
   if (options) {
     // /v1/* 全体に通すグローバルミドルウェア。

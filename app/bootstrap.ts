@@ -31,10 +31,13 @@ export interface BootstrapDeps {
   env: Env;
   logger: AppLogger;
   jwksFetcherProvider: JwksFetcherProvider;
+  // /health に晒すデプロイ識別子。Workers = version_metadata のバージョン ID、
+  // Node = 'local'。省略時は createApp 側で 'local' になる。
+  appVersion?: string;
 }
 
 export const bootstrap = (deps: BootstrapDeps): OpenAPIHono<AppEnv> => {
-  const { env, logger, jwksFetcherProvider } = deps;
+  const { env, logger, jwksFetcherProvider, appVersion } = deps;
 
   return createApp({
     rootMiddlewares: [
@@ -47,5 +50,6 @@ export const bootstrap = (deps: BootstrapDeps): OpenAPIHono<AppEnv> => {
       authGuard: [requireAuth()],
     },
     logger,
+    appVersion,
   });
 };

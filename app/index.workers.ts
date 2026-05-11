@@ -38,6 +38,11 @@ interface WorkersBindings {
   SUPABASE_SERVICE_ROLE_KEY: string;
   LOG_LEVEL?: string;
   NODE_ENV?: string;
+  // wrangler.toml の [version_metadata] バインディング（Cloudflare が自動で埋める）。
+  // この isolate が動かしているデプロイ済みバージョンの ID / tag / アップロード時刻。
+  // ローカル wrangler dev では placeholder 値、未宣言環境では undefined になりうるので
+  // 参照側は ?. + フォールバックで扱う。
+  CF_VERSION_METADATA?: WorkerVersionMetadata;
 }
 
 type Handler = (request: Request, ctx: ExecutionContext) => Promise<Response>;
@@ -45,9 +50,12 @@ type Handler = (request: Request, ctx: ExecutionContext) => Promise<Response>;
 let cachedHandler: Handler | null = null;
 
 const buildHandler = (bindings: WorkersBindings): Handler => {
+  // CF_VERSION_METADATA はオブジェクト型のバインディングなので、文字列だけを期待する
+  // loadEnv（RawEnv = string の Record）には渡さない。残りのキーだけスプレッドする。
+  const { CF_VERSION_METADATA, ...envBindings } = bindings;
   // WorkersBindings は固定キーの interface のため RawEnv（任意キー Record）に
   // 直接キャストできない。スプレッドで「普通の Record」を作って渡す。
-  const env = loadEnv({ ...bindings } as RawEnv);
+  const env = loadEnv({ ...envBindings } as RawEnv);
   const logger = createWorkersLogger({
     // env.LOG_LEVEL は Zod で 'debug' | 'info' | 'warn' | 'error' に絞られている。
     level: env.LOG_LEVEL,
@@ -65,7 +73,11 @@ const buildHandler = (bindings: WorkersBindings): Handler => {
     });
   };
 
-  const app = bootstrap({ env, logger, jwksFetcherProvider });
+  // version_metadata はこの isolate のデプロイ済みバージョンに固定なので cold start 時に
+  // 1 回読めば十分。/health に晒して段階展開（カナリア）中の応答元バージョンを観察可能にする。
+  const appVersion = CF_VERSION_METADATA?.id ?? 'unknown';
+
+  const app = bootstrap({ env, logger, jwksFetcherProvider, appVersion });
   return async (request, ctx) => app.fetch(request, bindings, ctx);
 };
 

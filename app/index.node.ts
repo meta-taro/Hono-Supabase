@@ -28,6 +28,9 @@ const app = bootstrap({
   env,
   logger,
   jwksFetcherProvider: () => nodeFetcher,
+  // Node ローカルにはデプロイ済みバージョンの概念がないので固定値。
+  // 本番（Workers）は version_metadata 由来のバージョン ID が入る。
+  appVersion: 'local',
 });
 
 serve({ fetch: app.fetch, port: env.PORT }, (info) => {

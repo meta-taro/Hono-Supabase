@@ -47,6 +47,14 @@ LOG_LEVEL = "info"
 [observability]
 enabled = true
 
+# version_metadata バインディング: この isolate が動かしているデプロイ済みバージョンの
+#   { id, tag, timestamp } を env.CF_VERSION_METADATA から取得できる。
+#   /health に id を晒して、段階展開（カナリア）中にどのバージョンが応答したかを観察する用途。
+#   ★バインディングは [vars] と違い --env では継承されない★ → 下の [env.*] にも同じ宣言が要る。
+#   この top-level 宣言は `wrangler dev`（--env なし）で効く。
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
 # -----------------------------------------------------------------------------
 # staging 環境
 #   pnpm wrangler:deploy:staging で name=cake-shop-api-staging に展開。
@@ -63,6 +71,10 @@ LOG_LEVEL = "debug"
 [env.staging.observability]
 enabled = true
 
+# バインディングは --env で継承されないので、staging にも明示的に宣言する。
+[env.staging.version_metadata]
+binding = "CF_VERSION_METADATA"
+
 # -----------------------------------------------------------------------------
 # production 環境
 #   pnpm wrangler:deploy:production で name=cake-shop-api（Step 7 でデプロイ済の本番）へ。
@@ -78,3 +90,7 @@ LOG_LEVEL = "info"
 
 [env.production.observability]
 enabled = true
+
+# バインディングは --env で継承されないので、production にも明示的に宣言する。
+[env.production.version_metadata]
+binding = "CF_VERSION_METADATA"
