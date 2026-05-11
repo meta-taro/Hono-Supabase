@@ -545,7 +545,12 @@ console.log('order created');
   - [x] **Step 6**: `wrangler dev` で `GET /health` / `GET /v1/cakes` 200 OK 確認（Hono + Supabase REST が Workers V8 Isolate 上で動作）。33 テスト / 250 テスト全緑、typecheck OK
   - [x] **Step 7**: Cloudflare アカウント取得 + Supabase Cloud プロジェクト作成 + `supabase db push`（4 マイグレーション適用）+ `wrangler secret put` ×3（URL / anon / service_role）+ `wrangler deploy` で初回本番デプロイ完了。`https://cake-shop-api.rzrhacympbmdkagoybba.workers.dev/health` / `/v1/cakes` 200 OK 確認（Workers V8 Isolate → Supabase Cloud REST の本番疎通成功）
   - [ ] **Step 8**: 環境分離（`wrangler.toml` の `[env.staging]` / `[env.production]` を埋める + 各 env への secret 登録）
-  - [ ] **Step 9**: GitHub Actions（`cloudflare/wrangler-action@v3`）で自動デプロイ + Versioned Deployments（カナリア 10% → 100%）の体験
+  - [ ] **Step 9**: **CI/CD + リリース管理を一周**（実運用のリリースフロー体験）
+    - (a) 素の `wrangler deploy` 中に curl ループで無停止切替を観察（**ゼロダウンタイムのベースライン体験**）
+    - (b) `wrangler versions upload` でバージョン作成（**流量 0**）→ 払い出された preview URL で動作確認
+    - (c) `wrangler versions deploy --percentage 10` でカナリア展開 → 50% → 100% の段階展開を curl ループで観察
+    - (d) わざとバグを入れて 100% リリース → `wrangler rollback` で**直前バージョンへ即時巻き戻し**
+    - (e) (a)〜(d) を GitHub Actions（`cloudflare/wrangler-action@v3`）に組み込み、**main push → 自動 versions upload → 手動 approval → 段階展開** の本番運用パイプラインに昇華
 
 ---
 
