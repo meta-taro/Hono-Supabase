@@ -23,7 +23,9 @@ export type LogLevel = 'fatal' | 'error' | 'warn' | 'info' | 'debug' | 'trace' |
 type LogBindings = object;
 
 export interface AppLogger {
-  level: LogLevel | string;
+  // pino はカスタムレベル名（任意の文字列）を許すため string で受ける。
+  // 既知のレベルは LogLevel を参照（型としては string に吸収される）。
+  level: string;
 
   fatal(message: string): void;
   fatal(bindings: LogBindings, message?: string): void;
@@ -134,9 +136,12 @@ export const createWorkersLogger = (options: WorkersLoggerOptions = {}): AppLogg
     //   logger.info('msg')                → a=string, b=undefined
     //   logger.info({ foo: 1 }, 'msg')    → a=object, b=string
     //   logger.info({ foo: 1 })           → a=object, b=undefined
+    // 型上 a は object | string なので a !== null は「常に真」扱いされるが、
+    // typeof null === 'object' のため JS 実行時の null 混入を弾く実ガードとして残す。
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     const isObjectFirst = typeof a === 'object' && a !== null;
     const bindings = isObjectFirst ? a : {};
-    const msg = isObjectFirst ? b : (a as string);
+    const msg = isObjectFirst ? b : a;
 
     const record = {
       level: levelNumber,
@@ -152,12 +157,24 @@ export const createWorkersLogger = (options: WorkersLoggerOptions = {}): AppLogg
 
   const self: AppLogger = {
     level,
-    fatal: (a: object | string, b?: string) => log('fatal', a, b),
-    error: (a: object | string, b?: string) => log('error', a, b),
-    warn: (a: object | string, b?: string) => log('warn', a, b),
-    info: (a: object | string, b?: string) => log('info', a, b),
-    debug: (a: object | string, b?: string) => log('debug', a, b),
-    trace: (a: object | string, b?: string) => log('trace', a, b),
+    fatal: (a: object | string, b?: string) => {
+      log('fatal', a, b);
+    },
+    error: (a: object | string, b?: string) => {
+      log('error', a, b);
+    },
+    warn: (a: object | string, b?: string) => {
+      log('warn', a, b);
+    },
+    info: (a: object | string, b?: string) => {
+      log('info', a, b);
+    },
+    debug: (a: object | string, b?: string) => {
+      log('debug', a, b);
+    },
+    trace: (a: object | string, b?: string) => {
+      log('trace', a, b);
+    },
     child: (childBindings: object) =>
       createWorkersLogger({
         level,

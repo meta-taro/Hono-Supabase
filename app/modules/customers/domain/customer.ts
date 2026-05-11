@@ -9,8 +9,7 @@ const NAME_MAX_LENGTH = 100;
 // ここでも同じ正規表現で受け入れる。
 // CustomerId とは別概念（auth は外部 SoT、customers.id は業務 SoT）なので
 // 同名にはせず、Customer 内部のフィールド型として string を素朴に保持する。
-const UUID_V4_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const assertAuthUserId = (value: string): void => {
   if (!UUID_V4_REGEX.test(value)) {
@@ -41,14 +40,9 @@ export class Customer {
       throw new InvalidCustomerError('顧客名は必須です');
     }
     if (trimmed.length > NAME_MAX_LENGTH) {
-      throw new InvalidCustomerError(`顧客名は ${NAME_MAX_LENGTH} 文字以内です`);
+      throw new InvalidCustomerError(`顧客名は ${String(NAME_MAX_LENGTH)} 文字以内です`);
     }
-    return new Customer(
-      CustomerId.generate(),
-      input.authUserId,
-      trimmed,
-      Email.of(input.email),
-    );
+    return new Customer(CustomerId.generate(), input.authUserId, trimmed, Email.of(input.email));
   }
 
   // 永続化層からの復元: DB の値を信頼するが、VO 経由は必ず通すため

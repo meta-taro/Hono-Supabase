@@ -15,14 +15,10 @@ export class OrderQuantity {
       throw new InvalidOrderItemError('数量は整数である必要があります');
     }
     if (value < MIN_QUANTITY) {
-      throw new InvalidOrderItemError(
-        `数量は ${MIN_QUANTITY} 以上である必要があります`,
-      );
+      throw new InvalidOrderItemError(`数量は ${String(MIN_QUANTITY)} 以上である必要があります`);
     }
     if (value > MAX_QUANTITY) {
-      throw new InvalidOrderItemError(
-        `数量は ${MAX_QUANTITY} 以下である必要があります`,
-      );
+      throw new InvalidOrderItemError(`数量は ${String(MAX_QUANTITY)} 以下である必要があります`);
     }
     return new OrderQuantity(value);
   }

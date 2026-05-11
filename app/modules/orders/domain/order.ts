@@ -3,10 +3,7 @@ import { CustomerId } from './customer-id.vo';
 import { OrderItem } from './order-item';
 import { CakeId } from './cake-id.vo';
 import { OrderQuantity } from './order-quantity.vo';
-import {
-  type OrderStatus,
-  isOrderStatus,
-} from './order-status';
+import { type OrderStatus, isOrderStatus } from './order-status';
 import { InvalidOrderError } from './order.errors';
 
 const MIN_ITEMS = 1;
@@ -32,18 +29,9 @@ export class Order {
   // 新規作成: 業務ルール（明細数 / 重複 cakeId）を適用する。
   // 主に in-memory リポジトリ + テスト経路で使う。
   // 本番経路は repository.place() → place_order() → reconstruct() を通る。
-  static create(input: {
-    customerId: CustomerId;
-    items: OrderItem[];
-  }): Order {
+  static create(input: { customerId: CustomerId; items: OrderItem[] }): Order {
     Order.assertItemsShape(input.items);
-    return new Order(
-      OrderId.generate(),
-      input.customerId,
-      [...input.items],
-      'PLACED',
-      new Date(),
-    );
+    return new Order(OrderId.generate(), input.customerId, [...input.items], 'PLACED', new Date());
   }
 
   // 永続化層からの復元: DB の値を信頼するが、VO 経由は必ず通すため
@@ -87,15 +75,13 @@ export class Order {
     }
     if (items.length > MAX_ITEMS) {
       throw new InvalidOrderError(
-        `1 注文の明細数は ${MAX_ITEMS} 件以下である必要があります`,
+        `1 注文の明細数は ${String(MAX_ITEMS)} 件以下である必要があります`,
       );
     }
     const seen = new Set<string>();
     for (const item of items) {
       if (seen.has(item.cakeId.value)) {
-        throw new InvalidOrderError(
-          '同一商品は 1 行にまとめて指定してください',
-        );
+        throw new InvalidOrderError('同一商品は 1 行にまとめて指定してください');
       }
       seen.add(item.cakeId.value);
     }

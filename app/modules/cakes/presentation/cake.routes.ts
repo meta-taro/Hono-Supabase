@@ -77,7 +77,7 @@ export interface CakeRouterDeps {
 }
 
 export const createCakeRouter = (deps: CakeRouterDeps): OpenAPIHono<AppEnv> => {
-  const router = createOpenAPIHono<AppEnv>();
+  const router = createOpenAPIHono();
 
   router.openapi(listCakesRoute, async (c) => {
     const controller = c.get('modules').cakes;

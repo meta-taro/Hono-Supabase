@@ -40,13 +40,13 @@ export class CustomerSupabaseRepository implements CustomerRepository {
       .from(TABLE_NAME)
       .select(SELECT_COLUMNS)
       .order('name', { ascending: true })
-      .returns<CustomerRow[]>();
+      .overrideTypes<CustomerRow[], { merge: false }>();
 
     if (error) {
       throw new Error(`Customer 一覧の取得に失敗しました: ${error.message}`);
     }
 
-    return (data ?? []).map(rowToCustomer);
+    return data.map(rowToCustomer);
   }
 
   async findByEmail(email: Email): Promise<Customer | null> {
@@ -74,9 +74,7 @@ export class CustomerSupabaseRepository implements CustomerRepository {
       .maybeSingle<CustomerRow>();
 
     if (error && error.code !== PGRST_NO_ROWS) {
-      throw new Error(
-        `Customer の検索（auth_user_id）に失敗しました: ${error.message}`,
-      );
+      throw new Error(`Customer の検索（auth_user_id）に失敗しました: ${error.message}`);
     }
     if (data === null) {
       return null;

@@ -76,10 +76,8 @@ export interface CustomerRouterDeps {
   adminGuard: MiddlewareHandler<AppEnv>[];
 }
 
-export const createCustomerRouter = (
-  deps: CustomerRouterDeps,
-): OpenAPIHono<AppEnv> => {
-  const router = createOpenAPIHono<AppEnv>();
+export const createCustomerRouter = (deps: CustomerRouterDeps): OpenAPIHono<AppEnv> => {
+  const router = createOpenAPIHono();
 
   // Hono の `router.use(path, mw)` は「呼んだ時点以降に登録される handler」だけに mw を適用する。
   // signUp（公開・認証不要）を **adminGuard より先に** 登録することで、

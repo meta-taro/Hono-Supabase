@@ -29,7 +29,7 @@ export class CakeSupabaseRepository implements CakeRepository {
       .from(TABLE_NAME)
       .select('id, name, price, stock')
       .order('name', { ascending: true })
-      .returns<CakeRow[]>();
+      .overrideTypes<CakeRow[], { merge: false }>();
 
     if (error) {
       throw new Error(`Cake 一覧の取得に失敗しました: ${error.message}`);
@@ -37,7 +37,7 @@ export class CakeSupabaseRepository implements CakeRepository {
 
     // 行 → Entity 変換は必ず Cake.reconstruct() 経由で行う。
     // これにより UUID 形式チェック等の domain 不変条件が DB 由来データにも適用される。
-    return (data ?? []).map((row) => Cake.reconstruct(row));
+    return data.map((row) => Cake.reconstruct(row));
   }
 
   async save(cake: Cake): Promise<void> {

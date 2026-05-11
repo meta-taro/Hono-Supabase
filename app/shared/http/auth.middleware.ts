@@ -1,10 +1,5 @@
 import type { MiddlewareHandler } from 'hono';
-import {
-  createRemoteJWKSet,
-  customFetch,
-  jwtVerify,
-  type JWTPayload,
-} from 'jose';
+import { createRemoteJWKSet, customFetch, jwtVerify, type JWTPayload } from 'jose';
 import { createClient } from '@supabase/supabase-js';
 import type { Env } from '@/shared/http/env';
 import type {
@@ -13,12 +8,7 @@ import type {
   ExecCtxLike,
 } from '@/shared/infrastructure/jwks-fetcher';
 import { UnauthorizedError, ForbiddenError } from '@/shared/domain/errors';
-import type {
-  AppEnv,
-  AppVariables,
-  AppRole,
-  AuthUser,
-} from '@/shared/http/request-context';
+import type { AppEnv, AppVariables, AppRole, AuthUser } from '@/shared/http/request-context';
 
 // ---------------------------------------------------------------------------
 // Supabase Auth の JWT を JWKS（公開鍵）で検証するミドルウェア群。
@@ -112,7 +102,7 @@ export const createOptionalAuthMiddleware = (
     // （単純な truthy チェックでは到達前に例外が出る）。
     let execCtx: ExecCtxLike | undefined;
     try {
-      execCtx = c.executionCtx as ExecCtxLike | undefined;
+      execCtx = c.executionCtx;
     } catch {
       execCtx = undefined;
     }
@@ -182,9 +172,7 @@ const SERVER_AUTH_OPTIONS = {
   auth: { persistSession: false, autoRefreshToken: false },
 } as const;
 
-export const createRequestSupabaseMiddleware = (
-  env: Env,
-): MiddlewareHandler<AppEnv> => {
+export const createRequestSupabaseMiddleware = (env: Env): MiddlewareHandler<AppEnv> => {
   return async (c, next) => {
     const jwt = c.get('jwt');
     const sb = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
@@ -202,9 +190,7 @@ export const createRequestSupabaseMiddleware = (
 //   composition-root の authMiddleware パラメータに差し替えて使う。
 //   user に null を渡すと「未認証扱い」をシミュレートできる。
 // ---------------------------------------------------------------------------
-export const createFakeAuthMiddleware = (
-  user: AuthUser | null,
-): MiddlewareHandler<AppEnv> => {
+export const createFakeAuthMiddleware = (user: AuthUser | null): MiddlewareHandler<AppEnv> => {
   return async (c, next) => {
     if (user) {
       c.set('user', user);

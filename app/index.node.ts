@@ -34,5 +34,5 @@ const app = bootstrap({
 });
 
 serve({ fetch: app.fetch, port: env.PORT }, (info) => {
-  logger.info({ port: info.port }, `Server running at http://localhost:${info.port}`);
+  logger.info({ port: info.port }, `Server running at http://localhost:${String(info.port)}`);
 });

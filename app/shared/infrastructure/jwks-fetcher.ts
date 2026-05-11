@@ -87,12 +87,11 @@ const toRequest = (input: Parameters<typeof globalThis.fetch>[0]): Request => {
   // Cache API の key は Request である必要がある（URL 文字列ではマッチしない）。
   if (input instanceof Request) return new Request(input.url, { method: 'GET' });
   if (input instanceof URL) return new Request(input.toString(), { method: 'GET' });
-  return new Request(String(input), { method: 'GET' });
+  // ここまで来れば input は string に確定（Parameters<fetch>[0] = string | URL | Request）。
+  return new Request(input, { method: 'GET' });
 };
 
-export const createWorkersJwksFetcher = (
-  options: WorkersJwksFetcherOptions,
-): JwksFetcher => {
+export const createWorkersJwksFetcher = (options: WorkersJwksFetcherOptions): JwksFetcher => {
   const { cache, ctx } = options;
   const upstreamFetch = options.fetch ?? globalThis.fetch;
 

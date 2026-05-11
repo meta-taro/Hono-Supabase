@@ -3,10 +3,7 @@ import type { MiddlewareHandler } from 'hono';
 import { createErrorHandler } from '@/shared/http/error-handler';
 import { createOpenAPIHono } from '@/shared/http/openapi-hono';
 import type { AppEnv } from '@/shared/http/request-context';
-import {
-  createSilentLogger,
-  type AppLogger,
-} from '@/shared/infrastructure/logger';
+import { createSilentLogger, type AppLogger } from '@/shared/infrastructure/logger';
 import { createCakeRouter } from '@/modules/cakes/presentation/cake.routes';
 import { createCustomerRouter } from '@/modules/customers/presentation/customer.routes';
 import { createOrderRouter } from '@/modules/orders/presentation/order.routes';
@@ -47,7 +44,7 @@ export interface AppOptions {
 }
 
 export const createApp = (options?: AppOptions): OpenAPIHono<AppEnv> => {
-  const app = createOpenAPIHono<AppEnv>();
+  const app = createOpenAPIHono();
 
   const appVersion = options?.appVersion ?? 'local';
 
@@ -61,18 +58,9 @@ export const createApp = (options?: AppOptions): OpenAPIHono<AppEnv> => {
       app.use('/v1/*', mw);
     }
 
-    app.route(
-      '/v1/cakes',
-      createCakeRouter({ adminGuard: options.guards.adminGuard }),
-    );
-    app.route(
-      '/v1/customers',
-      createCustomerRouter({ adminGuard: options.guards.adminGuard }),
-    );
-    app.route(
-      '/v1/orders',
-      createOrderRouter({ authGuard: options.guards.authGuard }),
-    );
+    app.route('/v1/cakes', createCakeRouter({ adminGuard: options.guards.adminGuard }));
+    app.route('/v1/customers', createCustomerRouter({ adminGuard: options.guards.adminGuard }));
+    app.route('/v1/orders', createOrderRouter({ authGuard: options.guards.authGuard }));
   }
 
   app.onError(createErrorHandler(options?.logger ?? createSilentLogger()));

@@ -64,8 +64,7 @@ const getOrderRoute = createRoute({
   path: '/{id}',
   tags: ['orders'],
   summary: '注文詳細を取得する',
-  description:
-    'orderId に対応する注文と明細を返す。RLS により本人の注文のみ可視。',
+  description: 'orderId に対応する注文と明細を返す。RLS により本人の注文のみ可視。',
   security: [{ bearerAuth: [] }],
   request: {
     params: OrderIdParamSchema,
@@ -96,7 +95,7 @@ export interface OrderRouterDeps {
 }
 
 export const createOrderRouter = (deps: OrderRouterDeps): OpenAPIHono<AppEnv> => {
-  const router = createOpenAPIHono<AppEnv>();
+  const router = createOpenAPIHono();
 
   // ルーターレベルで全パスに guard を適用する（POST / と GET /:id 両方）。
   router.use('*', ...deps.authGuard);

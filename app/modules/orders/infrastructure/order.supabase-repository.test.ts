@@ -31,11 +31,9 @@ const TEST_PREFIX = '__test_orders_';
 const TEST_EMAIL_DOMAIN = '@test-orders.local';
 
 const env = loadEnv();
-const sbAdmin: SupabaseClient = createClient(
-  env.SUPABASE_URL,
-  env.SUPABASE_SERVICE_ROLE_KEY,
-  { auth: { persistSession: false, autoRefreshToken: false } },
-);
+const sbAdmin: SupabaseClient = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
 
 // 削除順序の設計（重要）:
 //   FK の ON DELETE 指定は次のとおりで、auth.users 削除だけでは連鎖が orders で止まる:
@@ -88,10 +86,7 @@ const cleanupTestRows = async (): Promise<void> => {
     }
   }
 
-  const { error: cakesErr } = await sbAdmin
-    .from('cakes')
-    .delete()
-    .like('name', `${TEST_PREFIX}%`);
+  const { error: cakesErr } = await sbAdmin.from('cakes').delete().like('name', `${TEST_PREFIX}%`);
   if (cakesErr) {
     throw new Error(`テスト商品の削除に失敗: ${cakesErr.message}`);
   }
@@ -107,7 +102,7 @@ interface SeedResult {
 const seedFixtures = async (
   cakes: { name: string; price: number; stock: number }[],
 ): Promise<SeedResult> => {
-  const email = `buyer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${TEST_EMAIL_DOMAIN}`;
+  const email = `buyer-${String(Date.now())}-${Math.random().toString(36).slice(2, 8)}${TEST_EMAIL_DOMAIN}`;
   const { data: authData, error: authErr } = await sbAdmin.auth.admin.createUser({
     email,
     password: 'TestPassword123!',
@@ -125,9 +120,7 @@ const seedFixtures = async (
     .eq('auth_user_id', authData.user.id)
     .single();
   if (cErr || !customer) {
-    throw new Error(
-      `customers 行の取得に失敗（トリガ未動作？）: ${cErr?.message}`,
-    );
+    throw new Error(`customers 行の取得に失敗（トリガ未動作？）: ${cErr?.message}`);
   }
 
   const { data: cakeRows, error: kErr } = await sbAdmin
@@ -152,9 +145,7 @@ describe('OrderSupabaseRepository（実 Supabase ローカル + place_order Func
 
   describe('place()', () => {
     it('在庫減算 + 注文作成 + 明細作成をアトミック実行する', async () => {
-      const { customerId, cakeIds } = await seedFixtures([
-        { name: 'mont', price: 600, stock: 10 },
-      ]);
+      const { customerId, cakeIds } = await seedFixtures([{ name: 'mont', price: 600, stock: 10 }]);
 
       const order = await repo.place({
         customerId: CustomerId.from(customerId),
@@ -221,9 +212,7 @@ describe('OrderSupabaseRepository（実 Supabase ローカル + place_order Func
     });
 
     it('在庫不足は InsufficientStockError + 在庫が変わっていない（all-or-nothing）', async () => {
-      const { customerId, cakeIds } = await seedFixtures([
-        { name: 'low', price: 500, stock: 2 },
-      ]);
+      const { customerId, cakeIds } = await seedFixtures([{ name: 'low', price: 500, stock: 2 }]);
 
       await expect(
         repo.place({
@@ -261,10 +250,7 @@ describe('OrderSupabaseRepository（実 Supabase ローカル + place_order Func
         }),
       ).rejects.toBeInstanceOf(InsufficientStockError);
 
-      const { data: cakes } = await sbAdmin
-        .from('cakes')
-        .select('id, stock')
-        .in('id', cakeIds);
+      const { data: cakes } = await sbAdmin.from('cakes').select('id, stock').in('id', cakeIds);
       const stockMap = Object.fromEntries(
         (cakes ?? []).map((c) => [c.id as string, c.stock as number]),
       );
@@ -273,16 +259,12 @@ describe('OrderSupabaseRepository（実 Supabase ローカル + place_order Func
     });
 
     it('存在しない customer_id は CustomerNotFoundInOrderError', async () => {
-      const { cakeIds } = await seedFixtures([
-        { name: 'a', price: 500, stock: 5 },
-      ]);
+      const { cakeIds } = await seedFixtures([{ name: 'a', price: 500, stock: 5 }]);
 
       await expect(
         repo.place({
           customerId: CustomerId.from('99999999-9999-4999-8999-999999999999'),
-          items: [
-            { cakeId: CakeId.from(cakeIds[0]!), quantity: OrderQuantity.of(1) },
-          ],
+          items: [{ cakeId: CakeId.from(cakeIds[0]!), quantity: OrderQuantity.of(1) }],
         }),
       ).rejects.toBeInstanceOf(CustomerNotFoundInOrderError);
     });
@@ -306,15 +288,11 @@ describe('OrderSupabaseRepository（実 Supabase ローカル + place_order Func
 
   describe('findById()', () => {
     it('保存済み注文を取得できる（明細含む）', async () => {
-      const { customerId, cakeIds } = await seedFixtures([
-        { name: 'find', price: 500, stock: 10 },
-      ]);
+      const { customerId, cakeIds } = await seedFixtures([{ name: 'find', price: 500, stock: 10 }]);
 
       const placed = await repo.place({
         customerId: CustomerId.from(customerId),
-        items: [
-          { cakeId: CakeId.from(cakeIds[0]!), quantity: OrderQuantity.of(2) },
-        ],
+        items: [{ cakeId: CakeId.from(cakeIds[0]!), quantity: OrderQuantity.of(2) }],
       });
 
       const found = await repo.findById(placed.id);
@@ -326,9 +304,7 @@ describe('OrderSupabaseRepository（実 Supabase ローカル + place_order Func
     });
 
     it('存在しない注文 ID では null を返す', async () => {
-      const found = await repo.findById(
-        OrderId.from('99999999-9999-4999-8999-999999999999'),
-      );
+      const found = await repo.findById(OrderId.from('99999999-9999-4999-8999-999999999999'));
       expect(found).toBeNull();
     });
   });

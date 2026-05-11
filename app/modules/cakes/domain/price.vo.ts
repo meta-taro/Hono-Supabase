@@ -12,12 +12,10 @@ export class Price {
       throw new InvalidPriceError('価格は整数である必要があります');
     }
     if (value < MIN_PRICE) {
-      throw new InvalidPriceError(`価格は ${MIN_PRICE} 以上である必要があります`);
+      throw new InvalidPriceError(`価格は ${String(MIN_PRICE)} 以上である必要があります`);
     }
     if (value > MAX_PRICE) {
-      throw new InvalidPriceError(
-        `価格は ${MAX_PRICE.toLocaleString()} 以下である必要があります`,
-      );
+      throw new InvalidPriceError(`価格は ${MAX_PRICE.toLocaleString()} 以下である必要があります`);
     }
     return new Price(value);
   }

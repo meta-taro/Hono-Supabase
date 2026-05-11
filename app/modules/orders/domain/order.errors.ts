@@ -1,8 +1,4 @@
-import {
-  ValidationError,
-  ConflictError,
-  NotFoundError,
-} from '@/shared/domain/errors';
+import { ValidationError, ConflictError, NotFoundError } from '@/shared/domain/errors';
 
 // ドメイン例外は shared/domain/errors の AppError 体系を継承する。
 // これにより error-handler が自動で 400 / 404 / 409 へマッピングしてくれる。
@@ -28,7 +24,7 @@ export class InvalidOrderItemError extends ValidationError {
 export class InsufficientStockError extends ConflictError {
   constructor(cakeId: string, available: number, requested: number) {
     super(
-      `商品 (id=${cakeId}) の在庫が不足しています（在庫: ${available}, 要求: ${requested}）`,
+      `商品 (id=${cakeId}) の在庫が不足しています（在庫: ${String(available)}, 要求: ${String(requested)}）`,
     );
     this.name = 'InsufficientStockError';
   }

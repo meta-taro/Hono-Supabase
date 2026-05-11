@@ -21,7 +21,7 @@ export class Email {
     }
     if (trimmed.length > MAX_EMAIL_LENGTH) {
       throw new InvalidEmailError(
-        `メールアドレスは ${MAX_EMAIL_LENGTH} 文字以内である必要があります`,
+        `メールアドレスは ${String(MAX_EMAIL_LENGTH)} 文字以内である必要があります`,
       );
     }
     if (!EMAIL_REGEX.test(trimmed)) {

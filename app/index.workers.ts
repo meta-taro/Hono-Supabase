@@ -1,7 +1,7 @@
 /// <reference types="@cloudflare/workers-types" />
 
 import { bootstrap } from '@/bootstrap';
-import { loadEnv, type RawEnv } from '@/shared/http/env';
+import { loadEnv } from '@/shared/http/env';
 import { createWorkersLogger } from '@/shared/infrastructure/logger';
 import {
   createNodeJwksFetcher,
@@ -55,7 +55,7 @@ const buildHandler = (bindings: WorkersBindings): Handler => {
   const { CF_VERSION_METADATA, ...envBindings } = bindings;
   // WorkersBindings は固定キーの interface のため RawEnv（任意キー Record）に
   // 直接キャストできない。スプレッドで「普通の Record」を作って渡す。
-  const env = loadEnv({ ...envBindings } as RawEnv);
+  const env = loadEnv({ ...envBindings });
   const logger = createWorkersLogger({
     // env.LOG_LEVEL は Zod で 'debug' | 'info' | 'warn' | 'error' に絞られている。
     level: env.LOG_LEVEL,

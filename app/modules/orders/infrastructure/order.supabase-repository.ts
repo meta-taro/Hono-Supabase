@@ -1,9 +1,6 @@
 import type { PostgrestError, SupabaseClient } from '@supabase/supabase-js';
 import { Order } from '@/modules/orders/domain/order';
-import type {
-  OrderRepository,
-  PlaceOrderInput,
-} from '@/modules/orders/domain/order.repository';
+import type { OrderRepository, PlaceOrderInput } from '@/modules/orders/domain/order.repository';
 import { OrderId } from '@/modules/orders/domain/order-id.vo';
 import {
   CakeNotFoundInOrderError,
@@ -55,13 +52,15 @@ export class OrderSupabaseRepository implements OrderRepository {
   async place(input: PlaceOrderInput): Promise<Order> {
     // Postgres Function place_order(p_customer_id, p_items) を RPC で呼ぶ。
     // この関数内で「在庫減算 + 注文挿入 + 明細挿入」が 1 トランザクションでアトミックに実行される。
-    const { data: orderId, error } = await this.sb.rpc('place_order', {
+    // 型付き Supabase スキーマを生成していないので rpc() の戻り値は any。
+    // unknown に絞り込み、下の typeof チェックで string に確定させる。
+    const { data: orderId, error } = (await this.sb.rpc('place_order', {
       p_customer_id: input.customerId.value,
       p_items: input.items.map((i) => ({
         cake_id: i.cakeId.value,
         quantity: i.quantity.value,
       })),
-    });
+    })) as { data: unknown; error: PostgrestError | null };
 
     if (error) {
       this.translatePlaceOrderError(error);
@@ -70,18 +69,14 @@ export class OrderSupabaseRepository implements OrderRepository {
     }
 
     if (typeof orderId !== 'string') {
-      throw new Error(
-        `place_order RPC が想定外の戻り値を返しました: ${JSON.stringify(orderId)}`,
-      );
+      throw new Error(`place_order RPC が想定外の戻り値を返しました: ${JSON.stringify(orderId)}`);
     }
 
     // 確定済みの注文を読み戻して domain の Order として返す。
     // place_order の中で行が確実に作られているはずなので、null は内部エラー扱い。
     const placed = await this.findById(OrderId.from(orderId));
     if (placed === null) {
-      throw new Error(
-        `place_order が id=${orderId} を返したが、読み戻しで見つかりません`,
-      );
+      throw new Error(`place_order が id=${orderId} を返したが、読み戻しで見つかりません`);
     }
     return placed;
   }
@@ -121,13 +116,11 @@ export class OrderSupabaseRepository implements OrderRepository {
   //   - errcode = 'P0002' は「対象なし」（顧客 / 商品の不在）
   //   - メッセージのプレフィクス（INSUFFICIENT_STOCK / CAKE_NOT_FOUND / ...）で判別する
   private translatePlaceOrderError(error: PostgrestError): void {
-    const message = error.message ?? '';
+    const message = error.message;
 
     if (message.startsWith('INSUFFICIENT_STOCK')) {
       // 形式: 'INSUFFICIENT_STOCK cake_id=<uuid> available=<n> requested=<n>'
-      const match = message.match(
-        /cake_id=([0-9a-f-]{36}) available=(\d+) requested=(\d+)/i,
-      );
+      const match = message.match(/cake_id=([0-9a-f-]{36}) available=(\d+) requested=(\d+)/i);
       if (match) {
         throw new InsufficientStockError(
           match[1] ?? '',

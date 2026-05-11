@@ -21,18 +21,12 @@ export class OrderItem {
     public readonly unitPrice: number,
   ) {}
 
-  static of(input: {
-    cakeId: CakeId;
-    quantity: OrderQuantity;
-    unitPrice: number;
-  }): OrderItem {
+  static of(input: { cakeId: CakeId; quantity: OrderQuantity; unitPrice: number }): OrderItem {
     if (!Number.isInteger(input.unitPrice)) {
       throw new InvalidOrderItemError('単価は整数である必要があります');
     }
     if (input.unitPrice < MIN_UNIT_PRICE) {
-      throw new InvalidOrderItemError(
-        `単価は ${MIN_UNIT_PRICE} 以上である必要があります`,
-      );
+      throw new InvalidOrderItemError(`単価は ${String(MIN_UNIT_PRICE)} 以上である必要があります`);
     }
     if (input.unitPrice > MAX_UNIT_PRICE) {
       throw new InvalidOrderItemError(

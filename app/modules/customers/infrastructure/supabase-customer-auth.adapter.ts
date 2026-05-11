@@ -57,7 +57,7 @@ export class SupabaseCustomerAuthAdapter implements CustomerAuthPort {
     });
 
     if (error) {
-      const message = error.message ?? 'サインアップに失敗しました';
+      const message = error.message;
       if (isEmailAlreadyRegistered(message)) {
         throw new EmailAlreadyTakenError(input.email);
       }
