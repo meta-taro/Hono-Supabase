@@ -544,7 +544,7 @@ console.log('order created');
   - [x] **Step 5**: jose JWKS fetch を `JwksFetcherProvider` で per-request DI 化。Workers 側は `caches.default` + `ctx.waitUntil` で SWR キャッシュ。Node 側は jose 内蔵キャッシュをそのまま使用
   - [x] **Step 6**: `wrangler dev` で `GET /health` / `GET /v1/cakes` 200 OK 確認（Hono + Supabase REST が Workers V8 Isolate 上で動作）。33 テスト / 250 テスト全緑、typecheck OK
   - [x] **Step 7**: Cloudflare アカウント取得 + Supabase Cloud プロジェクト作成 + `supabase db push`（4 マイグレーション適用）+ `wrangler secret put` ×3（URL / anon / service_role）+ `wrangler deploy` で初回本番デプロイ完了。`https://cake-shop-api.rzrhacympbmdkagoybba.workers.dev/health` / `/v1/cakes` 200 OK 確認（Workers V8 Isolate → Supabase Cloud REST の本番疎通成功）
-  - [ ] **Step 8**: 環境分離（`wrangler.toml` の `[env.staging]` / `[env.production]` を埋める + 各 env への secret 登録）
+  - [x] **Step 8**: 環境分離。`wrangler.toml` を **`--env <name>` 必須運用**に再構成（`[env.staging]` = `cake-shop-api-staging` / NODE_ENV=staging / LOG_LEVEL=debug、`[env.production]` = `cake-shop-api` / NODE_ENV=production / LOG_LEVEL=info、トップレベル `[vars]` は env 未指定時のフォールバック）。`package.json` の wrangler スクリプトを `:staging` / `:production` 別に分離（素の `wrangler:deploy` / `wrangler:tail` は廃止）。`env.ts` の NODE_ENV enum に `'staging'` を追加。`node-pino-logger.ts` を厳格化（pino-pretty は `NODE_ENV === 'development'` のときだけ適用＝staging/production は両方 JSON 経路）。**staging 用に本番とは別の Supabase プロジェクト `Hono-Supabase-STG`（ref `gnvlfivangrgyryjmybu`）を作成**し、4 マイグレーションを `supabase db push`。**「本番ダンプを staging に流さない」演習として、最初から合成・匿名化済みのテストデータ `supabase/seed.staging.sql` を作成**（`.example` TLD・ダミー顧客 3 + 管理者 1・auth.users 経由で handle_new_user トリガが customers を自動生成・placed_at は日単位に丸めて準識別子を一般化）し `supabase db query --linked -f supabase/seed.staging.sql`（Management API 経由・DB パスワード不要）で投入。`cake-shop-api-staging` Worker に secret 3 種を `wrangler secret put --env staging` で登録 → `wrangler deploy --env staging`。`https://cake-shop-api-staging.<account>.workers.dev/health` `/v1/cakes` 動作確認済み
   - [ ] **Step 9**: **CI/CD + リリース管理を一周**（実運用のリリースフロー体験）
     - (a) 素の `wrangler deploy` 中に curl ループで無停止切替を観察（**ゼロダウンタイムのベースライン体験**）
     - (b) `wrangler versions upload` でバージョン作成（**流量 0**）→ 払い出された preview URL で動作確認
@@ -592,23 +592,36 @@ supabase stop
 docker compose up -d
 docker compose down
 
-# --- Cloudflare Workers（Phase 7 で導入予定） ---
+# --- Cloudflare Workers ---
+# wrangler.toml は --env <name> 必須運用（[env.staging] / [env.production] を明示定義）。
+# pnpm wrangler:* スクリプトに env を埋め込んであるので、素の wrangler deploy は使わない。
 
 # Workers ローカル起動（V8 Isolate を再現する公式ツール）
-pnpm wrangler dev
+pnpm wrangler:dev
 
-# 本番デプロイ
-pnpm wrangler deploy
+# デプロイ（env ごと）
+pnpm wrangler:deploy:staging
+pnpm wrangler:deploy:production
 
-# シークレット登録（本番環境変数）
-pnpm wrangler secret put SUPABASE_URL
-pnpm wrangler secret put SUPABASE_ANON_KEY
-pnpm wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+# シークレット登録（env ごとに 3 回ずつ。secret は Worker 名単位のストア）
+pnpm wrangler:secret:staging SUPABASE_URL
+pnpm wrangler:secret:staging SUPABASE_ANON_KEY
+pnpm wrangler:secret:staging SUPABASE_SERVICE_ROLE_KEY
+pnpm wrangler:secret:production SUPABASE_URL
+pnpm wrangler:secret:production SUPABASE_ANON_KEY
+pnpm wrangler:secret:production SUPABASE_SERVICE_ROLE_KEY
 
-# バージョン管理（カナリアリリース）
-pnpm wrangler versions upload
-pnpm wrangler versions deploy --percentage 10
-pnpm wrangler rollback
+# ログ tail（env ごと）
+pnpm wrangler:tail:staging
+pnpm wrangler:tail:production
+
+# リンク済み Supabase プロジェクトに SQL を実行（Management API 経由・DB パスワード不要）
+supabase db query --linked -f supabase/seed.staging.sql
+
+# バージョン管理（カナリアリリース）— Step 9 で扱う
+pnpm exec wrangler versions upload --env production
+pnpm exec wrangler versions deploy --env production
+pnpm exec wrangler rollback --env production
 ```
 
 ---
