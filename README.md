@@ -10,6 +10,8 @@ Hono × Supabase × TypeScript で構築する、実務志向の軽量 REST API 
 
 > 学習用サンプルですが、**実運用で困らないレベル** を意識して設計しています。
 > **DDD-lite（モジュラモノリス × 4 層構造）** を採用し、API バージョニング、構造化ログ、Zod による型安全な入出力、Supabase Auth + RLS、OpenAPI 自動生成、TDD まで一通り実装します。
+>
+> ⚠️ **ローカル開発が「Node（`pnpm dev`）」と「Workers ランタイム（`pnpm wrangler:dev`）」の二段構えになっているのは意図的な学習設計です。** 本番最小の Workers バックエンドが欲しい場合はもっと薄くできます — 理由と「畳み方」は [設計上のトレードオフと本番最小構成への畳み方](#設計上のトレードオフと本番最小構成への畳み方) を参照してください。
 
 ---
 
@@ -105,6 +107,56 @@ Next.js が無くても、本 API 単体で以下のように利用可能:
 | `wrangler` / `@cloudflare/workers-types` / `tsx` / `tsup` / `vitest` 等 | `devDependencies` | ビルド・テスト・型ツール                                                                                                                                                                                                                   |
 
 > **「`node-pino-logger.ts` で `import pino` しているのに `dependencies` にない」のは意図通り**です。Workers ランタイムへの混入を物理的に防ぐため、Node 側のエントリだけが pino を読みます。本番デプロイ（`wrangler deploy`）は Workers バンドルしか作らないので pino を解決する必要がありません。
+
+---
+
+## 設計上のトレードオフと本番最小構成への畳み方
+
+> なぜローカル開発が「Node（`pnpm dev`）⇄ Workers ランタイム（`pnpm wrangler:dev`）」の二段構えなのか、その代償、そして「Workers 専業ならこう畳める」を説明します。
+
+このリポジトリは **ローカル開発を 2 系統** 持っています:
+
+| コマンド            | エントリ               | ランタイム                         | ロガー                                    | 用途                                |
+| ------------------- | ---------------------- | ---------------------------------- | ----------------------------------------- | ----------------------------------- |
+| `pnpm dev`          | `app/index.node.ts`    | Node.js（tsx watch）               | pino + pino-pretty                        | 普段の TDD・デバッグ                |
+| `pnpm wrangler:dev` | `app/index.workers.ts` | `workerd`（本番と同じ V8 Isolate） | `createWorkersLogger`（console.log JSON） | デプロイ前の Workers 互換性チェック |
+| `pnpm test`         | （Vitest）             | Node.js                            | silent                                    | 自動テスト                          |
+
+そのため `app/index.node.ts` / `app/index.workers.ts` の 2 エントリ、両者で組立を共有する `app/bootstrap.ts`、pino を Node 側に隔離する `app/shared/infrastructure/node-pino-logger.ts`、`devDependencies` の `@hono/node-server` / `pino` / `pino-pretty` / `tsx` / `Dockerfile` / `docker-compose.yml` ── と、**「Workers 専業」なら不要なものが意図的に乗っています**。「無駄に肥大化している」のではなく「学習目的で厚くしている」ものです。判断材料を以下に置きます。
+
+### 二段構えが買っているもの
+
+- **TDD の内ループの速さ**: `tsx watch` + Node デバッガ（ブレークポイント・即時再起動）は、`wrangler dev` より起動が軽く回しやすい。本プロジェクトは TDD 必須なのでここを重視
+- **ログの可読性**: 高速イテレーション中は pino-pretty の色付き整形ログが、`{"level":30,"time":...}` の生 JSON より読みやすい
+- **ランタイム抽象化パターンの練習**: 「`app.ts` 以下はランタイム非依存に保ち、ランタイム固有部分（ロガー実装・HTTP サーバ起動・JWKS フェッチのキャッシュ戦略）はエントリポイント（composition root）で注入する」── `AppLogger` interface + 手動 DI のこの形は、実務で「既存 Node アプリを Workers/エッジへ載せ替える」「ベンダーロックインを避ける」場面で実際に使う。それを小さく実演している
+- **テストランタイムの単純さ**: 後述のとおり純粋ロジックの単体テストは Node でも workerd でも結果が同じなので、速い Node プール（Vitest デフォルト）のままにしている
+
+### 二段構えの代償
+
+- エントリが 2 つ + `bootstrap.ts` という間接層が増える
+- `devDependencies` が増える（`@hono/node-server` / `pino` / `pino-pretty` / `tsx`）
+- **「Node では動くが Workers では落ちる」事故が起きうる**。実際このリポジトリも開発途中で `node:crypto` が Workers で使えない問題に当たり、Web Crypto API へ移行している（コミット履歴参照）。Workers 一本なら原理的に起きないクラスのバグ
+- 「Workers 専業なのに `Dockerfile` / `docker-compose.yml` がある」のは一見ちぐはぐ（中身は Supabase ローカルではなくアプリコンテナ用＝ローカル学習の名残）
+
+### 本番最小構成にしたい場合（workerd 単一ランタイムへ畳む）
+
+このリポジトリをテンプレートにして「Workers 専業バックエンド」を作るなら、以下を削れば `wrangler dev` 一本 + staging + production の 3 環境・単一ランタイム構成になります:
+
+1. `app/index.node.ts` / `app/bootstrap.ts` / `app/shared/infrastructure/node-pino-logger.ts` を削除（`bootstrap.ts` の中身は `app/index.workers.ts` に畳む）
+2. `app/shared/infrastructure/logger.ts` から pino 分岐を除去（`AppLogger` interface + `createWorkersLogger` + `createSilentLogger` だけにする）
+3. 自動テストを [`@cloudflare/vitest-pool-workers`](https://developers.cloudflare.com/workers/testing/vitest-integration/) に寄せる（テストも `workerd` 内で実行 → 本番と完全パリティ。※ Vitest のバージョンに追従するので対応版の確認・pin が要る場合あり。coverage は `@vitest/coverage-istanbul` 推奨）
+4. `@hono/node-server` / `pino` / `pino-pretty` / `tsx` / `Dockerfile` / `docker-compose.yml` を撤去
+5. `package.json` の `dev` / `start` / `build` を整理（`dev` は `wrangler dev` に、本番ビルドは `wrangler deploy` が内包）
+6. 環境変数の管理も `.dev.vars`（Workers ローカル）+ `wrangler secret`（クラウド）に一本化
+
+### テストを workerd で走らせる価値について
+
+「自動テストも本番と同じ `workerd` で」と思うかもしれませんが、効き目は **テストがランタイム API をどれだけ触るかに比例** します:
+
+- **純粋な domain / application 単体**（Entity・VO・UseCase + in-memory repo）→ ECMAScript そのものなので Node でも workerd でも結果は同じ。workerd で走らせる旨味はほぼ無く、起動が遅くなる・Vitest 版の制約が増えるコストだけ払う
+- **infrastructure / integration**（fetch で Supabase REST、Web Crypto、`caches.default`、Hono ルーティング）→ ここは Node と workerd で実際にズレうるので、workerd で走らせる価値がある
+
+なので「全部 workerd」でも「全部 Node」でもなく、**ハイブリッド**（純粋ユニットは Node プール、`infrastructure/` と `__tests__/integration/` は workers プール）が現実解です。本リポジトリは現状シンプルさ優先で全部 Node プールにしていますが、`vitest.config.ts` を 2 プロジェクトに分ければハイブリッドに移行できます。
 
 ---
 
