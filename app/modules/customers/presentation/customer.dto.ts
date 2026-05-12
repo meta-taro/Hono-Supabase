@@ -12,10 +12,7 @@ import { z } from '@hono/zod-openapi';
 // ---------------------------------------------------------------------------
 export const CustomerResponseSchema = z
   .object({
-    id: z
-      .string()
-      .uuid()
-      .openapi({ example: '22222222-2222-4222-8222-222222222222' }),
+    id: z.string().uuid().openapi({ example: '22222222-2222-4222-8222-222222222222' }),
     name: z.string().openapi({ example: '田中太郎' }),
     email: z.string().email().openapi({ example: 'tanaka@example.com' }),
   })

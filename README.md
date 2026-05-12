@@ -303,22 +303,22 @@ watching https://cake-shop-api-staging.<account>.workers.dev/health  (interval 0
 
 ### ブランチモデルとデプロイの対応
 
-| GitHub ブランチ | 役割 | デプロイ先（Cloudflare Workers） | ゲート |
-| --------------- | ---- | -------------------------------- | ------ |
-| feature ブランチ | 作業 | （デプロイなし） | PR で CI（`ci.yml`） |
-| `develop` | 統合 | **staging**（`cake-shop-api-staging`）に push で自動 | なし（即時 100%） |
-| `main` | リリース | **production**（`cake-shop-api`）に push で | **手動 approval**（GitHub Environment `production` の Required reviewers）→ `versions upload`(0%) → 承認 → `deploy@100` |
+| GitHub ブランチ  | 役割     | デプロイ先（Cloudflare Workers）                     | ゲート                                                                                                                  |
+| ---------------- | -------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| feature ブランチ | 作業     | （デプロイなし）                                     | PR で CI（`ci.yml`）                                                                                                    |
+| `develop`        | 統合     | **staging**（`cake-shop-api-staging`）に push で自動 | なし（即時 100%）                                                                                                       |
+| `main`           | リリース | **production**（`cake-shop-api`）に push で          | **手動 approval**（GitHub Environment `production` の Required reviewers）→ `versions upload`(0%) → 承認 → `deploy@100` |
 
 通常の流れ: feature → PR → CI 緑 → `develop` にマージ（= staging に反映）→ 区切りで **`develop`→`main` の PR** を作る → CI 緑 → マージ（= `main` への push）→ `Deploy (production)` が承認待ちで停止 → Actions 画面の「Review deployments」で承認 → 本番 100% 切替。ロールバックは `pnpm exec wrangler rollback --env production`。
 
 ワークフローの実体（`.github/workflows/`）:
 
-| ファイル | トリガ | 中身 |
-| -------- | ------ | ---- |
-| `checks.yml` | （再利用部品 `workflow_call`） | `Lint & Typecheck` / `Bundle check (tsup + wrangler dry-run)` / `Test (Vitest + local Supabase)` の並列 3 ジョブ |
-| `ci.yml` | `pull_request` | `checks.yml` を呼ぶだけ（マージ前の検証） |
-| `deploy-staging.yml` | `push: develop` | `checks` → `wrangler deploy --env staging`。**本番には一切触れない** |
-| `deploy-production.yml` | `push: main` | `checks` → `wrangler versions upload --env production`(0%) → `release-production`（Environment `production` の承認ゲート）→ `wrangler versions deploy <id>@100 --env production --yes` |
+| ファイル                | トリガ                         | 中身                                                                                                                                                                                   |
+| ----------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `checks.yml`            | （再利用部品 `workflow_call`） | `Lint & Typecheck` / `Bundle check (tsup + wrangler dry-run)` / `Test (Vitest + local Supabase)` の並列 3 ジョブ                                                                       |
+| `ci.yml`                | `pull_request`                 | `checks.yml` を呼ぶだけ（マージ前の検証）                                                                                                                                              |
+| `deploy-staging.yml`    | `push: develop`                | `checks` → `wrangler deploy --env staging`。**本番には一切触れない**                                                                                                                   |
+| `deploy-production.yml` | `push: main`                   | `checks` → `wrangler versions upload --env production`(0%) → `release-production`（Environment `production` の承認ゲート）→ `wrangler versions deploy <id>@100 --env production --yes` |
 
 ### GitHub 側の前提
 
@@ -494,12 +494,12 @@ interface CakeRow {
 
 実際に叩いて確認するための `curl` 例。**ベース URL を差し替えれば 3 環境とも同じリクエストで動きます**。
 
-| 環境               | ベース URL                                                       | 起動方法                          |
-| ------------------ | ---------------------------------------------------------------- | --------------------------------- |
-| ローカル（Node）   | `http://localhost:3010`                                          | `pnpm dev`                        |
-| ローカル（Workers）| `http://localhost:8787`                                          | `pnpm wrangler:dev`               |
-| staging            | `https://cake-shop-api-staging.<account-subdomain>.workers.dev`  | `pnpm wrangler:deploy:staging`    |
-| production         | `https://cake-shop-api.<account-subdomain>.workers.dev`          | `pnpm wrangler:deploy:production` |
+| 環境                | ベース URL                                                      | 起動方法                          |
+| ------------------- | --------------------------------------------------------------- | --------------------------------- |
+| ローカル（Node）    | `http://localhost:3010`                                         | `pnpm dev`                        |
+| ローカル（Workers） | `http://localhost:8787`                                         | `pnpm wrangler:dev`               |
+| staging             | `https://cake-shop-api-staging.<account-subdomain>.workers.dev` | `pnpm wrangler:deploy:staging`    |
+| production          | `https://cake-shop-api.<account-subdomain>.workers.dev`         | `pnpm wrangler:deploy:production` |
 
 > `<account-subdomain>` は **Cloudflare アカウント単位**で決まる workers.dev のサブドメイン（Worker 単位ではない）。`pnpm exec wrangler whoami` か Cloudflare ダッシュボード（Workers & Pages → 右側の `*.workers.dev` 表示）で確認できる。フォークした人は自分のアカウントの値に読み替えること。
 

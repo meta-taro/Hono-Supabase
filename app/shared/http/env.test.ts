@@ -42,9 +42,7 @@ describe('loadEnv', () => {
     });
 
     it('production / test も受理する', () => {
-      expect(loadEnv({ ...baseEnv, NODE_ENV: 'production' }).NODE_ENV).toBe(
-        'production',
-      );
+      expect(loadEnv({ ...baseEnv, NODE_ENV: 'production' }).NODE_ENV).toBe('production');
       expect(loadEnv({ ...baseEnv, NODE_ENV: 'test' }).NODE_ENV).toBe('test');
     });
 

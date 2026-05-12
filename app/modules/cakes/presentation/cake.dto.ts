@@ -12,10 +12,7 @@ import { z } from '@hono/zod-openapi';
 // ---------------------------------------------------------------------------
 export const CakeResponseSchema = z
   .object({
-    id: z
-      .string()
-      .uuid()
-      .openapi({ example: '11111111-1111-4111-8111-111111111111' }),
+    id: z.string().uuid().openapi({ example: '11111111-1111-4111-8111-111111111111' }),
     name: z.string().openapi({ example: 'ショートケーキ' }),
     price: z.number().int().openapi({ example: 480 }),
     stock: z.number().int().openapi({ example: 20 }),

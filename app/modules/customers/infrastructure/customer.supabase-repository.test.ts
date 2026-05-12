@@ -18,11 +18,9 @@ import { loadEnv } from '@/shared/http/env';
 const TEST_EMAIL_DOMAIN = '@test-customer.local';
 
 const env = loadEnv();
-const sbAdmin: SupabaseClient = createClient(
-  env.SUPABASE_URL,
-  env.SUPABASE_SERVICE_ROLE_KEY,
-  { auth: { persistSession: false, autoRefreshToken: false } },
-);
+const sbAdmin: SupabaseClient = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
 
 // テスト用に作成した auth.users を削除すれば、ON DELETE CASCADE で
 // customers 行も自動的に消える。email ドメイン目印で対象を絞る。
@@ -35,9 +33,7 @@ const cleanupTestUsers = async (): Promise<void> => {
     if (user.email?.endsWith(TEST_EMAIL_DOMAIN)) {
       const del = await sbAdmin.auth.admin.deleteUser(user.id);
       if (del.error) {
-        throw new Error(
-          `auth.users 削除に失敗 (id=${user.id}): ${del.error.message}`,
-        );
+        throw new Error(`auth.users 削除に失敗 (id=${user.id}): ${del.error.message}`);
       }
     }
   }
@@ -51,10 +47,7 @@ interface SeedResult {
 
 // auth.admin.createUser で auth.users を作る → トリガが customers を埋める。
 // email_confirm: true でメール確認をスキップする（テスト即時利用のため）。
-const seedAuthUser = async (params: {
-  email: string;
-  name: string;
-}): Promise<SeedResult> => {
+const seedAuthUser = async (params: { email: string; name: string }): Promise<SeedResult> => {
   const { data, error } = await sbAdmin.auth.admin.createUser({
     email: params.email,
     password: 'TestPassword123!',
@@ -62,9 +55,7 @@ const seedAuthUser = async (params: {
     user_metadata: { name: params.name },
   });
   if (error || !data.user) {
-    throw new Error(
-      `auth.users の seed に失敗: ${error?.message ?? '空応答'}`,
-    );
+    throw new Error(`auth.users の seed に失敗: ${error?.message ?? '空応答'}`);
   }
   return { authUserId: data.user.id, email: params.email, name: params.name };
 };
@@ -100,9 +91,7 @@ describe('CustomerSupabaseRepository（実 Supabase ローカルに接続）', (
         name: 'case-test',
       });
 
-      const found = await repo.findByEmail(
-        Email.of(`CASE${TEST_EMAIL_DOMAIN.toUpperCase()}`),
-      );
+      const found = await repo.findByEmail(Email.of(`CASE${TEST_EMAIL_DOMAIN.toUpperCase()}`));
 
       expect(found).not.toBeNull();
       expect(found?.authUserId).toBe(seed.authUserId);
@@ -124,9 +113,7 @@ describe('CustomerSupabaseRepository（実 Supabase ローカルに接続）', (
     });
 
     it('未登録の authUserId では null を返す', async () => {
-      const found = await repo.findByAuthUserId(
-        '00000000-0000-4000-8000-000000000000',
-      );
+      const found = await repo.findByAuthUserId('00000000-0000-4000-8000-000000000000');
       expect(found).toBeNull();
     });
   });

@@ -1,14 +1,8 @@
-import type {
-  OrderRepository,
-  PlaceOrderInput,
-} from '../../domain/order.repository';
+import type { OrderRepository, PlaceOrderInput } from '../../domain/order.repository';
 import { Order } from '../../domain/order';
 import { OrderItem } from '../../domain/order-item';
 import type { OrderId } from '../../domain/order-id.vo';
-import {
-  InsufficientStockError,
-  CakeNotFoundInOrderError,
-} from '../../domain/order.errors';
+import { InsufficientStockError, CakeNotFoundInOrderError } from '../../domain/order.errors';
 
 // テスト専用のメモリ実装。
 // DDD-lite の利点: UseCase を Supabase 抜きで叩ける（高速・決定的）。
@@ -50,11 +44,7 @@ export class InMemoryOrderRepository implements OrderRepository {
         throw new CakeNotFoundInOrderError(item.cakeId.value);
       }
       if (cake.stock < item.quantity.value) {
-        throw new InsufficientStockError(
-          item.cakeId.value,
-          cake.stock,
-          item.quantity.value,
-        );
+        throw new InsufficientStockError(item.cakeId.value, cake.stock, item.quantity.value);
       }
     }
 

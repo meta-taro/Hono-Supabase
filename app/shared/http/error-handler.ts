@@ -36,10 +36,7 @@ export const createErrorHandler = (logger: AppLogger): ErrorHandler => {
     }
 
     // 想定外の例外はスタックトレース付きで error レベルで記録する。
-    logger.error(
-      { err, method: c.req.method, path: c.req.path },
-      'Unhandled internal error',
-    );
+    logger.error({ err, method: c.req.method, path: c.req.path }, 'Unhandled internal error');
     return c.json(
       {
         error: {

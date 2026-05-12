@@ -125,9 +125,9 @@ describe('signUpCustomerUseCase', () => {
     const { repo, auth } = buildDeps();
     const signUp = createSignUpCustomerUseCase(auth, repo, silentLogger);
 
-    await expect(
-      signUp({ name: '', email: 'a@b.co', password: 'secret123' }),
-    ).rejects.toThrow(InvalidCustomerError);
+    await expect(signUp({ name: '', email: 'a@b.co', password: 'secret123' })).rejects.toThrow(
+      InvalidCustomerError,
+    );
     expect(repo.size()).toBe(0);
   });
 
@@ -135,9 +135,9 @@ describe('signUpCustomerUseCase', () => {
     const { repo, auth } = buildDeps();
     const signUp = createSignUpCustomerUseCase(auth, repo, silentLogger);
 
-    await expect(
-      signUp({ name: 'a', email: 'invalid', password: 'secret123' }),
-    ).rejects.toThrow(InvalidEmailError);
+    await expect(signUp({ name: 'a', email: 'invalid', password: 'secret123' })).rejects.toThrow(
+      InvalidEmailError,
+    );
     expect(repo.size()).toBe(0);
   });
 
@@ -145,9 +145,9 @@ describe('signUpCustomerUseCase', () => {
     const { repo, auth } = buildDeps();
     const signUp = createSignUpCustomerUseCase(auth, repo, silentLogger);
 
-    await expect(
-      signUp({ name: 'a', email: 'ok@example.com', password: 'short' }),
-    ).rejects.toThrow(SignUpFailedError);
+    await expect(signUp({ name: 'a', email: 'ok@example.com', password: 'short' })).rejects.toThrow(
+      SignUpFailedError,
+    );
     expect(repo.size()).toBe(0);
   });
 });

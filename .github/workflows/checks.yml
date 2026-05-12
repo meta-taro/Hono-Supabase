@@ -1,6 +1,6 @@
 # 再利用可能ワークフロー（reusable workflow）
-#   ci.yml（PR）/ deploy.yml（develop push）の両方から `uses:` で呼び出す。
-#   「lint + typecheck」と「Vitest（DB 込み）」を別ジョブに分けて並列実行する。
+#   ci.yml（PR）/ deploy-staging.yml（develop push）/ deploy-production.yml（main push）
+#   から `uses:` で呼び出す。lint+typecheck / bundle / Vitest を別ジョブに分けて並列実行。
 #
 #   DB を要するテスト（*.supabase-repository.test.ts / __tests__/integration/）は
 #   ローカル Supabase を立てて実行する。supabase start が migrations と seed.sql を
@@ -26,6 +26,7 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
 

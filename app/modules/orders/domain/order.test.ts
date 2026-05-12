@@ -7,8 +7,7 @@ import { CakeId } from './cake-id.vo';
 import { OrderQuantity } from './order-quantity.vo';
 import { InvalidOrderError } from './order.errors';
 
-const customerId = () =>
-  CustomerId.from('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+const customerId = () => CustomerId.from('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
 
 const itemFor = (cakeIdStr: string, qty: number, unit: number): OrderItem =>
   OrderItem.of({
@@ -37,9 +36,7 @@ describe('Order.create', () => {
   });
 
   it('items が 0 件のときは InvalidOrderError', () => {
-    expect(() =>
-      Order.create({ customerId: customerId(), items: [] }),
-    ).toThrow(InvalidOrderError);
+    expect(() => Order.create({ customerId: customerId(), items: [] })).toThrow(InvalidOrderError);
   });
 
   it('明細数が 50 件を超えるときは InvalidOrderError', () => {
@@ -47,22 +44,18 @@ describe('Order.create', () => {
     // 51 件: 異なる cake_id を持たせる必要があるので indexed UUID を使う
     for (let i = 0; i < 51; i++) {
       const hex = i.toString(16).padStart(2, '0');
-      items.push(
-        itemFor(`${hex}${hex}${hex}${hex}-1111-4111-8111-111111111111`, 1, 100),
-      );
+      items.push(itemFor(`${hex}${hex}${hex}${hex}-1111-4111-8111-111111111111`, 1, 100));
     }
-    expect(() =>
-      Order.create({ customerId: customerId(), items }),
-    ).toThrow(InvalidOrderError);
+    expect(() => Order.create({ customerId: customerId(), items })).toThrow(InvalidOrderError);
   });
 
   it('同じ cakeId が 2 行に分かれている入力は InvalidOrderError', () => {
     const dup = '11111111-1111-4111-8111-111111111111';
     const a = itemFor(dup, 1, 500);
     const b = itemFor(dup, 2, 500);
-    expect(() =>
-      Order.create({ customerId: customerId(), items: [a, b] }),
-    ).toThrow(InvalidOrderError);
+    expect(() => Order.create({ customerId: customerId(), items: [a, b] })).toThrow(
+      InvalidOrderError,
+    );
   });
 
   it('items 配列はコピーされる（外部破壊の影響を受けない）', () => {
@@ -97,14 +90,10 @@ describe('Order.reconstruct', () => {
   });
 
   it('未知の status は InvalidOrderError', () => {
-    expect(() =>
-      Order.reconstruct({ ...validProps, status: 'BOGUS' }),
-    ).toThrow(InvalidOrderError);
+    expect(() => Order.reconstruct({ ...validProps, status: 'BOGUS' })).toThrow(InvalidOrderError);
   });
 
   it('items 0 件は InvalidOrderError（DB 整合性破綻の検知）', () => {
-    expect(() =>
-      Order.reconstruct({ ...validProps, items: [] }),
-    ).toThrow(InvalidOrderError);
+    expect(() => Order.reconstruct({ ...validProps, items: [] })).toThrow(InvalidOrderError);
   });
 });

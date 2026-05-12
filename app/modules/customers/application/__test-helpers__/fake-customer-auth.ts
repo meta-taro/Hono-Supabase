@@ -1,9 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Customer } from '../../domain/customer';
-import {
-  EmailAlreadyTakenError,
-  SignUpFailedError,
-} from '../../domain/customer.errors';
+import { EmailAlreadyTakenError, SignUpFailedError } from '../../domain/customer.errors';
 import type {
   CustomerAuthPort,
   CustomerSignUpInput,

@@ -38,10 +38,7 @@ export interface ModuleDeps {
 
 // per-request の Bounded Context 別 Controller 集合を組み立てる。
 // この関数は「sb が何の権限で動いているか」を意識しない（与えられたものを使うだけ）。
-export const buildRequestModules = (
-  sb: SupabaseClient,
-  deps: ModuleDeps,
-): RequestModules => {
+export const buildRequestModules = (sb: SupabaseClient, deps: ModuleDeps): RequestModules => {
   // cakes
   const cakeRepo = new CakeSupabaseRepository(sb);
   const cakes = createCakeController({
@@ -54,11 +51,7 @@ export const buildRequestModules = (
   const customerAuth = new SupabaseCustomerAuthAdapter(sb);
   const customers = createCustomerController({
     listCustomers: createListCustomersUseCase(customerRepo),
-    signUpCustomer: createSignUpCustomerUseCase(
-      customerAuth,
-      customerRepo,
-      deps.logger,
-    ),
+    signUpCustomer: createSignUpCustomerUseCase(customerAuth, customerRepo, deps.logger),
   });
 
   // orders
@@ -80,9 +73,7 @@ export const buildRequestModules = (
 
 // per-request にモジュールを組み立てて c.var.modules に積むミドルウェア。
 // auth + requestSupabase の後に通すこと。
-export const createModulesMiddleware = (
-  deps: ModuleDeps,
-): MiddlewareHandler<AppEnv> => {
+export const createModulesMiddleware = (deps: ModuleDeps): MiddlewareHandler<AppEnv> => {
   return async (c, next) => {
     const sb = c.get('sb');
     c.set('modules', buildRequestModules(sb, deps));

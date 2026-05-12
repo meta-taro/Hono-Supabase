@@ -52,9 +52,7 @@ describe('createCakeUseCase', () => {
     const repo = new InMemoryCakeRepository();
     const createCake = createCreateCakeUseCase(repo, silentLogger);
 
-    await expect(
-      createCake({ name: '', price: 600, stock: 1 }),
-    ).rejects.toThrow(InvalidCakeError);
+    await expect(createCake({ name: '', price: 600, stock: 1 })).rejects.toThrow(InvalidCakeError);
     expect(repo.size()).toBe(0);
   });
 
@@ -62,9 +60,7 @@ describe('createCakeUseCase', () => {
     const repo = new InMemoryCakeRepository();
     const createCake = createCreateCakeUseCase(repo, silentLogger);
 
-    await expect(
-      createCake({ name: 'a', price: 0, stock: 1 }),
-    ).rejects.toThrow(InvalidPriceError);
+    await expect(createCake({ name: 'a', price: 0, stock: 1 })).rejects.toThrow(InvalidPriceError);
     expect(repo.size()).toBe(0);
   });
 });

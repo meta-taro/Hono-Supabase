@@ -1,9 +1,6 @@
 import type { Cake } from '../domain/cake';
 import type { ListCakesUseCase } from '../application/list-cakes.usecase';
-import type {
-  CreateCakeUseCase,
-  CreateCakeInput,
-} from '../application/create-cake.usecase';
+import type { CreateCakeUseCase, CreateCakeInput } from '../application/create-cake.usecase';
 import type { CakeResponse } from './cake.dto';
 
 // Controller の責務:

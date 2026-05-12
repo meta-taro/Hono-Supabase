@@ -1,7 +1,6 @@
 import { InvalidOrderError } from './order.errors';
 
-const UUID_V4_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 // orders コンテキストにおける CustomerId VO。
 // customers/domain/customer-id.vo.ts と内容は重複するが、
@@ -16,9 +15,7 @@ export class CustomerId {
 
   static from(value: string): CustomerId {
     if (!UUID_V4_REGEX.test(value)) {
-      throw new InvalidOrderError(
-        'CustomerId は UUID v4 形式である必要があります',
-      );
+      throw new InvalidOrderError('CustomerId は UUID v4 形式である必要があります');
     }
     return new CustomerId(value);
   }

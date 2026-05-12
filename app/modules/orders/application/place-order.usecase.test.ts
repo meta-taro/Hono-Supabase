@@ -89,9 +89,9 @@ describe('place-order usecase', () => {
     it('items 0 件は InvalidOrderError', async () => {
       const repo = buildRepo([]);
       const placeOrder = createPlaceOrderUseCase(repo, silentLogger);
-      await expect(
-        placeOrder({ customerId: CUSTOMER, items: [] }),
-      ).rejects.toThrow(InvalidOrderError);
+      await expect(placeOrder({ customerId: CUSTOMER, items: [] })).rejects.toThrow(
+        InvalidOrderError,
+      );
     });
 
     it('同一 cakeId が 2 行に分かれているのは InvalidOrderError', async () => {

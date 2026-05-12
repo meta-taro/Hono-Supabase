@@ -1,10 +1,7 @@
 import type { AppLogger } from '@/shared/infrastructure/logger';
 import type { Customer } from '../domain/customer';
 import { Email } from '../domain/email.vo';
-import {
-  CustomerNotFoundError,
-  EmailAlreadyTakenError,
-} from '../domain/customer.errors';
+import { CustomerNotFoundError, EmailAlreadyTakenError } from '../domain/customer.errors';
 import type { CustomerRepository } from '../domain/customer.repository';
 import type { CustomerAuthPort } from '../domain/customer-auth.port';
 

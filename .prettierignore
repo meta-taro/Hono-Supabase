@@ -1,0 +1,11 @@
+# 自動生成・ツール管理ファイルは整形しない（フォーマットで巨大 diff が出るだけで意味がない）
+pnpm-lock.yaml
+dist/
+build/
+coverage/
+.wrangler/
+node_modules/
+
+# 使い捨てスクラッチ（コミットしない一時ファイル）
+tmp-*.mjs
+tmp-*.ts

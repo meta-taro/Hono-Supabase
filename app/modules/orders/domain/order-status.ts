@@ -9,5 +9,4 @@ export type OrderStatus = 'PLACED' | 'CANCELED';
 export const ORDER_STATUSES: readonly OrderStatus[] = ['PLACED', 'CANCELED'];
 
 export const isOrderStatus = (value: unknown): value is OrderStatus =>
-  typeof value === 'string' &&
-  (ORDER_STATUSES as readonly string[]).includes(value);
+  typeof value === 'string' && (ORDER_STATUSES as readonly string[]).includes(value);

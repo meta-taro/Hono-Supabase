@@ -1,7 +1,6 @@
 import { InvalidOrderError } from './order.errors';
 
-const UUID_V4_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 // orders コンテキストにおける CakeId VO。
 // cakes/domain/cake-id.vo.ts と内容は重複するが、
