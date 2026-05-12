@@ -26,6 +26,7 @@
 - API バージョニング設計（`/v1` プレフィックス）
 - `@hono/zod-openapi` による型安全な API 設計と OpenAPI 仕様の自動生成
 - Supabase Auth + RLS（Row Level Security）によるアクセス制御
+- Supabase Auth のメール運用（確認メールのテンプレートカスタマイズ・Custom SMTP への切替・確認後リダイレクト設計・ローカルは Inbucket で観察）
 - 構造化ログ（**Workers 互換ロガー** + Node ローカル時の pino-pretty 切替）
 - Vitest を使った TDD（テスト駆動開発）
 - Docker + Supabase CLI による再現性ある開発環境
@@ -552,6 +553,13 @@ console.log('order created');
     - (c) `wrangler versions deploy --percentage 10` でカナリア展開 → 50% → 100% の段階展開を curl ループで観察
     - (d) わざとバグを入れて 100% リリース → `wrangler rollback` で**直前バージョンへ即時巻き戻し**
     - (e) (a)〜(d) を GitHub Actions（`cloudflare/wrangler-action@v3`）に組み込み、**main push → 自動 versions upload → 手動 approval → 段階展開** の本番運用パイプラインに昇華
+- [ ] **Phase 8**: **Supabase Auth メール運用**（確認メールのテンプレート / Custom SMTP / 確認後リダイレクト設計）
+  - 動機: 「Supabase Auth を使うバックエンド担当」が「確認メールのテンプレートを更新できる・Custom SMTP に切替えられる」を一度も触らないのは学習漏れ。本番が `enable_confirmations = ON`（＝正しい設定）である以上、その運用面を一周しておく
+  - [ ] **Step 1**: ローカルで `supabase/config.toml` の `[auth] enable_confirmations = true` にしてサインアップ（`POST /v1/customers`）→ 確認メールを **Inbucket（http://localhost:54324）** で受信・中身を観察 → 確認リンクを踏んで `auth.users.email_confirmed_at` が入る／その後ログイン（`token?grant_type=password`）で JWT が取れることを確認
+  - [ ] **Step 2**: メールテンプレートを **リポジトリ管理**にする — `supabase/config.toml` の `[auth.email.template.confirmation]`（`subject` + `content_path = "./supabase/templates/confirmation.html"`）で日本語＋ブランド文面に差し替え。`recovery` / `magic_link` / `email_change` も同様。`{{ .ConfirmationURL }}` 等の変数を理解する
+  - [ ] **Step 3**: 確認後リダイレクト（`redirect_to` パラメータ / `[auth] additional_redirect_urls` / `site_url`）を設計。フロント不在のため `/health` 等に着地させ、ログで「確認完了」を観察。フロントがある場合の `/auth/callback?code=...` → `exchangeCodeForSession` の流れも整理（実装は別リポだが理屈は押さえる）
+  - [ ] **Step 4**: **Custom SMTP**（Resend 等の無料枠）への切替を体験 — ローカルは `[auth.email.smtp]`、Cloud は `supabase config push` ／ ダッシュボード設定。SMTP 認証情報は **Supabase 側の secret** として管理（アプリの `.env` / `wrangler secret` には置かない）。送信元を `noreply@cakeshop.example` 等にして「お客さんから見れば“ケーキショップ発”」を実現
+  - [ ] **Step 5**: 本番（Supabase Cloud）へ反映し、確認メールが**ブランド差出人・日本語テンプレ**で届くことを確認。Phase 7 手2（認証フロー E2E）を、Inbucket（ローカル）／実メールの確認リンク経由で本番でも一度通す
 
 ---
 

@@ -442,6 +442,91 @@ interface CakeRow {
 
 ---
 
+## 動作確認チートシート（ローカル / 本番）
+
+実際に叩いて確認するための `curl` 例。**ベース URL を差し替えれば 3 環境とも同じリクエストで動きます**。
+
+| 環境              | ベース URL                                                        | 起動方法                          |
+| ----------------- | ----------------------------------------------------------------- | --------------------------------- |
+| ローカル（Node）  | `http://localhost:3010`                                           | `pnpm dev`                        |
+| ローカル（Workers）| `http://localhost:8787`                                          | `pnpm wrangler:dev`               |
+| staging           | `https://cake-shop-api-staging.rzrhacympbmdkagoybba.workers.dev`  | `pnpm wrangler:deploy:staging`    |
+| production        | `https://cake-shop-api.rzrhacympbmdkagoybba.workers.dev`          | `pnpm wrangler:deploy:production` |
+
+> 以下は `BASE` 変数に上のいずれかを入れて実行する想定。
+
+```bash
+BASE=http://localhost:3010                                          # ← 環境に応じて差し替え
+# BASE=https://cake-shop-api.rzrhacympbmdkagoybba.workers.dev        # 本番
+```
+
+### 認証不要な確認（ここまでは誰でも叩ける）
+
+```bash
+# ヘルスチェック（version は Node ローカルなら "local"、Workers ならデプロイ済みバージョン ID）
+curl "$BASE/health"
+# => {"status":"ok","version":"local"}
+
+# ケーキ一覧（seed.sql の 5 件が返る）
+curl "$BASE/v1/cakes"
+# => {"cakes":[{"id":"...","name":"ショートケーキ","price":480,"stock":20}, ...]}
+```
+
+### 認証フロー（サインアップ → JWT 取得 → 注文）
+
+`POST /v1/orders` などは Supabase Auth が発行する JWT が必要。本 API は JWT を**発行しない**（Supabase Auth の責務）ので、トークンは Supabase の Auth エンドポイントから取る。
+
+```bash
+# Supabase プロジェクトの値（ダッシュボード → Project Settings → API）
+SUPABASE_URL=https://<your-project-ref>.supabase.co
+SUPABASE_ANON_KEY=<anon または publishable キー>
+
+# 1) サインアップ（本 API 経由。handle_new_user トリガが customers 行も自動生成）
+curl -X POST "$BASE/v1/customers" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"テスト太郎","email":"test+demo@example.com","password":"secret-password"}'
+# => {"id":"...","name":"テスト太郎","email":"test+demo@example.com"}
+#    ※ Supabase 側の「Confirm email」が ON だとここでメール確認が必要。
+#      学習用に検証を省くなら Authentication → Providers → Email で OFF にする。
+
+# 2) パスワードグラントで JWT を取得（Supabase Auth を直接叩く）
+TOKEN=$(curl -s -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" \
+  -H "apikey: $SUPABASE_ANON_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"test+demo@example.com","password":"secret-password"}' \
+  | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+echo "$TOKEN"
+
+# 3) 注文作成（要 Bearer。customerId は body で渡さない＝JWT subject から解決される）
+ORDER=$(curl -s -X POST "$BASE/v1/orders" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"items":[{"cakeId":"11111111-1111-4111-8111-111111111111","quantity":2}]}')
+echo "$ORDER"
+# => {"id":"...","customerId":"...","status":"PLACED","totalAmount":960,"placedAt":"...","items":[...]}
+
+# 4) 注文詳細（本人のみ。他人の注文 ID を入れると 403 FORBIDDEN）
+ORDER_ID=$(echo "$ORDER" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+curl "$BASE/v1/orders/$ORDER_ID" -H "Authorization: Bearer $TOKEN"
+```
+
+### 認証が要る管理系（管理者ロールの JWT が必要）
+
+```bash
+# ケーキ登録（管理者ロールでないと 403）
+curl -X POST "$BASE/v1/cakes" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"ガトーフレーズ","price":650,"stock":8}'
+
+# 顧客一覧（管理者のみ）
+curl "$BASE/v1/customers" -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+> Windows PowerShell では `curl` は `Invoke-WebRequest` のエイリアスなので、上記は **Git Bash / WSL** か、`curl.exe`（実体）を明示して実行する。
+
+---
+
 ## テスト方針
 
 | 種類                   | ツール                        | 対象                                 | 配置                         | DB                          |
@@ -477,6 +562,9 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
     - (c) `wrangler versions deploy --percentage 10/50/100` で段階展開（カナリア）
     - (d) わざとバグを入れて 100% リリース → `wrangler rollback` で直前バージョンへ即時巻き戻し
     - (e) (a)〜(d) を GitHub Actions（`cloudflare/wrangler-action@v3`）に組み込み、main push → 自動 versions upload → 手動 approval → 段階展開のパイプラインに昇華
+- [ ] **Phase 8**: **Supabase Auth メール運用**（確認メールのテンプレート / Custom SMTP / 確認後リダイレクト設計）
+  - 本番は `enable_confirmations = ON`（＝正しい設定）。「Supabase Auth を使うバックエンド担当」として確認メールのテンプレ更新・Custom SMTP 切替を一周しておく
+  - ローカルで確認メールを **Inbucket（http://localhost:54324）** で観察 → テンプレートを `supabase/config.toml` + `supabase/templates/*.html`（リポジトリ管理）で日本語＋ブランド文面に → 確認後リダイレクト設計 → Custom SMTP（Resend 等）へ切替 → 本番反映
 
 ---
 
