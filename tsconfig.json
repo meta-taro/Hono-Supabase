@@ -1,0 +1,39 @@
+{
+  "compilerOptions": {
+    // ターゲット: Node 22 は ES2022 以上をネイティブサポート
+    "target": "ES2022",
+    // tsx / vitest / tsup（esbuild 系）で実行・ビルドするため Bundler 系に揃える。
+    // NodeNext は path alias で .js 拡張子の明示を要求するため、本構成では Bundler を採用。
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    // ソースと出力先
+    "rootDir": ".",
+    "outDir": "dist",
+    // 型安全性を最大化する strict 系オプション
+    "strict": true,
+    // 配列・オブジェクトの添字アクセスも undefined を考慮させる
+    "noUncheckedIndexedAccess": true,
+    // import パスエイリアス: @/* → app/*
+    "paths": {
+      "@/*": ["./app/*"]
+    },
+    // ES2022 だけにとどめる:
+    //   - WebWorker / DOM lib を入れると CacheStorage 等の標準型が
+    //     @cloudflare/workers-types の宣言（caches.default）と衝突して負ける
+    //   - 必要な Web 標準 API（fetch/Request/Response/Crypto/caches/...）は
+    //     @types/node + @cloudflare/workers-types の global 宣言で網羅される
+    "lib": ["ES2022"],
+    // node = Node ローカル開発・Vitest 用の Node API 型
+    // @cloudflare/workers-types = Cloudflare 独自拡張（caches.default / ExecutionContext 等）。
+    // 両方を types に入れて Web 標準 + Cloudflare 拡張を一括で global に流し込む。
+    "types": ["node", "@cloudflare/workers-types"],
+    // 外部ライブラリの型定義エラーを無視（型定義が不完全なパッケージ対策）
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    // デバッグ用ソースマップ
+    "sourceMap": true,
+    "declaration": true
+  },
+  "include": ["app/**/*"],
+  "exclude": ["node_modules", "dist", "coverage"]
+}

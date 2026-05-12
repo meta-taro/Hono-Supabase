@@ -1,0 +1,107 @@
+# 本番リリースパイプライン（Phase 7 Step 9 (e)）
+#
+#   main への push をトリガに:
+#     1. checks            … lint + typecheck + bundle + test（checks.yml を再利用）
+#     2. upload-production … wrangler versions upload --env production（流量 0%・preview URL 払い出し）
+#     3. release-production… GitHub Environment "production" の承認ゲートを通過したら
+#                            wrangler versions deploy <id>@100 --env production（100% 切替）
+#
+#   = 「main push → 自動 versions upload → 手動 approval → 100% 展開」
+#     develop への push ではここは動かない（staging は deploy-staging.yml が担当）。
+#
+#   必要なシークレット / 変数（GitHub リポジトリ設定で登録）:
+#     - secrets.CLOUDFLARE_API_TOKEN   … "Edit Cloudflare Workers" 権限のトークン
+#     - secrets.CLOUDFLARE_ACCOUNT_ID  … wrangler.toml に account_id を書いていないため必須
+#     - vars.WORKERS_DEV_SUBDOMAIN     … （任意・表示用）<subdomain>.workers.dev の <subdomain>
+#   Worker 自身のシークレット（SUPABASE_URL 等）は `wrangler secret put` 済みなので
+#   このパイプラインからは渡さない。
+#
+#   承認ゲート: GitHub の Settings → Environments → "production" に Required reviewers を
+#   設定すると release-production ジョブが「待機 → 承認」フローになる。
+name: Deploy (production)
+
+on:
+  push:
+    branches: [main]
+
+# 同一ブランチのデプロイは直列化（途中キャンセルはしない＝走り出した本番展開は完走させる）。
+concurrency:
+  group: deploy-production-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+
+  upload-production:
+    name: Upload production version (0% traffic)
+    needs: checks
+    runs-on: ubuntu-latest
+    outputs:
+      version-id: ${{ steps.version.outputs.version-id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: wrangler versions upload --env production
+        id: upload
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: versions upload --env production
+
+      # `versions upload` の出力に出る "Worker Version ID: <uuid>" 行を拾って
+      # release-production ジョブへ受け渡す。wrangler は情報行を stdout/stderr の
+      # どちらに出すか版で揺れるので両方を対象にする。値はコマンド本文へ直接
+      # 展開せず env 経由で受け取る（信頼済みテキストだが習慣として）。
+      - name: Capture uploaded version ID
+        id: version
+        shell: bash
+        env:
+          WRANGLER_STDOUT: ${{ steps.upload.outputs.command-output }}
+          WRANGLER_STDERR: ${{ steps.upload.outputs.command-stderr }}
+        run: |
+          printf '%s\n%s\n' "$WRANGLER_STDOUT" "$WRANGLER_STDERR"
+          VERSION_ID="$(printf '%s\n%s\n' "$WRANGLER_STDOUT" "$WRANGLER_STDERR" \
+            | grep -i 'version id' \
+            | grep -oiE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
+            | head -n1)"
+          if [ -z "$VERSION_ID" ]; then
+            echo "::error::Worker Version ID を versions upload の出力から抽出できませんでした"
+            exit 1
+          fi
+          echo "Uploaded version: $VERSION_ID"
+          echo "version-id=$VERSION_ID" >> "$GITHUB_OUTPUT"
+
+  release-production:
+    name: Release to production (100%)
+    needs: upload-production
+    runs-on: ubuntu-latest
+    # ここで一旦停止する。Environment "production" に Required reviewers を設定して
+    # おけば、承認されるまでこのジョブは pending のまま待機する（= 手動 approval）。
+    environment:
+      name: production
+      url: https://cake-shop-api.${{ vars.WORKERS_DEV_SUBDOMAIN }}.workers.dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: wrangler versions deploy (100%)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: versions deploy ${{ needs.upload-production.outputs.version-id }}@100 --env production --yes

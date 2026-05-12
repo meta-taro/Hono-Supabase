@@ -1,0 +1,57 @@
+{
+  "name": "cake-shop-api",
+  "version": "0.1.0",
+  "description": "Hono × Supabase で作るケーキ屋注文API（学習サンプル）",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "tsx watch --env-file=.env app/index.node.ts",
+    "build": "tsup app/index.node.ts --format esm --dts --out-dir dist --platform node",
+    "start": "node --env-file=.env dist/index.node.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "wrangler:dev": "wrangler dev",
+    "wrangler:deploy:staging": "wrangler deploy --env staging",
+    "wrangler:deploy:production": "wrangler deploy --env production",
+    "wrangler:secret:staging": "wrangler secret put --env staging",
+    "wrangler:secret:production": "wrangler secret put --env production",
+    "wrangler:tail:staging": "wrangler tail --env staging",
+    "wrangler:tail:production": "wrangler tail --env production"
+  },
+  "dependencies": {
+    "@hono/zod-openapi": "^0.18.0",
+    "@supabase/supabase-js": "^2.47.0",
+    "hono": "^4.7.0",
+    "jose": "^6.2.3",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260507.1",
+    "@eslint/js": "^9.0.0",
+    "@hono/node-server": "^1.13.0",
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "eslint": "^9.0.0",
+    "pino": "^9.5.0",
+    "pino-pretty": "^13.0.0",
+    "prettier": "^3.4.0",
+    "tsup": "^8.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^3.0.0",
+    "wrangler": "^4.20.0"
+  }
+}

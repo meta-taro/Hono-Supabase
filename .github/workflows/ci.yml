@@ -1,0 +1,11 @@
+# PR 用 CI: checks.yml（lint + typecheck + test）を回すだけ。
+#   develop への push 側は deploy.yml が同じ checks.yml を先頭ジョブとして実行する
+#   ので、push トリガはここには持たせない（二重実行の回避）。
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml

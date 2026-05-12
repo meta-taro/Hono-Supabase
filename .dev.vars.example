@@ -1,0 +1,24 @@
+# =============================================================================
+# .dev.vars — Wrangler ローカル実行（pnpm wrangler:dev）専用の secrets
+#
+# 使い方:
+#   1. このファイルをコピーして .dev.vars を作る
+#        cp .dev.vars.example .dev.vars
+#   2. supabase start で表示された値を .dev.vars に転記
+#   3. pnpm wrangler:dev でローカル Workers が起動し、ここの値を bindings として読む
+#
+# Node ローカル（pnpm dev）は .env を読む。両者は別ファイルでミラーする運用。
+#
+# 本番（Cloudflare 上）には .dev.vars は使わない:
+#   pnpm wrangler secret put SUPABASE_URL
+#   pnpm wrangler secret put SUPABASE_ANON_KEY
+#   pnpm wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+# で個別に登録する。Cloudflare ダッシュボード上で暗号化保管される。
+#
+# このファイル（.dev.vars.example）はコミット可能。
+# .dev.vars 本体は gitignore 済み — 値が機密のため絶対にコミットしない。
+# =============================================================================
+
+SUPABASE_URL=http://localhost:54321
+SUPABASE_ANON_KEY=your_anon_key_here
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key_here

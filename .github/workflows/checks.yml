@@ -1,0 +1,92 @@
+# 再利用可能ワークフロー（reusable workflow）
+#   ci.yml（PR）/ deploy.yml（develop push）の両方から `uses:` で呼び出す。
+#   「lint + typecheck」と「Vitest（DB 込み）」を別ジョブに分けて並列実行する。
+#
+#   DB を要するテスト（*.supabase-repository.test.ts / __tests__/integration/）は
+#   ローカル Supabase を立てて実行する。supabase start が migrations と seed.sql を
+#   自動適用するので、追加の db push は不要。
+name: Checks
+
+on:
+  workflow_call:
+
+jobs:
+  lint-and-types:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm を先に入れてから setup-node の cache: pnpm を効かせる（この順序が必須）。
+      # pnpm のバージョンは package.json の "packageManager" フィールドから解決される。
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+
+  bundle:
+    name: Bundle check (tsup + wrangler dry-run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Node エントリのバンドル（tsup）。
+      - run: pnpm build
+
+      # Workers エントリのバンドル検証。--dry-run は API を叩かないので
+      # account_id / トークン不要。fork からの PR でも動く。
+      # 「typecheck は通るが Workers では bundle できない」（Node 専用 import の
+      # 混入など）をここで弾く。
+      - run: pnpm exec wrangler deploy --dry-run --env production
+
+  test:
+    name: Test (Vitest + local Supabase)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # supabase start: Docker で Postgres/GoTrue 等を起動し、
+      # supabase/migrations/ を順に適用し、supabase/seed.sql を流す。
+      - name: Start Supabase
+        run: supabase start
+
+      # vitest.config.ts は SUPABASE_URL / *_ANON_KEY / *_SERVICE_ROLE_KEY を
+      # process.env から読む（無ければダミー値）。ローカル Supabase が払い出した
+      # 実値を $GITHUB_ENV に書いて以降のステップへ引き継ぐ。
+      #   - `-o env` の出力は KEY="value" 形式なので tr -d '"' でクォートを落とす
+      #   - --override-name で config のドットパス → 環境変数名へリネーム
+      - name: Export Supabase connection info
+        run: |
+          supabase status -o env \
+            --override-name api.url=SUPABASE_URL \
+            --override-name auth.anon_key=SUPABASE_ANON_KEY \
+            --override-name auth.service_role_key=SUPABASE_SERVICE_ROLE_KEY \
+            | tr -d '"' >> "$GITHUB_ENV"
+
+      - run: pnpm test:coverage
+
+      - name: Stop Supabase
+        if: always()
+        run: supabase stop

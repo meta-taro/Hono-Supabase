@@ -1,0 +1,54 @@
+# staging リリースパイプライン
+#
+#   develop への push をトリガに:
+#     1. checks         … lint + typecheck + bundle + test（checks.yml を再利用）
+#     2. deploy-staging … wrangler deploy --env staging（即時 100%・承認ゲートなし）
+#
+#   = 「develop push → staging に自動反映」。本番（production）には一切触らない。
+#     本番リリースは main への push で deploy-production.yml が担当する。
+#
+#   必要なシークレット（GitHub リポジトリ設定で登録）:
+#     - secrets.CLOUDFLARE_API_TOKEN   … "Edit Cloudflare Workers" 権限のトークン
+#     - secrets.CLOUDFLARE_ACCOUNT_ID  … wrangler.toml に account_id を書いていないため必須
+#     - vars.WORKERS_DEV_SUBDOMAIN     … （任意・表示用）<subdomain>.workers.dev の <subdomain>
+name: Deploy (staging)
+
+on:
+  push:
+    branches: [develop]
+
+# 同一ブランチのデプロイは直列化（走り出したデプロイは完走させる）。
+concurrency:
+  group: deploy-staging-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+
+  deploy-staging:
+    name: Deploy to staging
+    needs: checks
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://cake-shop-api-staging.${{ vars.WORKERS_DEV_SUBDOMAIN }}.workers.dev
+    steps:
+      - uses: actions/checkout@v4
+
+      # wrangler-action はリポジトリの pnpm-lock.yaml を見て PM を pnpm と判定し
+      # `pnpm exec wrangler ...` を実行する。pnpm / Node / node_modules を先に
+      # 用意しておかないと「Unable to locate executable file: pnpm」で落ちる。
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: wrangler deploy --env staging
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy --env staging
