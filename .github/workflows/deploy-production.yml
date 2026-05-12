@@ -1,16 +1,16 @@
 # 本番リリースパイプライン（Phase 7 Step 9 (e)）
 #
-#   develop への push をトリガに:
-#     1. checks            … lint + typecheck + test（checks.yml を再利用）
-#     2. deploy-staging    … wrangler deploy --env staging（即時 100%）
-#     3. upload-production … wrangler versions upload --env production（流量 0%・preview URL 払い出し）
-#     4. release-production… GitHub Environment "production" の承認ゲートを通過したら
+#   main への push をトリガに:
+#     1. checks            … lint + typecheck + bundle + test（checks.yml を再利用）
+#     2. upload-production … wrangler versions upload --env production（流量 0%・preview URL 払い出し）
+#     3. release-production… GitHub Environment "production" の承認ゲートを通過したら
 #                            wrangler versions deploy <id>@100 --env production（100% 切替）
 #
-#   = 「main(develop) push → 自動 versions upload → 手動 approval → 段階展開」
+#   = 「main push → 自動 versions upload → 手動 approval → 100% 展開」
+#     develop への push ではここは動かない（staging は deploy-staging.yml が担当）。
 #
 #   必要なシークレット / 変数（GitHub リポジトリ設定で登録）:
-#     - secrets.CLOUDFLARE_API_TOKEN   … Workers Scripts:Edit 権限のトークン
+#     - secrets.CLOUDFLARE_API_TOKEN   … "Edit Cloudflare Workers" 権限のトークン
 #     - secrets.CLOUDFLARE_ACCOUNT_ID  … wrangler.toml に account_id を書いていないため必須
 #     - vars.WORKERS_DEV_SUBDOMAIN     … （任意・表示用）<subdomain>.workers.dev の <subdomain>
 #   Worker 自身のシークレット（SUPABASE_URL 等）は `wrangler secret put` 済みなので
@@ -18,51 +18,24 @@
 #
 #   承認ゲート: GitHub の Settings → Environments → "production" に Required reviewers を
 #   設定すると release-production ジョブが「待機 → 承認」フローになる。
-name: Deploy
+name: Deploy (production)
 
 on:
   push:
-    branches: [develop]
+    branches: [main]
 
 # 同一ブランチのデプロイは直列化（途中キャンセルはしない＝走り出した本番展開は完走させる）。
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: deploy-production-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   checks:
     uses: ./.github/workflows/checks.yml
 
-  deploy-staging:
-    name: Deploy to staging
-    needs: checks
-    runs-on: ubuntu-latest
-    environment:
-      name: staging
-      url: https://cake-shop-api-staging.${{ vars.WORKERS_DEV_SUBDOMAIN }}.workers.dev
-    steps:
-      - uses: actions/checkout@v4
-
-      # wrangler-action はリポジトリの pnpm-lock.yaml を見て PM を pnpm と判定し
-      # `pnpm exec wrangler ...` を実行する。pnpm / Node / node_modules を先に
-      # 用意しておかないと「Unable to locate executable file: pnpm」で落ちる。
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-
-      - name: wrangler deploy --env staging
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy --env staging
-
   upload-production:
     name: Upload production version (0% traffic)
-    needs: deploy-staging
+    needs: checks
     runs-on: ubuntu-latest
     outputs:
       version-id: ${{ steps.version.outputs.version-id }}
