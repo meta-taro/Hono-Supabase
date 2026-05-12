@@ -538,7 +538,7 @@ console.log('order created');
 - [x] **Phase 4**: `customers` Bounded Context（同構造）
 - [x] **Phase 5**: `orders` Bounded Context（Domain Event + Postgres Function でアトミック在庫減算）
 - [x] **Phase 6**: 認証（Supabase Auth + RLS + 認証ミドルウェア）+ OpenAPI 仕上げ
-- [ ] **Phase 7**: **Cloudflare Workers 化**（本番デプロイ想定の最終段）
+- [x] **Phase 7**: **Cloudflare Workers 化**（本番デプロイ想定の最終段）
   - [x] **Step 1**: エントリ二系統化（`app/index.ts` → `app/index.node.ts` リネーム + `app/index.workers.ts` 新設 + 共通組立を `app/bootstrap.ts` に切出）
   - [x] **Step 2**: `wrangler.toml` 追加・`@cloudflare/workers-types` 導入・`wrangler` 4.88.0 + `pnpm wrangler:dev` / `wrangler:deploy` / `wrangler:tail` 整備（**`compatibility_flags = []` を維持し `nodejs_compat` に逃げない方針**）
   - [x] **Step 3**: 環境変数の移行（ローカル）— `.dev.vars` 導入 + `.dev.vars.example` 配布 + `.gitignore` 追記（`.dev.vars` / `.wrangler/`）
@@ -547,12 +547,20 @@ console.log('order created');
   - [x] **Step 6**: `wrangler dev` で `GET /health` / `GET /v1/cakes` 200 OK 確認（Hono + Supabase REST が Workers V8 Isolate 上で動作）。33 テスト / 250 テスト全緑、typecheck OK
   - [x] **Step 7**: Cloudflare アカウント取得 + Supabase Cloud プロジェクト作成 + `supabase db push`（4 マイグレーション適用）+ `wrangler secret put` ×3（URL / anon / service_role）+ `wrangler deploy` で初回本番デプロイ完了。`https://cake-shop-api.rzrhacympbmdkagoybba.workers.dev/health` / `/v1/cakes` 200 OK 確認（Workers V8 Isolate → Supabase Cloud REST の本番疎通成功）
   - [x] **Step 8**: 環境分離。`wrangler.toml` を **`--env <name>` 必須運用**に再構成（`[env.staging]` = `cake-shop-api-staging` / NODE_ENV=staging / LOG_LEVEL=debug、`[env.production]` = `cake-shop-api` / NODE_ENV=production / LOG_LEVEL=info、トップレベル `[vars]` は env 未指定時のフォールバック）。`package.json` の wrangler スクリプトを `:staging` / `:production` 別に分離（素の `wrangler:deploy` / `wrangler:tail` は廃止）。`env.ts` の NODE_ENV enum に `'staging'` を追加。`node-pino-logger.ts` を厳格化（pino-pretty は `NODE_ENV === 'development'` のときだけ適用＝staging/production は両方 JSON 経路）。**staging 用に本番とは別の Supabase プロジェクト `Hono-Supabase-STG`（ref `gnvlfivangrgyryjmybu`）を作成**し、4 マイグレーションを `supabase db push`。**「本番ダンプを staging に流さない」演習として、最初から合成・匿名化済みのテストデータ `supabase/seed.staging.sql` を作成**（`.example` TLD・ダミー顧客 3 + 管理者 1・auth.users 経由で handle_new_user トリガが customers を自動生成・placed_at は日単位に丸めて準識別子を一般化）し `supabase db query --linked -f supabase/seed.staging.sql`（Management API 経由・DB パスワード不要）で投入。`cake-shop-api-staging` Worker に secret 3 種を `wrangler secret put --env staging` で登録 → `wrangler deploy --env staging`。`https://cake-shop-api-staging.<account>.workers.dev/health` `/v1/cakes` 動作確認済み
-  - [ ] **Step 9**: **CI/CD + リリース管理を一周**（実運用のリリースフロー体験）
+  - [x] **Step 9**: **CI/CD + リリース管理を一周**（実運用のリリースフロー体験）
     - (a) 素の `wrangler deploy` 中に curl ループで無停止切替を観察（**ゼロダウンタイムのベースライン体験**。体験用スクリプト `scripts/zero-downtime-watch.ps1` / `.sh`）
     - (b) `wrangler versions upload` でバージョン作成（**流量 0**）→ 払い出された preview URL で動作確認
     - (c) `wrangler versions deploy --percentage 10` でカナリア展開 → 50% → 100% の段階展開を curl ループで観察
     - (d) わざとバグを入れて 100% リリース → `wrangler rollback` で**直前バージョンへ即時巻き戻し**
-    - (e) (a)〜(d) を GitHub Actions（`cloudflare/wrangler-action@v3`）に組み込み、**main push → 自動 versions upload → 手動 approval → 段階展開** の本番運用パイプラインに昇華
+    - (e) GitHub Actions 化（`cloudflare/wrangler-action@v3`）— ワークフローを**ブランチ別に分割**: `deploy-staging.yml`（`push: develop` → `checks` → `wrangler deploy --env staging`。本番には一切触れない）／`deploy-production.yml`（`push: main` → `checks` → `wrangler versions upload --env production`(0%) → Environment `production` の Required reviewers 承認ゲート → `wrangler versions deploy <id>@100 --env production --yes`）。`checks.yml`（再利用 `workflow_call` = Lint&Typecheck / Bundle check (tsup + wrangler dry-run) / Test (Vitest + local Supabase)）を `ci.yml`（PR）と両 deploy が呼ぶ。`main` ブランチ保護（PR 必須・status checks 3 本必須・force push/削除禁止・bypass なし）+ リポジトリ Secrets（`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`。Supabase 鍵は置かない＝Worker の `wrangler secret` 側）+ Environments（`staging` ゲートなし / `production` Required reviewers）も設定済。**運用ポリシーの全文は README「## CI/CD・環境構成の指針（実運用想定）」を参照**
+
+### CI/CD・リリース運用の要点（README に詳細）
+
+- **ブランチ→環境**: `develop` push = staging に自動デプロイ（即時 100%）／`main` push = production（`versions upload` 0% → **GitHub Environment `production` の手動承認** → `deploy@100`）。feature → PR → CI → `develop` マージ → 区切りで `develop`→`main` PR → マージで本番。ロールバックは `wrangler rollback --env production`
+- **`main` はブランチ保護必須**: PR 経由のみ・CI チェック必須・force push/削除禁止。本番に出すコードは必ず CI を通った `main` の内容
+- **シークレットの置き場を分ける**: アプリのシークレット（`SUPABASE_*`）は実行環境（`wrangler secret put --env <name>`）／CI のシークレット（`CLOUDFLARE_API_TOKEN` 等）は GitHub リポジトリ Secrets。リポジトリにも他方にも混ぜない
+- **Supabase は 1 環境 1 プロジェクト**: production / staging で別プロジェクト。**本番データを staging に流さない**（合成・匿名化シード `supabase/seed.staging.sql` を使う）。マイグレは前方向のみ・`supabase db push`、アドホック SQL は `supabase db query --linked -f`
+- **ドキュメント上の識別子の線引き**: 個人固有の値（Cloudflare アカウントサブドメイン・Supabase project ref）は `<...>` プレースホルダ表記。構成上の固有名（Worker 名 `cake-shop-api` / プロジェクト名 `Hono-Supabase` / env 名）はそのまま残す（フォーク者が「これ何？」にならないように）
 - [ ] **Phase 8**: **Supabase Auth メール運用**（確認メールのテンプレート / Custom SMTP / 確認後リダイレクト設計）
   - 動機: 「Supabase Auth を使うバックエンド担当」が「確認メールのテンプレートを更新できる・Custom SMTP に切替えられる」を一度も触らないのは学習漏れ。本番が `enable_confirmations = ON`（＝正しい設定）である以上、その運用面を一周しておく
   - [ ] **Step 1**: ローカルで `supabase/config.toml` の `[auth] enable_confirmations = true` にしてサインアップ（`POST /v1/customers`）→ 確認メールを **Inbucket（http://localhost:54324）** で受信・中身を観察 → 確認リンクを踏んで `auth.users.email_confirmed_at` が入る／その後ログイン（`token?grant_type=password`）で JWT が取れることを確認
