@@ -42,6 +42,17 @@ jobs:
       url: https://cake-shop-api-staging.${{ vars.WORKERS_DEV_SUBDOMAIN }}.workers.dev
     steps:
       - uses: actions/checkout@v4
+
+      # wrangler-action はリポジトリの pnpm-lock.yaml を見て PM を pnpm と判定し
+      # `pnpm exec wrangler ...` を実行する。pnpm / Node / node_modules を先に
+      # 用意しておかないと「Unable to locate executable file: pnpm」で落ちる。
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
       - name: wrangler deploy --env staging
         uses: cloudflare/wrangler-action@v3
         with:
@@ -57,6 +68,13 @@ jobs:
       version-id: ${{ steps.version.outputs.version-id }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
 
       - name: wrangler versions upload --env production
         id: upload
@@ -100,6 +118,14 @@ jobs:
       url: https://cake-shop-api.${{ vars.WORKERS_DEV_SUBDOMAIN }}.workers.dev
     steps:
       - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
       - name: wrangler versions deploy (100%)
         uses: cloudflare/wrangler-action@v3
         with:
