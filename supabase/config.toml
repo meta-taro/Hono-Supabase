@@ -151,9 +151,13 @@ max_indexes = 5
 enabled = true
 # The base URL of your website. Used as an allow-list for redirects and for constructing URLs used
 # in emails.
-site_url = "http://127.0.0.1:3000"
+# フロント（Next.js 等）は別リポジトリで未稼働なので、確認リンクの着地先はこの API 自身の
+# /health にしておく（ポート 3000 で動く他のローカル PJT に飛ばさないため）。フロントが
+# 用意できたら http://127.0.0.1:3000 + /auth/callback に戻す。本番（Cloud）の site_url は
+# ダッシュボード／`supabase config push` 側で別管理。
+site_url = "http://127.0.0.1:3010/health"
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
-additional_redirect_urls = ["https://127.0.0.1:3000"]
+additional_redirect_urls = ["http://127.0.0.1:3010/health"]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # JWT issuer URL. If not set, defaults to the local API URL (http://127.0.0.1:<port>/auth/v1).
