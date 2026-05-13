@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AppLogger } from '@/shared/infrastructure/logger';
 import type { Env } from '@/shared/http/env';
 import type { AppEnv, RequestModules } from '@/shared/http/request-context';
+import { createAdminClient } from '@/shared/infrastructure/supabase';
 import { CakeSupabaseRepository } from '@/modules/cakes/infrastructure/cake.supabase-repository';
 import { createListCakesUseCase } from '@/modules/cakes/application/list-cakes.usecase';
 import { createCreateCakeUseCase } from '@/modules/cakes/application/create-cake.usecase';
@@ -49,9 +50,16 @@ export const buildRequestModules = (sb: SupabaseClient, deps: ModuleDeps): Reque
   // customers
   const customerRepo = new CustomerSupabaseRepository(sb);
   const customerAuth = new SupabaseCustomerAuthAdapter(sb);
+  // Supabase のメール認証（auth.email.enable_confirmations）を導入するため。
+  //   確認必須の設定だと auth.signUp() はセッションを返さない → リクエストの sb は anon のまま。
+  //   サインアップ直後に「トリガが作った customers 行を authUserId で読み戻す」処理が RLS で
+  //   弾かれてしまうので、サインアップ経路の customers 参照だけは RLS をバイパスする admin
+  //   クライアント経由にする（公開リクエストだが、行作成直後のシステム読み戻しなので正当）。
+  //   auth.signUp() 自体は公開 auth 操作なので anon の customerAuth のまま。
+  const customerAdminRepo = new CustomerSupabaseRepository(createAdminClient(deps.env));
   const customers = createCustomerController({
     listCustomers: createListCustomersUseCase(customerRepo),
-    signUpCustomer: createSignUpCustomerUseCase(customerAuth, customerRepo, deps.logger),
+    signUpCustomer: createSignUpCustomerUseCase(customerAuth, customerAdminRepo, deps.logger),
   });
 
   // orders
