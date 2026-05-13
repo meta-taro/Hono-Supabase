@@ -334,7 +334,7 @@ watching https://cake-shop-api-staging.<account>.workers.dev/health  (interval 0
 - **マイグレーションは前方向のみ**: 既存の `supabase/migrations/*.sql` は編集しない（新規ファイル追加だけ）。リンク済みプロジェクトへ `supabase db push` で適用。マイグレに残したくないアドホック SQL（seed・調査）は `supabase db query --linked -f <file>`（Management API 経由・DB パスワード不要）。
 - **鍵の置き場**: `SUPABASE_URL` / `SUPABASE_ANON_KEY`（新方式なら publishable key）/ `SUPABASE_SERVICE_ROLE_KEY`（新方式なら secret key）は **`pnpm wrangler:secret:<env> <NAME>` で Worker ごとに登録**。リポジトリにも GitHub Secrets にも置かない。新方式の secret key は生成直後の 1 回しか全文表示されないので即コピー。
 - **アクセス制御の境界は RLS**: `cakes` は SELECT 公開・書込は service_role のみ、`customers` は INSERT 匿名可・SELECT 本人のみ、`orders`/`order_items` は本人のみ。アプリはリクエストごとに anon クライアントを作り JWT を載せて呼ぶ（クライアントを信じない）。
-- **メール**: 本番は `enable_confirmations = ON`（＝正しい設定）。確認メールのテンプレート・Custom SMTP・確認後リダイレクトの運用は **Phase 8** で扱う。
+- **メール**: 本番は `enable_confirmations = ON`（＝正しい設定）。ローカルも `supabase/config.toml` で揃える（Phase 8 Step 1 完了）。確認メールのテンプレート・Custom SMTP・確認後リダイレクトの運用は **Phase 8** で引き続き扱う。
 
 ### このリポジトリ固有の名前 vs 差し替えるもの
 
@@ -614,7 +614,8 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
     - (e) GitHub Actions 化 — `develop` push → staging 自動デプロイ（`deploy-staging.yml`）／`main` push → production（`deploy-production.yml`: `versions upload` 0% → Environment `production` の承認ゲート → `deploy@100`）。`main` ブランチ保護（PR 必須・CI 3 チェック必須・force push/削除禁止）も設定。詳細は [CI/CD・環境構成の指針](#cicd環境構成の指針実運用想定) 参照
 - [ ] **Phase 8**: **Supabase Auth メール運用**（確認メールのテンプレート / Custom SMTP / 確認後リダイレクト設計）
   - 本番は `enable_confirmations = ON`（＝正しい設定）。「Supabase Auth を使うバックエンド担当」として確認メールのテンプレ更新・Custom SMTP 切替を一周しておく
-  - ローカルで確認メールを **Inbucket（http://localhost:54324）** で観察 → テンプレートを `supabase/config.toml` + `supabase/templates/*.html`（リポジトリ管理）で日本語＋ブランド文面に → 確認後リダイレクト設計 → Custom SMTP（Resend 等）へ切替 → 本番反映
+  - [x] Step 1（2026-05-13 完了）: ローカルの `supabase/config.toml` を `enable_confirmations = true` にして本番に揃え、`POST /v1/customers` → 確認メール（Inbucket/Mailpit http://localhost:54324 で受信・`verify` リンク + 6 桁 OTP を確認）→ 確認リンク 303 リダイレクト + `auth.users.email_confirmed_at` セット → パスワードログインで JWT 取得、までを一周。あわせて確認必須化で顕在化したサインアップ経路の不具合を修正（確認必須だと `auth.signUp()` がセッションを返さず、直後の「トリガ生成 customers 行の読み戻し」が RLS で 404 になる → サインアップ経路の customers 参照だけ service_role の admin クライアント経由に変更）。`site_url` / `additional_redirect_urls` はフロント未稼働のため一旦 `http://127.0.0.1:3010/health` に着地（他のローカル PJT のポート 3000 と衝突させない）
+  - [ ] Step 2〜5: 確認メールのテンプレートを `supabase/config.toml` + `supabase/templates/*.html`（リポジトリ管理）で日本語＋ブランド文面に → 確認後リダイレクト設計 → Custom SMTP（Resend 等）へ切替 → 本番反映
 
 ---
 
