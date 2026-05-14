@@ -153,11 +153,17 @@ enabled = true
 # in emails.
 # フロント（Next.js 等）は別リポジトリで未稼働なので、確認リンクの着地先はこの API 自身の
 # /health にしておく（ポート 3000 で動く他のローカル PJT に飛ばさないため）。フロントが
-# 用意できたら http://127.0.0.1:3000 + /auth/callback に戻す。本番（Cloud）の site_url は
-# ダッシュボード／`supabase config push` 側で別管理。
+# 用意できたら site_url を http://127.0.0.1:3000 に戻し、emailRedirectTo は /auth/callback
+# を指す。本番（Cloud）の site_url はダッシュボード／`supabase config push` 側で別管理。
 site_url = "http://127.0.0.1:3010/health"
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
-additional_redirect_urls = ["http://127.0.0.1:3010/health"]
+# `auth.signUp({ options: { emailRedirectTo } })` で指定する URL はここに登録された URL の
+# いずれかと完全一致する必要がある（マッチしないと site_url にフォールバック）。
+# 将来フロントを別リポジトリで実装したとき用に `/auth/callback` も先に登録しておく。
+additional_redirect_urls = [
+  "http://127.0.0.1:3010/health",        # フロント未稼働時のフォールバック着地
+  "http://127.0.0.1:3000/auth/callback", # 将来のフロント（Next.js 等）想定
+]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # JWT issuer URL. If not set, defaults to the local API URL (http://127.0.0.1:<port>/auth/v1).

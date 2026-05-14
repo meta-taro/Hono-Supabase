@@ -345,6 +345,120 @@ watching https://cake-shop-api-staging.<account>.workers.dev/health  (interval 0
 
 ---
 
+## 認証メールのリダイレクト設計（Supabase Auth・Phase 8 Step 3）
+
+サインアップ確認メールやパスワードリセットメールの「リンクを踏んだ後どこに着地するか」は、Supabase Auth では **3 つの設定変数の組み合わせ**で決まる。挙動を理解しておかないと「リンクを踏んだら全然違う画面に飛ばされた」「`redirect_to` を指定したのに無視された」といった事故が起きる。
+
+### 3 つの変数とそれぞれの責務
+
+| 変数                                     | 設定場所                                      | 役割                                                                                       |
+| ---------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `site_url`                               | `supabase/config.toml` の `[auth]` セクション | **デフォルトの着地先**。クライアントが `redirect_to` を指定しないときに使われる            |
+| `additional_redirect_urls`               | 同上                                          | **許可リスト**。`redirect_to` で指定できる URL を完全一致で列挙（リストに無い URL は拒否） |
+| `redirect_to` / `emailRedirectTo` (引数) | クライアントの `auth.signUp({ options })` 等  | **その操作だけの上書き**。`additional_redirect_urls` にマッチした場合のみ有効              |
+
+優先順位は次のとおり:
+
+1. クライアントが `auth.signUp({ options: { emailRedirectTo: 'https://...' } })` で URL を指定
+2. その URL が `additional_redirect_urls` のいずれかと**完全一致**するなら、それを使う
+3. マッチしない or 指定なしなら **`site_url` にフォールバック**
+
+「許可リストにマッチしないと黙って `site_url` に流される」という挙動が地雷ポイント。クライアント側で `?emailRedirectTo=` を変えても、サーバ側 `additional_redirect_urls` を同時に更新しないと反映されない。
+
+### このリポジトリでの現在値
+
+```toml
+# supabase/config.toml
+[auth]
+site_url = "http://127.0.0.1:3010/health"
+additional_redirect_urls = [
+  "http://127.0.0.1:3010/health",        # フロント未稼働時のフォールバック着地
+  "http://127.0.0.1:3000/auth/callback", # 将来のフロント（Next.js 等）想定
+]
+```
+
+フロント（Next.js 等）が別リポジトリで未稼働なので、確認リンクの着地先は API 自身の `/health`。ローカルでポート 3000 を別 PJT が使っている事情もあって、衝突を避けるために一旦こうしてある。フロントを実装したら `site_url` を `http://127.0.0.1:3000` に戻し、サインアップ側で `emailRedirectTo: 'http://127.0.0.1:3000/auth/callback'` を渡せばよい（`additional_redirect_urls` には既に登録済み）。
+
+本番（Cloudflare Pages 等にフロントを置く場合）も同様に、ホスト名違いで `additional_redirect_urls` に追加してから、Supabase Cloud ダッシュボードに反映する（または `supabase config push`）。
+
+### PKCE フロー vs Implicit フロー
+
+Supabase Auth は確認後の token 受け渡しに 2 種類のフローを持つ。`@supabase/supabase-js` v2 のデフォルトは **PKCE**。
+
+| フロー       | 着地時の URL 形式                                        | フロント側の処理                                       | 特徴                                                                                                       |
+| ------------ | -------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| **PKCE**     | `https://.../auth/callback?code=abc123`                  | `supabase.auth.exchangeCodeForSession(code)` を呼ぶ    | code は短命・使い捨て。サーバサイドレンダリング（Next.js Route Handler 等）と相性が良い。**推奨**          |
+| **Implicit** | `https://.../auth/callback#access_token=...&type=signup` | `location.hash` から token を取り出して `setSession()` | hash（fragment）は HTTP リクエストに乗らないのでサーバログには漏れないが、ブラウザ履歴に残る。レガシー扱い |
+
+**HTTP 上の決定的な差**: PKCE は `?code=` なので**サーバまで届く**（Hono の middleware でクエリパラメータとして読める）。Implicit は `#access_token=` でブラウザに留まる（**サーバには絶対に届かない**＝Hono 側ではログにすら出ない）。
+
+本リポジトリの確認メールテンプレ（`supabase/templates/confirmation.html`）に埋め込まれている `{{ .ConfirmationURL }}` は Supabase が組み立てるので、フロー選択は `@supabase/supabase-js` のクライアント初期化オプション（`auth.flowType: 'pkce' | 'implicit'`、デフォルト `'pkce'`）で決まる。本プロジェクトは明示設定していない＝**PKCE**。
+
+### フロント不在での実機観察（推奨手順）
+
+フロントを作る前でも、リダイレクトが「期待どおりの URL に・期待どおりの形式で」飛んでいるかは確認できる:
+
+1. `pnpm dev` で API 起動・`supabase start` でローカル Supabase 起動
+2. `Invoke-RestMethod -Method Post -Uri http://127.0.0.1:3010/v1/customers -ContentType application/json -Body $body` で**新規メール**でサインアップ（既存メールだと 409）
+3. Mailpit（http://127.0.0.1:54324）で確認メールを開き、「メールアドレスを確認する」ボタンの **URL を右クリックでコピー**
+4. URL は `http://127.0.0.1:54321/auth/v1/verify?token=...&type=signup&redirect_to=http%3A%2F%2F127.0.0.1%3A3010%2Fhealth` の形。`redirect_to` が `site_url` の URL エンコードになっていることを確認
+5. ブラウザで URL を開くと: Supabase Auth 側で token を消費 → `auth.users.email_confirmed_at` をセット → 303 で `http://127.0.0.1:3010/health?code=xxx` に着地（PKCE フロー）
+6. ブラウザのアドレスバーを見ると `?code=...` の query パラメータが付いている → **これがフロント側で `exchangeCodeForSession` に渡すべき値**
+7. `/health` 自体は code を見ないので、API ログには `GET /health 200` が出るだけ。リダイレクトが想定どおり 200 で着地していることをここで確認
+
+> 💡 **`type` パラメータ**: `redirect_to` のすぐ近くに `type=signup` / `type=recovery` / `type=email_change` が付く。フロントの `/auth/callback` ハンドラはこれを見て分岐し、「サインアップ後はダッシュボードへ」「パスワード変更後はパスワード再設定フォームへ」と着地後の遷移を変える。
+
+### フロント有り時の典型実装（理屈の押さえ）
+
+Next.js App Router（別リポジトリ想定）であれば `app/auth/callback/route.ts` を 1 本書けば終わる:
+
+```typescript
+import { createServerClient } from '@supabase/ssr';
+import { cookies } from 'next/headers';
+import { NextResponse } from 'next/server';
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const code = url.searchParams.get('code');
+  const type = url.searchParams.get('type'); // 'signup' | 'recovery' | 'email_change'
+  if (!code) return NextResponse.redirect(new URL('/login?error=missing_code', url));
+
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { cookies: () => cookies() }, // 取得した session を cookie に保存
+  );
+  const { error } = await supabase.auth.exchangeCodeForSession(code);
+  if (error) {
+    return NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(error.message)}`, url));
+  }
+
+  // type ごとに着地先を変えるのが UX 上ベター
+  const next =
+    type === 'recovery' ? '/account/password' : type === 'signup' ? '/welcome' : '/dashboard';
+  return NextResponse.redirect(new URL(next, url));
+}
+```
+
+ポイント:
+
+- **`exchangeCodeForSession` は 1 回しか成功しない**（code が使い捨て）。リトライ用に GET を投機実行するような UI にしないこと
+- **cookie への保存はサーバ側で行う**（`@supabase/ssr` の `createServerClient` を使うとこれが自動）。クライアント JS で `setSession` するパターンは IE 互換などの理由がなければ採用しない
+- **`type` 分岐は UX 改善のため**。サインアップ確認直後にいきなりダッシュボードに放り込むと「アカウント作成された手応え」がないので、`/welcome` のような中継ページを挟むのが定石
+
+### 本番（Supabase Cloud）の運用ポイント
+
+ローカル `config.toml` の `site_url` / `additional_redirect_urls` は本番に自動反映**されない**。本番反映の選択肢は 2 つ:
+
+| 方法                                     | 反映先                             | 特徴                                                             |
+| ---------------------------------------- | ---------------------------------- | ---------------------------------------------------------------- |
+| Supabase Dashboard で手動設定            | Authentication → URL Configuration | 画面ポチポチ。Git で履歴管理されない                             |
+| `supabase config push --linked` でアップ | リンク済みプロジェクト             | `config.toml` をそのまま本番へ。Git で履歴管理される（**推奨**） |
+
+本リポジトリは production と staging で**別の Supabase プロジェクト**を使うので、`supabase link --project-ref <ref>` で対象を切り替えてから `config push` する。**ローカル用の `127.0.0.1` URL を本番に push しないように**、本番用には別の `config.toml` を持つか、`config push` 前に `site_url` / `additional_redirect_urls` を本番ホスト名に書き換える運用が必要（このリポジトリでは Step 5 で扱う予定）。
+
+---
+
 ## 主要コマンド
 
 | コマンド                                           | 用途                                                                                                                                                            |
@@ -615,7 +729,9 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
 - [ ] **Phase 8**: **Supabase Auth メール運用**（確認メールのテンプレート / Custom SMTP / 確認後リダイレクト設計）
   - 本番は `enable_confirmations = ON`（＝正しい設定）。「Supabase Auth を使うバックエンド担当」として確認メールのテンプレ更新・Custom SMTP 切替を一周しておく
   - [x] Step 1（2026-05-13 完了）: ローカルの `supabase/config.toml` を `enable_confirmations = true` にして本番に揃え、`POST /v1/customers` → 確認メール（Inbucket/Mailpit http://localhost:54324 で受信・`verify` リンク + 6 桁 OTP を確認）→ 確認リンク 303 リダイレクト + `auth.users.email_confirmed_at` セット → パスワードログインで JWT 取得、までを一周。あわせて確認必須化で顕在化したサインアップ経路の不具合を修正（確認必須だと `auth.signUp()` がセッションを返さず、直後の「トリガ生成 customers 行の読み戻し」が RLS で 404 になる → サインアップ経路の customers 参照だけ service_role の admin クライアント経由に変更）。`site_url` / `additional_redirect_urls` はフロント未稼働のため一旦 `http://127.0.0.1:3010/health` に着地（他のローカル PJT のポート 3000 と衝突させない）
-  - [ ] Step 2〜5: 確認メールのテンプレートを `supabase/config.toml` + `supabase/templates/*.html`（リポジトリ管理）で日本語＋ブランド文面に → 確認後リダイレクト設計 → Custom SMTP（Resend 等）へ切替 → 本番反映
+  - [x] Step 2（2026-05-14 完了）: メールテンプレートをリポジトリ管理に — `supabase/templates/{confirmation,recovery,magic_link,email_change}.html` を新設（日本語＋ブランド色 `#b85c5c`・テーブルレイアウト + インライン CSS で HTML メール互換）。`supabase/config.toml` の `[auth.email.template.*]` 4 セクションを有効化し件名を `【ケーキショップ】…` に日本語化。`{{ .ConfirmationURL }}` / `{{ .Token }}` / `{{ .SiteURL }}` / `{{ .Email }}` / `{{ .NewEmail }}` / `{{ .Data }}` の使い方を冒頭コメントに整理。confirmation メールは Mailpit で実機表示を確認済（recovery / magic_link / email_change は同じ仕組みなので個別検証は省略）
+  - [x] Step 3（2026-05-14 完了）: 確認後リダイレクトの三層設計（`site_url` / `additional_redirect_urls` / `redirect_to`）と PKCE/Implicit フローを整理 → [認証メールのリダイレクト設計](#認証メールのリダイレクト設計supabase-auth-phase-8-step-3) 参照。`additional_redirect_urls` に将来のフロント用 `http://127.0.0.1:3000/auth/callback` を追加（許可リスト整備）
+  - [ ] Step 4〜5: Custom SMTP（Resend 等）へ切替 → 本番（Supabase Cloud）反映
 
 ---
 
