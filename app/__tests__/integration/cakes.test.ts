@@ -17,11 +17,7 @@ import { createPlaceOrderUseCase } from '@/modules/orders/application/place-orde
 import { createGetOrderUseCase } from '@/modules/orders/application/get-order.usecase';
 import { createOrderController } from '@/modules/orders/presentation/order.controller';
 import { InMemoryOrderRepository } from '@/modules/orders/application/__test-helpers__/in-memory-order.repository';
-import {
-  createFakeAuthMiddleware,
-  requireAuth,
-  requireAdmin,
-} from '@/shared/http/auth.middleware';
+import { createFakeAuthMiddleware, requireAuth, requireAdmin } from '@/shared/http/auth.middleware';
 import type { AppEnv, AuthUser, RequestModules } from '@/shared/http/request-context';
 
 // ---------------------------------------------------------------------------
@@ -68,11 +64,7 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
   const customerAuth = new FakeCustomerAuth(customersRepo);
   const customersController = createCustomerController({
     listCustomers: createListCustomersUseCase(customersRepo),
-    signUpCustomer: createSignUpCustomerUseCase(
-      customerAuth,
-      customersRepo,
-      silentLogger,
-    ),
+    signUpCustomer: createSignUpCustomerUseCase(customerAuth, customersRepo, silentLogger),
   });
 
   const ordersRepo = new InMemoryOrderRepository();
@@ -101,10 +93,7 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
   };
 
   const app = createApp({
-    rootMiddlewares: [
-      createFakeAuthMiddleware(params.user ?? null),
-      fakeModulesMiddleware,
-    ],
+    rootMiddlewares: [createFakeAuthMiddleware(params.user ?? null), fakeModulesMiddleware],
     guards: {
       adminGuard: [requireAuth(), requireAdmin()],
       authGuard: [requireAuth()],
@@ -234,13 +223,15 @@ describe('POST /v1/cakes（admin 専用）', () => {
 
       expect(res.status).toBe(400);
       const body = (await res.json()) as {
-        error: { code: string; message: string; details?: Array<{ field: string; message: string }> };
+        error: {
+          code: string;
+          message: string;
+          details?: Array<{ field: string; message: string }>;
+        };
       };
       expect(body.error.code).toBe('VALIDATION_ERROR');
       expect(body.error.details).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ field: 'name' }),
-        ]),
+        expect.arrayContaining([expect.objectContaining({ field: 'name' })]),
       );
     });
 

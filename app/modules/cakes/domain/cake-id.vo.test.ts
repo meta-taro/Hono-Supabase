@@ -26,9 +26,7 @@ describe('CakeId.from', () => {
   });
 
   it('UUID v1 形式（バージョン桁が 1）を拒否する', () => {
-    expect(() => CakeId.from('550e8400-e29b-11d4-a716-446655440000')).toThrow(
-      InvalidCakeError,
-    );
+    expect(() => CakeId.from('550e8400-e29b-11d4-a716-446655440000')).toThrow(InvalidCakeError);
   });
 
   it('空文字を拒否する', () => {

@@ -19,9 +19,7 @@ import type { AppLogger } from './logger';
 //     ロガーは通らない（createWorkersLogger が使われる）。それでも整合性のため厳密化。
 // ---------------------------------------------------------------------------
 
-export const createNodePinoLogger = (
-  env: NodeJS.ProcessEnv = process.env,
-): AppLogger => {
+export const createNodePinoLogger = (env: NodeJS.ProcessEnv = process.env): AppLogger => {
   const isDevelopment = env.NODE_ENV === 'development';
 
   const pinoLogger: PinoLogger = pino({

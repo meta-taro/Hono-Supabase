@@ -19,20 +19,15 @@ const TEST_NAME_PREFIX = '__test_cake_';
 // （本プロジェクトの cakes テーブルは現状 anon に SELECT しか許可していないため、
 //  テストで挿入・削除するには service_role が必要。Phase 6 で管理者ロール用ポリシーを追加する。）
 const env = loadEnv();
-const sbAdmin: SupabaseClient = createClient(
-  env.SUPABASE_URL,
-  env.SUPABASE_SERVICE_ROLE_KEY,
-  { auth: { persistSession: false, autoRefreshToken: false } },
-);
+const sbAdmin: SupabaseClient = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
 
 // テスト目印付きの行のみを削除する。
 // `like('name', '__test_cake_%')` は SQL の `where name like '__test_cake_%'` と同じ意味で、
 // このプレフィックスで始まる行のみを対象にする。
 const cleanupTestRows = async (): Promise<void> => {
-  const { error } = await sbAdmin
-    .from('cakes')
-    .delete()
-    .like('name', `${TEST_NAME_PREFIX}%`);
+  const { error } = await sbAdmin.from('cakes').delete().like('name', `${TEST_NAME_PREFIX}%`);
   if (error) {
     throw new Error(`テストデータの掃除に失敗: ${error.message}`);
   }
@@ -120,20 +115,12 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
     it('name 昇順でソートされる', async () => {
       // 投入順と期待ソート順が異なるよう、c → a → b の順で登録する。
       // list() が DB 側の `order by name` を使っていれば、結果は a → b → c になる。
-      await repo.save(
-        Cake.create({ name: `${TEST_NAME_PREFIX}c`, price: 500, stock: 1 }),
-      );
-      await repo.save(
-        Cake.create({ name: `${TEST_NAME_PREFIX}a`, price: 500, stock: 1 }),
-      );
-      await repo.save(
-        Cake.create({ name: `${TEST_NAME_PREFIX}b`, price: 500, stock: 1 }),
-      );
+      await repo.save(Cake.create({ name: `${TEST_NAME_PREFIX}c`, price: 500, stock: 1 }));
+      await repo.save(Cake.create({ name: `${TEST_NAME_PREFIX}a`, price: 500, stock: 1 }));
+      await repo.save(Cake.create({ name: `${TEST_NAME_PREFIX}b`, price: 500, stock: 1 }));
 
       const all = await repo.list();
-      const testNames = all
-        .map((c) => c.name)
-        .filter((n) => n.startsWith(TEST_NAME_PREFIX));
+      const testNames = all.map((c) => c.name).filter((n) => n.startsWith(TEST_NAME_PREFIX));
 
       expect(testNames).toEqual([
         `${TEST_NAME_PREFIX}a`,

@@ -151,9 +151,19 @@ max_indexes = 5
 enabled = true
 # The base URL of your website. Used as an allow-list for redirects and for constructing URLs used
 # in emails.
-site_url = "http://127.0.0.1:3000"
+# フロント（Next.js 等）は別リポジトリで未稼働なので、確認リンクの着地先はこの API 自身の
+# /health にしておく（ポート 3000 で動く他のローカル PJT に飛ばさないため）。フロントが
+# 用意できたら site_url を http://127.0.0.1:3000 に戻し、emailRedirectTo は /auth/callback
+# を指す。本番（Cloud）の site_url はダッシュボード／`supabase config push` 側で別管理。
+site_url = "http://127.0.0.1:3010/health"
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
-additional_redirect_urls = ["https://127.0.0.1:3000"]
+# `auth.signUp({ options: { emailRedirectTo } })` で指定する URL はここに登録された URL の
+# いずれかと完全一致する必要がある（マッチしないと site_url にフォールバック）。
+# 将来フロントを別リポジトリで実装したとき用に `/auth/callback` も先に登録しておく。
+additional_redirect_urls = [
+  "http://127.0.0.1:3010/health",        # フロント未稼働時のフォールバック着地
+  "http://127.0.0.1:3000/auth/callback", # 将来のフロント（Next.js 等）想定
+]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # JWT issuer URL. If not set, defaults to the local API URL (http://127.0.0.1:<port>/auth/v1).
@@ -216,7 +226,9 @@ enable_signup = true
 # addresses. If disabled, only the new email is required to confirm.
 double_confirm_changes = true
 # If enabled, users need to confirm their email address before signing in.
-enable_confirmations = false
+# 本番（Supabase Cloud）は ON。ローカルも本番に揃え、サインアップ → 確認メール → ログインの
+# 一連を Inbucket（http://localhost:54324）で観察できるようにする（Phase 8 Step 1）。
+enable_confirmations = true
 # If enabled, users will need to reauthenticate or have logged in recently to change their password.
 secure_password_change = false
 # Controls the minimum amount of time that must pass before sending another signup confirmation or password reset email.
@@ -226,15 +238,72 @@ otp_length = 6
 # Number of seconds before the email OTP expires (defaults to 1 hour).
 otp_expiry = 3600
 
-# Use a production-ready SMTP server
+# Custom SMTP（Phase 8 — Resend）
+#
+# ★ 重要 — ローカル（このコンテナ）では実 SMTP に切替えない方針です（理由は下記）。
+# 実 SMTP の検証は Phase 8 Step 5 で **Supabase Cloud（本番 / staging プロジェクト）に直接**
+# 設定して行います。ローカルでは Inbucket（http://127.0.0.1:54324）を引き続き使い、
+# テンプレ表示や確認リンク到達を観察するだけにします。
+#
+# 【経緯メモ — なぜローカルで実 SMTP 検証をやらないか】
+# 2026-05-14 に試行したところ、gotrue コンテナから smtp.resend.com への TLS ハンドシェイクで
+#   tls: failed to verify certificate: x509: certificate signed by unknown authority
+# が発生。原因は **ホスト Windows にインストールされている Norton Antivirus の
+# "Web/Mail Shield" が outbound TLS を巻き取り、自社 CA で再署名**していたこと。
+# Docker Desktop / WSL2 の outbound 通信もホストを通るため、コンテナから見ると
+# Norton の Root CA が信頼ストアに入っておらず、SMTP の TLS 接続が拒否される。
+# PowerShell で生 TLS の証明書 Issuer を見たら "Norton Web/Mail Shield Root" だったため確定。
+#
+# 取り得た選択肢と判断:
+#   (A) Norton の Root CA をコンテナの ca-certificates に注入 → リポジトリに環境特有の証明書を
+#       持ち込むことになり、学習リポジトリの clean さを壊すため不採用。
+#   (B) Norton の TLS スキャンを切る → ローカル PC のセキュリティ機能を犠牲にする判断は越権。
+#   (C) ローカル SMTP 検証は諦め、Step 5 で Cloud 側に直接 Custom SMTP を入れて達成 → 採用。
+#       Cloud は Norton の手の届かない場所で動くため、Resend の正規証明書がそのまま見える。
+#
+# 【再有効化の手順（個人 PC で TLS インスペクションがない環境で試したい場合のみ）】
+# 下のブロックのコメントを外し、`.env` に SUPABASE_SMTP_PASS=re_xxx を入れ、
+# `supabase stop && supabase start` で再起動する。Resend は無料枠で未検証ドメインからの送信を
+# 弾くため、初回は admin_email を "onboarding@resend.dev" に差し替えてパイプライン疎通を確認。
+#
+# Resend の SMTP 設定（公式: https://resend.com/docs/send-with-smtp）:
+#   - host: smtp.resend.com / port: 587 (STARTTLS) または 465 (TLS)
+#   - user: "resend" 固定 / pass: 発行した API キー（`re_xxxxx`）
+#
 # [auth.email.smtp]
 # enabled = true
-# host = "smtp.sendgrid.net"
+# host = "smtp.resend.com"
 # port = 587
-# user = "apikey"
-# pass = "env(SENDGRID_API_KEY)"
-# admin_email = "admin@email.com"
-# sender_name = "Admin"
+# user = "resend"
+# pass = "env(SUPABASE_SMTP_PASS)"
+# admin_email = "noreply@cakeshop.example"
+# sender_name = "ケーキショップ"
+
+# Email templates — Phase 8 Step 2 でリポジトリ管理に変更。
+# Supabase Auth が送信する確認メール本文を、ブランド付き日本語 HTML に差し替える。
+# `content_path` はプロジェクトルート（このリポジトリのトップ）からの相対パス。
+# 利用できる変数:
+#   {{ .ConfirmationURL }}  確認用URL（type=signup / recovery / magiclink / email_change で共通）
+#   {{ .Token }}            6 桁 OTP（テンプレに含めれば届く）
+#   {{ .SiteURL }}          [auth] site_url の値
+#   {{ .Email }}            受信者の現在のメールアドレス
+#   {{ .NewEmail }}         email_change 時の新しいメールアドレス
+#   {{ .Data }}             user_metadata（任意のJSON）
+[auth.email.template.confirmation]
+subject = "【ケーキショップ】メールアドレスの確認をお願いします"
+content_path = "./supabase/templates/confirmation.html"
+
+[auth.email.template.recovery]
+subject = "【ケーキショップ】パスワードのリセット"
+content_path = "./supabase/templates/recovery.html"
+
+[auth.email.template.magic_link]
+subject = "【ケーキショップ】ログイン用リンク"
+content_path = "./supabase/templates/magic_link.html"
+
+[auth.email.template.email_change]
+subject = "【ケーキショップ】メールアドレス変更の確認"
+content_path = "./supabase/templates/email_change.html"
 
 # Uncomment to customize email template
 # [auth.email.template.invite]

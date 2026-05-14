@@ -64,9 +64,9 @@ describe('Customer.create', () => {
   });
 
   it('authUserId が UUID v4 でないと拒否する', () => {
-    expect(() =>
-      Customer.create({ authUserId: 'not-uuid', name: 'a', email: 'a@b.co' }),
-    ).toThrow(InvalidCustomerError);
+    expect(() => Customer.create({ authUserId: 'not-uuid', name: 'a', email: 'a@b.co' })).toThrow(
+      InvalidCustomerError,
+    );
   });
 
   it('生成された ID はそれぞれユニーク', () => {

@@ -1,8 +1,5 @@
 import type { AppLogger } from '@/shared/infrastructure/logger';
-import type {
-  OrderRepository,
-  PlaceOrderItem,
-} from '../domain/order.repository';
+import type { OrderRepository, PlaceOrderItem } from '../domain/order.repository';
 import type { Order } from '../domain/order';
 import { CustomerId } from '../domain/customer-id.vo';
 import { CakeId } from '../domain/cake-id.vo';
@@ -28,10 +25,7 @@ export interface PlaceOrderInput {
 //   - そのため UseCase は「items[cakeId, quantity]」だけを渡し、
 //     完成済みの Order を repository から受け取る
 //   - Order.create() は in-memory リポジトリ + テスト経路でのみ使われる
-export const createPlaceOrderUseCase = (
-  repo: OrderRepository,
-  logger: AppLogger,
-) => {
+export const createPlaceOrderUseCase = (repo: OrderRepository, logger: AppLogger) => {
   return async (input: PlaceOrderInput): Promise<Order> => {
     // 早期チェック: 明細 0 件は VO 変換前に弾く（VO 変換の例外より意味が明確）
     if (input.items.length === 0) {
@@ -50,9 +44,7 @@ export const createPlaceOrderUseCase = (
     const seen = new Set<string>();
     for (const item of items) {
       if (seen.has(item.cakeId.value)) {
-        throw new InvalidOrderError(
-          '同一商品は 1 行にまとめて指定してください',
-        );
+        throw new InvalidOrderError('同一商品は 1 行にまとめて指定してください');
       }
       seen.add(item.cakeId.value);
     }

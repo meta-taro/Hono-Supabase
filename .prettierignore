@@ -1,0 +1,16 @@
+# 自動生成・ツール管理ファイルは整形しない（フォーマットで巨大 diff が出るだけで意味がない）
+pnpm-lock.yaml
+dist/
+build/
+coverage/
+.wrangler/
+node_modules/
+
+# 使い捨てスクラッチ（コミットしない一時ファイル）
+tmp-*.mjs
+tmp-*.ts
+
+# Supabase Auth が送る HTML メールテンプレート。prettier が整形すると属性改行や
+# 余計な空白で <table> ベースのメールレイアウトが崩れる可能性があるため整形対象外。
+# 変更時は人間が責任を持って手で整える（Phase 8 Step 2 で導入）。
+supabase/templates/

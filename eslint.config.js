@@ -67,6 +67,9 @@ export default tseslint.config(
       '.wrangler/**',
       'eslint.config.js',
       'vitest.config.ts',
+      // 使い捨てスクラッチ（コミットしない一時ファイル。tsconfig の include 外なのでパースエラーになる）
+      'tmp-*.mjs',
+      'tmp-*.ts',
     ],
   },
 );

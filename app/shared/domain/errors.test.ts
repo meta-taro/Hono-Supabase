@@ -18,9 +18,7 @@ describe('AppError 基底クラス', () => {
     expect(err.code).toBe('VALIDATION_ERROR');
     expect(err.message).toBe('bad input');
     expect(err.status).toBe(400);
-    expect(err.details).toEqual([
-      { field: 'price', message: '0より大きい整数を指定してください' },
-    ]);
+    expect(err.details).toEqual([{ field: 'price', message: '0より大きい整数を指定してください' }]);
   });
 });
 

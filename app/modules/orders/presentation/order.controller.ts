@@ -1,8 +1,5 @@
 import type { Order } from '../domain/order';
-import type {
-  PlaceOrderUseCase,
-  PlaceOrderInput,
-} from '../application/place-order.usecase';
+import type { PlaceOrderUseCase, PlaceOrderInput } from '../application/place-order.usecase';
 import type { GetOrderUseCase } from '../application/get-order.usecase';
 import type { OrderResponse } from './order.dto';
 import { CustomerNotFoundInOrderError } from '../domain/order.errors';

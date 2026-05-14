@@ -18,11 +18,7 @@ import { createPlaceOrderUseCase } from '@/modules/orders/application/place-orde
 import { createGetOrderUseCase } from '@/modules/orders/application/get-order.usecase';
 import { createOrderController } from '@/modules/orders/presentation/order.controller';
 import { InMemoryOrderRepository } from '@/modules/orders/application/__test-helpers__/in-memory-order.repository';
-import {
-  createFakeAuthMiddleware,
-  requireAuth,
-  requireAdmin,
-} from '@/shared/http/auth.middleware';
+import { createFakeAuthMiddleware, requireAuth, requireAdmin } from '@/shared/http/auth.middleware';
 import type { AppEnv, AuthUser, RequestModules } from '@/shared/http/request-context';
 
 // ---------------------------------------------------------------------------
@@ -63,11 +59,7 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
   const customerAuth = new FakeCustomerAuth(customersRepo);
   const customersController = createCustomerController({
     listCustomers: createListCustomersUseCase(customersRepo),
-    signUpCustomer: createSignUpCustomerUseCase(
-      customerAuth,
-      customersRepo,
-      silentLogger,
-    ),
+    signUpCustomer: createSignUpCustomerUseCase(customerAuth, customersRepo, silentLogger),
   });
 
   const cakesRepo = new InMemoryCakeRepository();
@@ -100,10 +92,7 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
   };
 
   const app = createApp({
-    rootMiddlewares: [
-      createFakeAuthMiddleware(params.user ?? null),
-      fakeModulesMiddleware,
-    ],
+    rootMiddlewares: [createFakeAuthMiddleware(params.user ?? null), fakeModulesMiddleware],
     guards: {
       adminGuard: [requireAuth(), requireAdmin()],
       authGuard: [requireAuth()],
@@ -123,8 +112,7 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
   return { app, ordersRepo, customersRepo, seedCustomer };
 };
 
-const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 describe('POST /v1/orders（要認証）', () => {
   it('201 と作成された注文を返す（在庫が減算され、PLACED 状態）', async () => {
@@ -350,9 +338,7 @@ describe('POST /v1/orders（要認証）', () => {
         error: { code: string; details?: Array<{ field: string }> };
       };
       expect(body.error.code).toBe('VALIDATION_ERROR');
-      expect(
-        body.error.details?.some((d) => d.field.includes('cakeId')),
-      ).toBe(true);
+      expect(body.error.details?.some((d) => d.field.includes('cakeId'))).toBe(true);
     });
 
     it('quantity が 0 のとき 400 を返す', async () => {
@@ -421,9 +407,7 @@ describe('GET /v1/orders/:id（要認証）', () => {
     expect(body.id).toBe(created.id);
     expect(body.status).toBe('PLACED');
     expect(body.totalAmount).toBe(1400);
-    expect(body.items).toEqual([
-      expect.objectContaining({ cakeId, quantity: 2 }),
-    ]);
+    expect(body.items).toEqual([expect.objectContaining({ cakeId, quantity: 2 })]);
   });
 
   it('存在しない注文を取得すると 404 + NOT_FOUND を返す', async () => {
@@ -460,4 +444,3 @@ describe('GET /v1/orders/:id（要認証）', () => {
     expect(body.error.code).toBe('UNAUTHORIZED');
   });
 });
-

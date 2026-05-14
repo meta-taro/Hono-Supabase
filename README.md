@@ -297,6 +297,168 @@ watching https://cake-shop-api-staging.<account>.workers.dev/health  (interval 0
 
 ---
 
+## CI/CD・環境構成の指針（実運用想定）
+
+> ここはクリック手順書ではなく **「こう構成してある／してほしい」という運用ポリシー**です。GitHub / Supabase / Cloudflare の画面操作は変わりやすいので、具体的な遷移は各自 AI と対話しながら埋めてください。識別子（プロジェクト ref・アカウントサブドメイン）は「自分の値に差し替えるもの」として `<...>` 表記にしています。
+
+### ブランチモデルとデプロイの対応
+
+| GitHub ブランチ  | 役割     | デプロイ先（Cloudflare Workers）                     | ゲート                                                                                                                  |
+| ---------------- | -------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| feature ブランチ | 作業     | （デプロイなし）                                     | PR で CI（`ci.yml`）                                                                                                    |
+| `develop`        | 統合     | **staging**（`cake-shop-api-staging`）に push で自動 | なし（即時 100%）                                                                                                       |
+| `main`           | リリース | **production**（`cake-shop-api`）に push で          | **手動 approval**（GitHub Environment `production` の Required reviewers）→ `versions upload`(0%) → 承認 → `deploy@100` |
+
+通常の流れ: feature → PR → CI 緑 → `develop` にマージ（= staging に反映）→ 区切りで **`develop`→`main` の PR** を作る → CI 緑 → マージ（= `main` への push）→ `Deploy (production)` が承認待ちで停止 → Actions 画面の「Review deployments」で承認 → 本番 100% 切替。ロールバックは `pnpm exec wrangler rollback --env production`。
+
+ワークフローの実体（`.github/workflows/`）:
+
+| ファイル                | トリガ                         | 中身                                                                                                                                                                                   |
+| ----------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `checks.yml`            | （再利用部品 `workflow_call`） | `Lint & Typecheck` / `Bundle check (tsup + wrangler dry-run)` / `Test (Vitest + local Supabase)` の並列 3 ジョブ                                                                       |
+| `ci.yml`                | `pull_request`                 | `checks.yml` を呼ぶだけ（マージ前の検証）                                                                                                                                              |
+| `deploy-staging.yml`    | `push: develop`                | `checks` → `wrangler deploy --env staging`。**本番には一切触れない**                                                                                                                   |
+| `deploy-production.yml` | `push: main`                   | `checks` → `wrangler versions upload --env production`(0%) → `release-production`（Environment `production` の承認ゲート）→ `wrangler versions deploy <id>@100 --env production --yes` |
+
+### GitHub 側の前提
+
+- **`main` ブランチ保護**（Settings → Rules → Rulesets）: PR 必須（直 push 禁止）／status checks 必須（`checks / Lint & Typecheck`・`checks / Bundle check (tsup + wrangler dry-run)`・`checks / Test (Vitest + local Supabase)`）／force push 禁止／削除禁止／bypass なし（管理者も例外にしない）。`develop` は普段の作業ブランチなので、つけるなら force push 禁止程度で十分。
+- **リポジトリ Secrets**: `CLOUDFLARE_API_TOKEN`（最小権限 = Workers Scripts:Edit 等のテンプレ「Edit Cloudflare Workers」）／`CLOUDFLARE_ACCOUNT_ID`（`wrangler.toml` に `account_id` を書かない方針なので CI で必須）。**Supabase の鍵（`SUPABASE_*`）はここに置かない** — それは Worker の実行環境（`wrangler secret`）の責務。「アプリのシークレットは実行環境へ、CI のシークレットは CI へ」と置き場を分ける。
+- **リポジトリ Variables**（任意）: `WORKERS_DEV_SUBDOMAIN` = `<account-subdomain>`（Actions の Environment URL 表示用）。
+- **Environments**: `staging`（保護なし）／`production`（Required reviewers を設定 → `release-production` ジョブが「承認待ち」で停止 = 人間の関与点）。fork からの PR には Secrets が渡らない GitHub の仕様 + 本番デプロイは `main` push トリガなので、外部 PR が勝手に本番へ出ることはない。
+
+### Supabase 側の前提
+
+- **環境ごとに別プロジェクト**: production 用と staging 用で**別の Supabase プロジェクト**を立てる（このリポジトリでは production = `Hono-Supabase`、staging = `Hono-Supabase-STG`。ref `<...>` は各自のもの）。ローカルは `supabase start`（OSS セルフホスト、シミュレータではない）。
+- **本番データを staging に流さない**: staging のデータは**最初から合成・匿名化済みのシード**（`supabase/seed.staging.sql`）で用意する。準識別子は一般化（例: `placed_at` を日単位に丸める）。本番ダンプを staging にコピーするのは禁止。
+- **マイグレーションは前方向のみ**: 既存の `supabase/migrations/*.sql` は編集しない（新規ファイル追加だけ）。リンク済みプロジェクトへ `supabase db push` で適用。マイグレに残したくないアドホック SQL（seed・調査）は `supabase db query --linked -f <file>`（Management API 経由・DB パスワード不要）。
+- **鍵の置き場**: `SUPABASE_URL` / `SUPABASE_ANON_KEY`（新方式なら publishable key）/ `SUPABASE_SERVICE_ROLE_KEY`（新方式なら secret key）は **`pnpm wrangler:secret:<env> <NAME>` で Worker ごとに登録**。リポジトリにも GitHub Secrets にも置かない。新方式の secret key は生成直後の 1 回しか全文表示されないので即コピー。
+- **アクセス制御の境界は RLS**: `cakes` は SELECT 公開・書込は service_role のみ、`customers` は INSERT 匿名可・SELECT 本人のみ、`orders`/`order_items` は本人のみ。アプリはリクエストごとに anon クライアントを作り JWT を載せて呼ぶ（クライアントを信じない）。
+- **メール**: 本番は `enable_confirmations = ON`（＝正しい設定）。ローカルも `supabase/config.toml` で揃える（Phase 8 Step 1 完了）。確認メールのテンプレート・Custom SMTP・確認後リダイレクトの運用は **Phase 8** で引き続き扱う。
+
+### このリポジトリ固有の名前 vs 差し替えるもの
+
+フォークしたとき「これ何？」にならないよう、ドキュメント上の文字列は次の線引き:
+
+- **差し替えるもの（`<...>` プレースホルダ表記）**: Cloudflare の `<account-subdomain>`、Supabase の `<project-ref>` / `<your-project-ref>`、`CLOUDFLARE_ACCOUNT_ID` の中身 — いずれも秘密ではないが、フォーク者は自分の値を使う。
+- **そのまま残すもの（構成上の固有名）**: Worker 名 `cake-shop-api` / `cake-shop-api-staging`（`wrangler.toml` の `name`）、Supabase プロジェクト名 `Hono-Supabase` / `Hono-Supabase-STG`、env 名 `staging` / `production` — これらは「このリポジトリの設定値」であって、変えたければ変えればいいと一目で分かる。
+
+---
+
+## 認証メールのリダイレクト設計（Supabase Auth・Phase 8 Step 3）
+
+サインアップ確認メールやパスワードリセットメールの「リンクを踏んだ後どこに着地するか」は、Supabase Auth では **3 つの設定変数の組み合わせ**で決まる。挙動を理解しておかないと「リンクを踏んだら全然違う画面に飛ばされた」「`redirect_to` を指定したのに無視された」といった事故が起きる。
+
+### 3 つの変数とそれぞれの責務
+
+| 変数                                     | 設定場所                                      | 役割                                                                                       |
+| ---------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `site_url`                               | `supabase/config.toml` の `[auth]` セクション | **デフォルトの着地先**。クライアントが `redirect_to` を指定しないときに使われる            |
+| `additional_redirect_urls`               | 同上                                          | **許可リスト**。`redirect_to` で指定できる URL を完全一致で列挙（リストに無い URL は拒否） |
+| `redirect_to` / `emailRedirectTo` (引数) | クライアントの `auth.signUp({ options })` 等  | **その操作だけの上書き**。`additional_redirect_urls` にマッチした場合のみ有効              |
+
+優先順位は次のとおり:
+
+1. クライアントが `auth.signUp({ options: { emailRedirectTo: 'https://...' } })` で URL を指定
+2. その URL が `additional_redirect_urls` のいずれかと**完全一致**するなら、それを使う
+3. マッチしない or 指定なしなら **`site_url` にフォールバック**
+
+「許可リストにマッチしないと黙って `site_url` に流される」という挙動が地雷ポイント。クライアント側で `?emailRedirectTo=` を変えても、サーバ側 `additional_redirect_urls` を同時に更新しないと反映されない。
+
+### このリポジトリでの現在値
+
+```toml
+# supabase/config.toml
+[auth]
+site_url = "http://127.0.0.1:3010/health"
+additional_redirect_urls = [
+  "http://127.0.0.1:3010/health",        # フロント未稼働時のフォールバック着地
+  "http://127.0.0.1:3000/auth/callback", # 将来のフロント（Next.js 等）想定
+]
+```
+
+フロント（Next.js 等）が別リポジトリで未稼働なので、確認リンクの着地先は API 自身の `/health`。ローカルでポート 3000 を別 PJT が使っている事情もあって、衝突を避けるために一旦こうしてある。フロントを実装したら `site_url` を `http://127.0.0.1:3000` に戻し、サインアップ側で `emailRedirectTo: 'http://127.0.0.1:3000/auth/callback'` を渡せばよい（`additional_redirect_urls` には既に登録済み）。
+
+本番（Cloudflare Pages 等にフロントを置く場合）も同様に、ホスト名違いで `additional_redirect_urls` に追加してから、Supabase Cloud ダッシュボードに反映する（または `supabase config push`）。
+
+### PKCE フロー vs Implicit フロー
+
+Supabase Auth は確認後の token 受け渡しに 2 種類のフローを持つ。`@supabase/supabase-js` v2 のデフォルトは **PKCE**。
+
+| フロー       | 着地時の URL 形式                                        | フロント側の処理                                       | 特徴                                                                                                       |
+| ------------ | -------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| **PKCE**     | `https://.../auth/callback?code=abc123`                  | `supabase.auth.exchangeCodeForSession(code)` を呼ぶ    | code は短命・使い捨て。サーバサイドレンダリング（Next.js Route Handler 等）と相性が良い。**推奨**          |
+| **Implicit** | `https://.../auth/callback#access_token=...&type=signup` | `location.hash` から token を取り出して `setSession()` | hash（fragment）は HTTP リクエストに乗らないのでサーバログには漏れないが、ブラウザ履歴に残る。レガシー扱い |
+
+**HTTP 上の決定的な差**: PKCE は `?code=` なので**サーバまで届く**（Hono の middleware でクエリパラメータとして読める）。Implicit は `#access_token=` でブラウザに留まる（**サーバには絶対に届かない**＝Hono 側ではログにすら出ない）。
+
+本リポジトリの確認メールテンプレ（`supabase/templates/confirmation.html`）に埋め込まれている `{{ .ConfirmationURL }}` は Supabase が組み立てるので、フロー選択は `@supabase/supabase-js` のクライアント初期化オプション（`auth.flowType: 'pkce' | 'implicit'`、デフォルト `'pkce'`）で決まる。本プロジェクトは明示設定していない＝**PKCE**。
+
+### フロント不在での実機観察（推奨手順）
+
+フロントを作る前でも、リダイレクトが「期待どおりの URL に・期待どおりの形式で」飛んでいるかは確認できる:
+
+1. `pnpm dev` で API 起動・`supabase start` でローカル Supabase 起動
+2. `Invoke-RestMethod -Method Post -Uri http://127.0.0.1:3010/v1/customers -ContentType application/json -Body $body` で**新規メール**でサインアップ（既存メールだと 409）
+3. Mailpit（http://127.0.0.1:54324）で確認メールを開き、「メールアドレスを確認する」ボタンの **URL を右クリックでコピー**
+4. URL は `http://127.0.0.1:54321/auth/v1/verify?token=...&type=signup&redirect_to=http%3A%2F%2F127.0.0.1%3A3010%2Fhealth` の形。`redirect_to` が `site_url` の URL エンコードになっていることを確認
+5. ブラウザで URL を開くと: Supabase Auth 側で token を消費 → `auth.users.email_confirmed_at` をセット → 303 で `http://127.0.0.1:3010/health?code=xxx` に着地（PKCE フロー）
+6. ブラウザのアドレスバーを見ると `?code=...` の query パラメータが付いている → **これがフロント側で `exchangeCodeForSession` に渡すべき値**
+7. `/health` 自体は code を見ないので、API ログには `GET /health 200` が出るだけ。リダイレクトが想定どおり 200 で着地していることをここで確認
+
+> 💡 **`type` パラメータ**: `redirect_to` のすぐ近くに `type=signup` / `type=recovery` / `type=email_change` が付く。フロントの `/auth/callback` ハンドラはこれを見て分岐し、「サインアップ後はダッシュボードへ」「パスワード変更後はパスワード再設定フォームへ」と着地後の遷移を変える。
+
+### フロント有り時の典型実装（理屈の押さえ）
+
+Next.js App Router（別リポジトリ想定）であれば `app/auth/callback/route.ts` を 1 本書けば終わる:
+
+```typescript
+import { createServerClient } from '@supabase/ssr';
+import { cookies } from 'next/headers';
+import { NextResponse } from 'next/server';
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const code = url.searchParams.get('code');
+  const type = url.searchParams.get('type'); // 'signup' | 'recovery' | 'email_change'
+  if (!code) return NextResponse.redirect(new URL('/login?error=missing_code', url));
+
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { cookies: () => cookies() }, // 取得した session を cookie に保存
+  );
+  const { error } = await supabase.auth.exchangeCodeForSession(code);
+  if (error) {
+    return NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(error.message)}`, url));
+  }
+
+  // type ごとに着地先を変えるのが UX 上ベター
+  const next =
+    type === 'recovery' ? '/account/password' : type === 'signup' ? '/welcome' : '/dashboard';
+  return NextResponse.redirect(new URL(next, url));
+}
+```
+
+ポイント:
+
+- **`exchangeCodeForSession` は 1 回しか成功しない**（code が使い捨て）。リトライ用に GET を投機実行するような UI にしないこと
+- **cookie への保存はサーバ側で行う**（`@supabase/ssr` の `createServerClient` を使うとこれが自動）。クライアント JS で `setSession` するパターンは IE 互換などの理由がなければ採用しない
+- **`type` 分岐は UX 改善のため**。サインアップ確認直後にいきなりダッシュボードに放り込むと「アカウント作成された手応え」がないので、`/welcome` のような中継ページを挟むのが定石
+
+### 本番（Supabase Cloud）の運用ポイント
+
+ローカル `config.toml` の `site_url` / `additional_redirect_urls` は本番に自動反映**されない**。本番反映の選択肢は 2 つ:
+
+| 方法                                     | 反映先                             | 特徴                                                             |
+| ---------------------------------------- | ---------------------------------- | ---------------------------------------------------------------- |
+| Supabase Dashboard で手動設定            | Authentication → URL Configuration | 画面ポチポチ。Git で履歴管理されない                             |
+| `supabase config push --linked` でアップ | リンク済みプロジェクト             | `config.toml` をそのまま本番へ。Git で履歴管理される（**推奨**） |
+
+本リポジトリは production と staging で**別の Supabase プロジェクト**を使うので、`supabase link --project-ref <ref>` で対象を切り替えてから `config push` する。**ローカル用の `127.0.0.1` URL を本番に push しないように**、本番用には別の `config.toml` を持つか、`config push` 前に `site_url` / `additional_redirect_urls` を本番ホスト名に書き換える運用が必要（このリポジトリでは Step 5 で扱う予定）。
+
+---
+
 ## 主要コマンド
 
 | コマンド                                           | 用途                                                                                                                                                            |
@@ -319,6 +481,42 @@ watching https://cake-shop-api-staging.<account>.workers.dev/health  (interval 0
 | `supabase db push`                                 | マイグレーション適用（リンク済みプロジェクトに対し）                                                                                                            |
 | `supabase db query --linked -f F`                  | リンク済みプロジェクトに SQL ファイル F を実行（Management API 経由・DB パスワード不要）                                                                        |
 | `powershell -File scripts/zero-downtime-watch.ps1` | デプロイ中に `/health` を叩き続け無停止切替を観察する体験用ループ（→ [体験用スクリプト](#体験用スクリプトscripts) / bash 版: `scripts/zero-downtime-watch.sh`） |
+| `pnpm verify`                                      | 手動の総合チェック（`lint` + `typecheck` + `format:check` + `test` を順に実行）。push 前や PR 前のセルフ確認に使う                                              |
+
+---
+
+## ローカルの品質ゲート（pre-commit / verify）
+
+CI で初めて lint / format 違反に気づくと「ローカルでは緑なのにリモートで赤」になりやすい。**手元で芽を摘む二段構え** を入れてあります。
+
+### 1 段目: pre-commit フック（自動）— husky + lint-staged
+
+`git commit` の瞬間に **ステージされたファイルだけ** に対して整形と簡易 lint をかける。コミット作者がフォーマットを意識しなくても、リポジトリに入る瞬間に揃う。
+
+- **何が走るか**: `package.json` の `lint-staged` セクションで定義
+  - `*.{ts,tsx,js,mjs,cjs}` → `eslint --fix` ＋ `prettier --write`
+  - `*.{json,md,yml,yaml,toml,html,css}` → `prettier --write --ignore-unknown`（`.prettierignore` で `supabase/templates/` 等は除外）
+- **どう動くか**: `.husky/pre-commit` が `pnpm exec lint-staged` を起動 → 自動修正後、修正済みファイルが自動で再ステージ → そのままコミットが続行する
+- **失敗時の挙動**: 修正不能なエラー（型エラー級の lint 違反など）はコミットを中断。`lint-staged` が **元の状態に git stash でリストアしてくれる** ので、未コミット作業が壊れることはない
+- **初回セットアップ**: `pnpm install` 時に `prepare` スクリプトが `husky` を実行して `.husky/` を有効化するので、リポジトリを clone した人が追加で何かする必要はない
+
+> なぜ pre-commit は **format 系（自動修正で済むもの）に絞っているか**: 「重い検査（typecheck・全 test）まで走らせると、コミットのたびに数十秒〜数分待たされて結局フックを `--no-verify` で潰されがち」という現場あるあるを回避するため。重い検査は次の `pnpm verify` と CI に任せる。
+
+### 2 段目: 手動コマンド `pnpm verify`（push 前のセルフ確認）
+
+```bash
+pnpm verify   # = pnpm lint && pnpm typecheck && pnpm format:check && pnpm test
+```
+
+CI（`.github/workflows/checks.yml`）が回しているのと同じセットをローカルで一気に流せる。**push する前に手元で 1 回叩く習慣** をつけておくと、CI がレッドになる事故をほぼゼロにできる。
+
+### 3 段目: GitHub Actions の `checks.yml`（PR / deploy）
+
+PR と各環境への deploy ワークフローが必ず `checks.yml`（`workflow_call`）を呼び、Lint & Typecheck / Bundle check / Test を再実行する。`main` のブランチ保護でこれら 3 ジョブを必須 status checks に設定済なので、**CI が緑にならないと本番に出ない**。
+
+### 緊急脱出（フックを一時的にバイパス）
+
+仕組み上 `git commit --no-verify` でスキップは可能ですが、**通常運用では絶対に使わない**。`--no-verify` した瞬間に CI が赤くなって結局直すことになるだけ。
 
 ---
 
@@ -446,18 +644,20 @@ interface CakeRow {
 
 実際に叩いて確認するための `curl` 例。**ベース URL を差し替えれば 3 環境とも同じリクエストで動きます**。
 
-| 環境              | ベース URL                                                        | 起動方法                          |
-| ----------------- | ----------------------------------------------------------------- | --------------------------------- |
-| ローカル（Node）  | `http://localhost:3010`                                           | `pnpm dev`                        |
-| ローカル（Workers）| `http://localhost:8787`                                          | `pnpm wrangler:dev`               |
-| staging           | `https://cake-shop-api-staging.rzrhacympbmdkagoybba.workers.dev`  | `pnpm wrangler:deploy:staging`    |
-| production        | `https://cake-shop-api.rzrhacympbmdkagoybba.workers.dev`          | `pnpm wrangler:deploy:production` |
+| 環境                | ベース URL                                                      | 起動方法                          |
+| ------------------- | --------------------------------------------------------------- | --------------------------------- |
+| ローカル（Node）    | `http://localhost:3010`                                         | `pnpm dev`                        |
+| ローカル（Workers） | `http://localhost:8787`                                         | `pnpm wrangler:dev`               |
+| staging             | `https://cake-shop-api-staging.<account-subdomain>.workers.dev` | `pnpm wrangler:deploy:staging`    |
+| production          | `https://cake-shop-api.<account-subdomain>.workers.dev`         | `pnpm wrangler:deploy:production` |
+
+> `<account-subdomain>` は **Cloudflare アカウント単位**で決まる workers.dev のサブドメイン（Worker 単位ではない）。`pnpm exec wrangler whoami` か Cloudflare ダッシュボード（Workers & Pages → 右側の `*.workers.dev` 表示）で確認できる。フォークした人は自分のアカウントの値に読み替えること。
 
 > 以下は `BASE` 変数に上のいずれかを入れて実行する想定。
 
 ```bash
 BASE=http://localhost:3010                                          # ← 環境に応じて差し替え
-# BASE=https://cake-shop-api.rzrhacympbmdkagoybba.workers.dev        # 本番
+# BASE=https://cake-shop-api.<account-subdomain>.workers.dev         # 本番
 ```
 
 ### 認証不要な確認（ここまでは誰でも叩ける）
@@ -552,19 +752,23 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
 - [x] **Phase 4**: `customers` Bounded Context（同構造）
 - [x] **Phase 5**: `orders` Bounded Context（Domain Event + Postgres Function でアトミック在庫減算）
 - [x] **Phase 6**: Supabase Auth + RLS + 認証ミドルウェア + OpenAPI 仕上げ
-- [ ] **Phase 7**: **Cloudflare Workers 化**（本番デプロイ想定の最終段）
+- [x] **Phase 7**: **Cloudflare Workers 化**（本番デプロイ想定の最終段）
   - [x] Step 1〜6: エントリ二系統化 / `wrangler.toml` / `.dev.vars` / Workers 互換ロガー / JWKS DI / Workers ローカル疎通
-  - [x] Step 7: 初回本番デプロイ完了（Cloudflare アカウント取得 + Supabase Cloud 連携 + secret 登録 + `wrangler deploy`。`https://cake-shop-api.<account>.workers.dev/health` / `/v1/cakes` 200 OK 確認済み）
-  - [x] Step 8: 環境分離（`wrangler.toml` に `[env.staging]` / `[env.production]` を明示定義し `--env` 必須運用へ。staging 用に別 Supabase プロジェクト `Hono-Supabase-STG` を作成 + 4 マイグレーション適用 + 「伏せた合成テストデータ」`seed.staging.sql` 投入 + `cake-shop-api-staging` Worker に secret 登録 + デプロイ。`https://cake-shop-api-staging.<account>.workers.dev/health` / `/v1/cakes` 動作確認済み）
-  - [ ] Step 9: **CI/CD + リリース管理を一周**（実運用のリリースフロー体験）
+  - [x] Step 7: 初回本番デプロイ完了（Cloudflare アカウント取得 + Supabase Cloud 連携 + secret 登録 + `wrangler deploy`。`https://cake-shop-api.<account-subdomain>.workers.dev/health` / `/v1/cakes` 200 OK 確認済み）
+  - [x] Step 8: 環境分離（`wrangler.toml` に `[env.staging]` / `[env.production]` を明示定義し `--env` 必須運用へ。staging 用に別 Supabase プロジェクト `Hono-Supabase-STG` を作成 + 4 マイグレーション適用 + 「伏せた合成テストデータ」`seed.staging.sql` 投入 + `cake-shop-api-staging` Worker に secret 登録 + デプロイ。`https://cake-shop-api-staging.<account-subdomain>.workers.dev/health` / `/v1/cakes` 動作確認済み）
+  - [x] Step 9: **CI/CD + リリース管理を一周**（実運用のリリースフロー体験）
     - (a) `wrangler deploy` 中に curl ループでゼロダウンタイム切替を観察（体験用スクリプト `scripts/zero-downtime-watch.ps1` / `.sh`）
     - (b) `wrangler versions upload`（流量 0）でバージョン作成 → preview URL で動作確認
     - (c) `wrangler versions deploy --percentage 10/50/100` で段階展開（カナリア）
     - (d) わざとバグを入れて 100% リリース → `wrangler rollback` で直前バージョンへ即時巻き戻し
-    - (e) (a)〜(d) を GitHub Actions（`cloudflare/wrangler-action@v3`）に組み込み、main push → 自動 versions upload → 手動 approval → 段階展開のパイプラインに昇華
+    - (e) GitHub Actions 化 — `develop` push → staging 自動デプロイ（`deploy-staging.yml`）／`main` push → production（`deploy-production.yml`: `versions upload` 0% → Environment `production` の承認ゲート → `deploy@100`）。`main` ブランチ保護（PR 必須・CI 3 チェック必須・force push/削除禁止）も設定。詳細は [CI/CD・環境構成の指針](#cicd環境構成の指針実運用想定) 参照
 - [ ] **Phase 8**: **Supabase Auth メール運用**（確認メールのテンプレート / Custom SMTP / 確認後リダイレクト設計）
   - 本番は `enable_confirmations = ON`（＝正しい設定）。「Supabase Auth を使うバックエンド担当」として確認メールのテンプレ更新・Custom SMTP 切替を一周しておく
-  - ローカルで確認メールを **Inbucket（http://localhost:54324）** で観察 → テンプレートを `supabase/config.toml` + `supabase/templates/*.html`（リポジトリ管理）で日本語＋ブランド文面に → 確認後リダイレクト設計 → Custom SMTP（Resend 等）へ切替 → 本番反映
+  - [x] Step 1（2026-05-13 完了）: ローカルの `supabase/config.toml` を `enable_confirmations = true` にして本番に揃え、`POST /v1/customers` → 確認メール（Inbucket/Mailpit http://localhost:54324 で受信・`verify` リンク + 6 桁 OTP を確認）→ 確認リンク 303 リダイレクト + `auth.users.email_confirmed_at` セット → パスワードログインで JWT 取得、までを一周。あわせて確認必須化で顕在化したサインアップ経路の不具合を修正（確認必須だと `auth.signUp()` がセッションを返さず、直後の「トリガ生成 customers 行の読み戻し」が RLS で 404 になる → サインアップ経路の customers 参照だけ service_role の admin クライアント経由に変更）。`site_url` / `additional_redirect_urls` はフロント未稼働のため一旦 `http://127.0.0.1:3010/health` に着地（他のローカル PJT のポート 3000 と衝突させない）
+  - [x] Step 2（2026-05-14 完了）: メールテンプレートをリポジトリ管理に — `supabase/templates/{confirmation,recovery,magic_link,email_change}.html` を新設（日本語＋ブランド色 `#b85c5c`・テーブルレイアウト + インライン CSS で HTML メール互換）。`supabase/config.toml` の `[auth.email.template.*]` 4 セクションを有効化し件名を `【ケーキショップ】…` に日本語化。`{{ .ConfirmationURL }}` / `{{ .Token }}` / `{{ .SiteURL }}` / `{{ .Email }}` / `{{ .NewEmail }}` / `{{ .Data }}` の使い方を冒頭コメントに整理。confirmation メールは Mailpit で実機表示を確認済（recovery / magic_link / email_change は同じ仕組みなので個別検証は省略）
+  - [x] Step 3（2026-05-14 完了）: 確認後リダイレクトの三層設計（`site_url` / `additional_redirect_urls` / `redirect_to`）と PKCE/Implicit フローを整理 → [認証メールのリダイレクト設計](#認証メールのリダイレクト設計supabase-auth-phase-8-step-3) 参照。`additional_redirect_urls` に将来のフロント用 `http://127.0.0.1:3000/auth/callback` を追加（許可リスト整備）
+  - [x] Step 4（2026-05-14 完了 — 方針変更）: 当初は「ローカルで `[auth.email.smtp]` を Resend に切替えて実メール送信」と定義していたが、実行段階で **ホスト Windows の Norton Antivirus "Web/Mail Shield" が outbound TLS を巻き取り、自社 CA で再署名** していたため、gotrue コンテナ → smtp.resend.com の TLS 検証が `x509: certificate signed by unknown authority` で必ず落ちることが判明（PowerShell の生 TLS で確認した Issuer = `CN=Norton Web/Mail Shield Root`）。Norton Root をコンテナ CA 束に注入する案はリポジトリの clean さを壊し、Norton の TLS スキャンを切る案は PC のセキュリティ運用を犠牲にするので不採用。**Step 5 と統合して「Cloud 上の Supabase に直接 Resend を繋ぐ」に再定義**することで Custom SMTP の学習目的は完全達成可能と判断（Cloud は Norton の手の届かない場所で動くため、Resend の正規証明書がそのまま見える）。`supabase/config.toml` の `[auth.email.smtp]` ブロックには経緯メモを残してコメントアウト状態に戻し、`.env.example` / CLAUDE.md にも同じ罠を踏まないためのメモを記録。ローカルは引き続き Inbucket（http://127.0.0.1:54324）で運用
+  - [ ] Step 5（再定義済み）: **Cloud 上の Supabase（production / staging）に Custom SMTP を直接設定して実メール送信** — Resend Dashboard でドメイン検証（DNS の TXT/CNAME で SPF/DKIM）→ Supabase Cloud Dashboard の Authentication → SMTP Settings に Resend の SMTP 情報を入力（API キーは Supabase 側 secret として管理。アプリの `.env` / `wrangler secret` には置かない）→ 本番 / staging URL に `POST /v1/customers` を叩き、確認メールが**ブランド差出人・日本語テンプレ**で実受信箱に届くことを確認 → Phase 7 手2（認証フロー E2E）を staging で一度実メール経由で通す
 
 ---
 

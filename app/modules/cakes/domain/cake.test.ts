@@ -20,40 +20,28 @@ describe('Cake.create', () => {
   });
 
   it('name 空文字を拒否する', () => {
-    expect(() => Cake.create({ name: '', price: 600, stock: 1 })).toThrow(
-      InvalidCakeError,
-    );
+    expect(() => Cake.create({ name: '', price: 600, stock: 1 })).toThrow(InvalidCakeError);
   });
 
   it('name 空白のみを拒否する', () => {
-    expect(() => Cake.create({ name: '   ', price: 600, stock: 1 })).toThrow(
-      InvalidCakeError,
-    );
+    expect(() => Cake.create({ name: '   ', price: 600, stock: 1 })).toThrow(InvalidCakeError);
   });
 
   it('name 100 文字超を拒否する', () => {
     const longName = 'あ'.repeat(101);
-    expect(() => Cake.create({ name: longName, price: 600, stock: 1 })).toThrow(
-      InvalidCakeError,
-    );
+    expect(() => Cake.create({ name: longName, price: 600, stock: 1 })).toThrow(InvalidCakeError);
   });
 
   it('stock がマイナスなら拒否する', () => {
-    expect(() => Cake.create({ name: 'a', price: 600, stock: -1 })).toThrow(
-      InvalidCakeError,
-    );
+    expect(() => Cake.create({ name: 'a', price: 600, stock: -1 })).toThrow(InvalidCakeError);
   });
 
   it('stock が小数なら拒否する', () => {
-    expect(() => Cake.create({ name: 'a', price: 600, stock: 1.5 })).toThrow(
-      InvalidCakeError,
-    );
+    expect(() => Cake.create({ name: 'a', price: 600, stock: 1.5 })).toThrow(InvalidCakeError);
   });
 
   it('price が不正なら Price の例外が伝播する', () => {
-    expect(() => Cake.create({ name: 'a', price: 0, stock: 1 })).toThrow(
-      InvalidPriceError,
-    );
+    expect(() => Cake.create({ name: 'a', price: 0, stock: 1 })).toThrow(InvalidPriceError);
   });
 
   it('生成された ID はそれぞれユニーク', () => {
@@ -74,9 +62,9 @@ describe('Cake.reconstruct', () => {
   });
 
   it('壊れた id では復元できない', () => {
-    expect(() =>
-      Cake.reconstruct({ id: 'not-uuid', name: 'a', price: 100, stock: 1 }),
-    ).toThrow(InvalidCakeError);
+    expect(() => Cake.reconstruct({ id: 'not-uuid', name: 'a', price: 100, stock: 1 })).toThrow(
+      InvalidCakeError,
+    );
   });
 
   it('壊れた price では復元できない（Fail-Fast）', () => {

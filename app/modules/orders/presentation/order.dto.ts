@@ -7,10 +7,7 @@ import { z } from '@hono/zod-openapi';
 // ---------------------------------------------------------------------------
 export const OrderItemResponseSchema = z
   .object({
-    cakeId: z
-      .string()
-      .uuid()
-      .openapi({ example: '11111111-1111-4111-8111-111111111111' }),
+    cakeId: z.string().uuid().openapi({ example: '11111111-1111-4111-8111-111111111111' }),
     quantity: z.number().int().openapi({ example: 2 }),
     unitPrice: z.number().int().openapi({ example: 600 }),
     subtotal: z.number().int().openapi({ example: 1200 }),
@@ -21,20 +18,11 @@ export type OrderItemResponse = z.infer<typeof OrderItemResponseSchema>;
 
 export const OrderResponseSchema = z
   .object({
-    id: z
-      .string()
-      .uuid()
-      .openapi({ example: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }),
-    customerId: z
-      .string()
-      .uuid()
-      .openapi({ example: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }),
+    id: z.string().uuid().openapi({ example: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }),
+    customerId: z.string().uuid().openapi({ example: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }),
     status: z.enum(['PLACED', 'CANCELED']).openapi({ example: 'PLACED' }),
     totalAmount: z.number().int().openapi({ example: 1200 }),
-    placedAt: z
-      .string()
-      .datetime()
-      .openapi({ example: '2026-05-06T10:00:00.000Z' }),
+    placedAt: z.string().datetime().openapi({ example: '2026-05-06T10:00:00.000Z' }),
     items: z.array(OrderItemResponseSchema),
   })
   .openapi('Order');
@@ -92,9 +80,7 @@ export const ErrorResponseSchema = z
     error: z.object({
       code: z.string().openapi({ example: 'VALIDATION_ERROR' }),
       message: z.string().openapi({ example: 'リクエストパラメータが不正です' }),
-      details: z
-        .array(z.object({ field: z.string(), message: z.string() }))
-        .optional(),
+      details: z.array(z.object({ field: z.string(), message: z.string() })).optional(),
     }),
   })
   .openapi('ErrorResponse');

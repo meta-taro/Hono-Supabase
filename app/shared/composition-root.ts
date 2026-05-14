@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AppLogger } from '@/shared/infrastructure/logger';
 import type { Env } from '@/shared/http/env';
 import type { AppEnv, RequestModules } from '@/shared/http/request-context';
+import { createAdminClient } from '@/shared/infrastructure/supabase';
 import { CakeSupabaseRepository } from '@/modules/cakes/infrastructure/cake.supabase-repository';
 import { createListCakesUseCase } from '@/modules/cakes/application/list-cakes.usecase';
 import { createCreateCakeUseCase } from '@/modules/cakes/application/create-cake.usecase';
@@ -38,10 +39,7 @@ export interface ModuleDeps {
 
 // per-request の Bounded Context 別 Controller 集合を組み立てる。
 // この関数は「sb が何の権限で動いているか」を意識しない（与えられたものを使うだけ）。
-export const buildRequestModules = (
-  sb: SupabaseClient,
-  deps: ModuleDeps,
-): RequestModules => {
+export const buildRequestModules = (sb: SupabaseClient, deps: ModuleDeps): RequestModules => {
   // cakes
   const cakeRepo = new CakeSupabaseRepository(sb);
   const cakes = createCakeController({
@@ -52,13 +50,16 @@ export const buildRequestModules = (
   // customers
   const customerRepo = new CustomerSupabaseRepository(sb);
   const customerAuth = new SupabaseCustomerAuthAdapter(sb);
+  // Supabase のメール認証（auth.email.enable_confirmations）を導入するため。
+  //   確認必須の設定だと auth.signUp() はセッションを返さない → リクエストの sb は anon のまま。
+  //   サインアップ直後に「トリガが作った customers 行を authUserId で読み戻す」処理が RLS で
+  //   弾かれてしまうので、サインアップ経路の customers 参照だけは RLS をバイパスする admin
+  //   クライアント経由にする（公開リクエストだが、行作成直後のシステム読み戻しなので正当）。
+  //   auth.signUp() 自体は公開 auth 操作なので anon の customerAuth のまま。
+  const customerAdminRepo = new CustomerSupabaseRepository(createAdminClient(deps.env));
   const customers = createCustomerController({
     listCustomers: createListCustomersUseCase(customerRepo),
-    signUpCustomer: createSignUpCustomerUseCase(
-      customerAuth,
-      customerRepo,
-      deps.logger,
-    ),
+    signUpCustomer: createSignUpCustomerUseCase(customerAuth, customerAdminRepo, deps.logger),
   });
 
   // orders
@@ -80,9 +81,7 @@ export const buildRequestModules = (
 
 // per-request にモジュールを組み立てて c.var.modules に積むミドルウェア。
 // auth + requestSupabase の後に通すこと。
-export const createModulesMiddleware = (
-  deps: ModuleDeps,
-): MiddlewareHandler<AppEnv> => {
+export const createModulesMiddleware = (deps: ModuleDeps): MiddlewareHandler<AppEnv> => {
   return async (c, next) => {
     const sb = c.get('sb');
     c.set('modules', buildRequestModules(sb, deps));

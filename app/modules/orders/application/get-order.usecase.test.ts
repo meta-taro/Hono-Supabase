@@ -3,10 +3,7 @@ import { createSilentLogger } from '@/shared/infrastructure/logger';
 import { createGetOrderUseCase } from './get-order.usecase';
 import { createPlaceOrderUseCase } from './place-order.usecase';
 import { InMemoryOrderRepository } from './__test-helpers__/in-memory-order.repository';
-import {
-  InvalidOrderError,
-  OrderNotFoundError,
-} from '../domain/order.errors';
+import { InvalidOrderError, OrderNotFoundError } from '../domain/order.errors';
 
 const silentLogger = createSilentLogger();
 
@@ -34,16 +31,14 @@ describe('get-order usecase', () => {
   it('存在しない orderId は OrderNotFoundError', async () => {
     const repo = new InMemoryOrderRepository();
     const getOrder = createGetOrderUseCase(repo);
-    await expect(
-      getOrder({ orderId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }),
-    ).rejects.toThrow(OrderNotFoundError);
+    await expect(getOrder({ orderId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' })).rejects.toThrow(
+      OrderNotFoundError,
+    );
   });
 
   it('UUID v4 でない orderId は InvalidOrderError', async () => {
     const repo = new InMemoryOrderRepository();
     const getOrder = createGetOrderUseCase(repo);
-    await expect(getOrder({ orderId: 'not-a-uuid' })).rejects.toThrow(
-      InvalidOrderError,
-    );
+    await expect(getOrder({ orderId: 'not-a-uuid' })).rejects.toThrow(InvalidOrderError);
   });
 });

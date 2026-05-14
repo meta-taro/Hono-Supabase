@@ -50,7 +50,7 @@
 | Logger（ローカル開発 / Node） | pino + pino-pretty（**`devDependencies`**）                                | ^9.x       | Node ローカル開発時のみ整形ログ。`app/shared/infrastructure/node-pino-logger.ts` に物理隔離し、Workers バンドルに混入させない                                                       |
 | Workers 型定義                | @cloudflare/workers-types                                                  | ^4.x       | `Env` バインディング型を提供                                                                                                                                                        |
 | Test                          | Vitest                                                                     | ^3.x       | Vite ベース。高速・ESM ネイティブ・型安全。`@cloudflare/vitest-pool-workers` で Workers 環境テストにも拡張可能                                                                      |
-| Package Mgr                   | pnpm                                                                       | ^9.x       | 高速・ディスク効率・モノレポ対応                                                                                                                                                    |
+| Package Mgr                   | pnpm                                                                       | ^9.x       | 高速・ディスク効率・モノレポ対応。**npm の使用（特に `npm i -g`）は禁止**（後述）                                                                                                   |
 | Container                     | Docker Compose                                                             | —          | アプリコンテナのみ管理（**ローカル学習用途**）。本番は Workers なのでコンテナ不要                                                                                                   |
 | Supabase Dev                  | Supabase CLI                                                               | latest     | ローカル環境・マイグレーション管理の公式ツール                                                                                                                                      |
 
@@ -390,6 +390,7 @@ import { Cake } from '@/modules/cakes/domain/cake'; // orders/ では NG
 - **Cloudflare Workers 互換性を壊す Node 専用 API の使用禁止**（`fs`, `child_process`, `net` 生 TCP, `process.cwd()` 等）。本番デプロイ先が Workers のため、これらに依存すると本番で動かなくなる。どうしても Node 環境に閉じた処理が必要なら `app/index.node.ts` 側だけに置き、共通ロジック（`app.ts` 以下）には漏らさない
 - **ネイティブモジュール（C 拡張）の依存禁止**（`bcrypt`, `sharp`, `pino-pretty` の本番投入等）。Workers では動かない。本番ロジックには Web 標準 API ベースのライブラリのみ採用
 - **Node 専用パッケージは `devDependencies` に配置**（`pino`, `pino-pretty`, `@hono/node-server` 等）。`dependencies` には Workers / Node 双方で動くものだけを置く。`pino` は `app/shared/infrastructure/node-pino-logger.ts` に隔離して `app/index.node.ts` からのみ import すること（`app/shared/infrastructure/logger.ts` から pino を import すると Workers で `process is not defined` で落ちる）
+- **npm の使用禁止（特に `npm i -g`）**。本リポジトリの依存解決は **pnpm 一本**（`packageManager: "pnpm@..."` で固定）。`npm install` / `npm i -g` / `npx` は**使わない**。理由: 2024〜2026 にかけて npm registry を経由したサプライチェーン攻撃（typosquatting・既存パッケージ乗っ取り・malicious postinstall）が連発しており、グローバル `npm i -g` は最も攻撃面が広い。CLI 系ツール（supabase / wrangler 等）は OS のパッケージマネージャ（**scoop / winget / Homebrew / mise** 等）か公式バイナリで入れる。一時実行は `pnpm dlx <pkg>`（npx 相当）に置き換える
 
 ---
 
@@ -525,6 +526,12 @@ console.log('order created');
 4. `infrastructure/` の Repository 実装を更新
 5. `application/` UseCase は domain interface 経由なので最小限の修正で済むはず
 
+### コミット前の品質ゲート（必ず通す）
+
+- **pre-commit フック（husky + lint-staged）が自動で走る**: ステージされたファイルに対して `eslint --fix` / `prettier --write` を実行。修正不能なエラーがあればコミットを中断する。詳細は README の「ローカルの品質ゲート（pre-commit / verify）」参照
+- **push 前は `pnpm verify` を必ず叩く**: `lint + typecheck + format:check + test` を一括実行。CI と同じセットなので、ここが緑なら CI もほぼ緑（過去に `format:check` だけローカルで踏まずに staging deploy が落ちた事故あり）
+- **`git commit --no-verify` でフックを潰すのは禁止**（CI で結局赤くなる）
+
 ---
 
 ## Implementation Progress（実装進捗）
@@ -538,7 +545,7 @@ console.log('order created');
 - [x] **Phase 4**: `customers` Bounded Context（同構造）
 - [x] **Phase 5**: `orders` Bounded Context（Domain Event + Postgres Function でアトミック在庫減算）
 - [x] **Phase 6**: 認証（Supabase Auth + RLS + 認証ミドルウェア）+ OpenAPI 仕上げ
-- [ ] **Phase 7**: **Cloudflare Workers 化**（本番デプロイ想定の最終段）
+- [x] **Phase 7**: **Cloudflare Workers 化**（本番デプロイ想定の最終段）
   - [x] **Step 1**: エントリ二系統化（`app/index.ts` → `app/index.node.ts` リネーム + `app/index.workers.ts` 新設 + 共通組立を `app/bootstrap.ts` に切出）
   - [x] **Step 2**: `wrangler.toml` 追加・`@cloudflare/workers-types` 導入・`wrangler` 4.88.0 + `pnpm wrangler:dev` / `wrangler:deploy` / `wrangler:tail` 整備（**`compatibility_flags = []` を維持し `nodejs_compat` に逃げない方針**）
   - [x] **Step 3**: 環境変数の移行（ローカル）— `.dev.vars` 導入 + `.dev.vars.example` 配布 + `.gitignore` 追記（`.dev.vars` / `.wrangler/`）
@@ -547,19 +554,31 @@ console.log('order created');
   - [x] **Step 6**: `wrangler dev` で `GET /health` / `GET /v1/cakes` 200 OK 確認（Hono + Supabase REST が Workers V8 Isolate 上で動作）。33 テスト / 250 テスト全緑、typecheck OK
   - [x] **Step 7**: Cloudflare アカウント取得 + Supabase Cloud プロジェクト作成 + `supabase db push`（4 マイグレーション適用）+ `wrangler secret put` ×3（URL / anon / service_role）+ `wrangler deploy` で初回本番デプロイ完了。`https://cake-shop-api.rzrhacympbmdkagoybba.workers.dev/health` / `/v1/cakes` 200 OK 確認（Workers V8 Isolate → Supabase Cloud REST の本番疎通成功）
   - [x] **Step 8**: 環境分離。`wrangler.toml` を **`--env <name>` 必須運用**に再構成（`[env.staging]` = `cake-shop-api-staging` / NODE_ENV=staging / LOG_LEVEL=debug、`[env.production]` = `cake-shop-api` / NODE_ENV=production / LOG_LEVEL=info、トップレベル `[vars]` は env 未指定時のフォールバック）。`package.json` の wrangler スクリプトを `:staging` / `:production` 別に分離（素の `wrangler:deploy` / `wrangler:tail` は廃止）。`env.ts` の NODE_ENV enum に `'staging'` を追加。`node-pino-logger.ts` を厳格化（pino-pretty は `NODE_ENV === 'development'` のときだけ適用＝staging/production は両方 JSON 経路）。**staging 用に本番とは別の Supabase プロジェクト `Hono-Supabase-STG`（ref `gnvlfivangrgyryjmybu`）を作成**し、4 マイグレーションを `supabase db push`。**「本番ダンプを staging に流さない」演習として、最初から合成・匿名化済みのテストデータ `supabase/seed.staging.sql` を作成**（`.example` TLD・ダミー顧客 3 + 管理者 1・auth.users 経由で handle_new_user トリガが customers を自動生成・placed_at は日単位に丸めて準識別子を一般化）し `supabase db query --linked -f supabase/seed.staging.sql`（Management API 経由・DB パスワード不要）で投入。`cake-shop-api-staging` Worker に secret 3 種を `wrangler secret put --env staging` で登録 → `wrangler deploy --env staging`。`https://cake-shop-api-staging.<account>.workers.dev/health` `/v1/cakes` 動作確認済み
-  - [ ] **Step 9**: **CI/CD + リリース管理を一周**（実運用のリリースフロー体験）
+  - [x] **Step 9**: **CI/CD + リリース管理を一周**（実運用のリリースフロー体験）
     - (a) 素の `wrangler deploy` 中に curl ループで無停止切替を観察（**ゼロダウンタイムのベースライン体験**。体験用スクリプト `scripts/zero-downtime-watch.ps1` / `.sh`）
     - (b) `wrangler versions upload` でバージョン作成（**流量 0**）→ 払い出された preview URL で動作確認
     - (c) `wrangler versions deploy --percentage 10` でカナリア展開 → 50% → 100% の段階展開を curl ループで観察
     - (d) わざとバグを入れて 100% リリース → `wrangler rollback` で**直前バージョンへ即時巻き戻し**
-    - (e) (a)〜(d) を GitHub Actions（`cloudflare/wrangler-action@v3`）に組み込み、**main push → 自動 versions upload → 手動 approval → 段階展開** の本番運用パイプラインに昇華
+    - (e) GitHub Actions 化（`cloudflare/wrangler-action@v3`）— ワークフローを**ブランチ別に分割**: `deploy-staging.yml`（`push: develop` → `checks` → `wrangler deploy --env staging`。本番には一切触れない）／`deploy-production.yml`（`push: main` → `checks` → `wrangler versions upload --env production`(0%) → Environment `production` の Required reviewers 承認ゲート → `wrangler versions deploy <id>@100 --env production --yes`）。`checks.yml`（再利用 `workflow_call` = Lint&Typecheck / Bundle check (tsup + wrangler dry-run) / Test (Vitest + local Supabase)）を `ci.yml`（PR）と両 deploy が呼ぶ。`main` ブランチ保護（PR 必須・status checks 3 本必須・force push/削除禁止・bypass なし）+ リポジトリ Secrets（`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`。Supabase 鍵は置かない＝Worker の `wrangler secret` 側）+ Environments（`staging` ゲートなし / `production` Required reviewers）も設定済。**運用ポリシーの全文は README「## CI/CD・環境構成の指針（実運用想定）」を参照**
+
+### CI/CD・リリース運用の要点（README に詳細）
+
+- **ブランチ→環境**: `develop` push = staging に自動デプロイ（即時 100%）／`main` push = production（`versions upload` 0% → **GitHub Environment `production` の手動承認** → `deploy@100`）。feature → PR → CI → `develop` マージ → 区切りで `develop`→`main` PR → マージで本番。ロールバックは `wrangler rollback --env production`
+- **`main` はブランチ保護必須**: PR 経由のみ・CI チェック必須・force push/削除禁止。本番に出すコードは必ず CI を通った `main` の内容
+- **シークレットの置き場を分ける**: アプリのシークレット（`SUPABASE_*`）は実行環境（`wrangler secret put --env <name>`）／CI のシークレット（`CLOUDFLARE_API_TOKEN` 等）は GitHub リポジトリ Secrets。リポジトリにも他方にも混ぜない
+- **Supabase は 1 環境 1 プロジェクト**: production / staging で別プロジェクト。**本番データを staging に流さない**（合成・匿名化シード `supabase/seed.staging.sql` を使う）。マイグレは前方向のみ・`supabase db push`、アドホック SQL は `supabase db query --linked -f`
+- **ドキュメント上の識別子の線引き**: 個人固有の値（Cloudflare アカウントサブドメイン・Supabase project ref）は `<...>` プレースホルダ表記。構成上の固有名（Worker 名 `cake-shop-api` / プロジェクト名 `Hono-Supabase` / env 名）はそのまま残す（フォーク者が「これ何？」にならないように）
 - [ ] **Phase 8**: **Supabase Auth メール運用**（確認メールのテンプレート / Custom SMTP / 確認後リダイレクト設計）
   - 動機: 「Supabase Auth を使うバックエンド担当」が「確認メールのテンプレートを更新できる・Custom SMTP に切替えられる」を一度も触らないのは学習漏れ。本番が `enable_confirmations = ON`（＝正しい設定）である以上、その運用面を一周しておく
-  - [ ] **Step 1**: ローカルで `supabase/config.toml` の `[auth] enable_confirmations = true` にしてサインアップ（`POST /v1/customers`）→ 確認メールを **Inbucket（http://localhost:54324）** で受信・中身を観察 → 確認リンクを踏んで `auth.users.email_confirmed_at` が入る／その後ログイン（`token?grant_type=password`）で JWT が取れることを確認
-  - [ ] **Step 2**: メールテンプレートを **リポジトリ管理**にする — `supabase/config.toml` の `[auth.email.template.confirmation]`（`subject` + `content_path = "./supabase/templates/confirmation.html"`）で日本語＋ブランド文面に差し替え。`recovery` / `magic_link` / `email_change` も同様。`{{ .ConfirmationURL }}` 等の変数を理解する
-  - [ ] **Step 3**: 確認後リダイレクト（`redirect_to` パラメータ / `[auth] additional_redirect_urls` / `site_url`）を設計。フロント不在のため `/health` 等に着地させ、ログで「確認完了」を観察。フロントがある場合の `/auth/callback?code=...` → `exchangeCodeForSession` の流れも整理（実装は別リポだが理屈は押さえる）
-  - [ ] **Step 4**: **Custom SMTP**（Resend 等の無料枠）への切替を体験 — ローカルは `[auth.email.smtp]`、Cloud は `supabase config push` ／ ダッシュボード設定。SMTP 認証情報は **Supabase 側の secret** として管理（アプリの `.env` / `wrangler secret` には置かない）。送信元を `noreply@cakeshop.example` 等にして「お客さんから見れば“ケーキショップ発”」を実現
-  - [ ] **Step 5**: 本番（Supabase Cloud）へ反映し、確認メールが**ブランド差出人・日本語テンプレ**で届くことを確認。Phase 7 手2（認証フロー E2E）を、Inbucket（ローカル）／実メールの確認リンク経由で本番でも一度通す
+  - [x] **Step 1（2026-05-13 完了）**: ローカルで `supabase/config.toml` の `[auth.email] enable_confirmations = true` に変更（＝本番 Cloud に合わせた）。`POST /v1/customers` → Mailpit/Inbucket（http://localhost:54324）に確認メール受信 → 確認リンク（`/auth/v1/verify?token=...&type=signup&redirect_to=<site_url>`）を踏むと 303 + `auth.users.email_confirmed_at` がセット／確認前ログインは 400 `email_not_confirmed`／確認後ログインで JWT 取得、を実機確認。**この変更で顕在化したバグも修正**: `enable_confirmations = ON` だと `auth.signUp()` がセッションを返さない → サインアップ経路の sb は anon のまま → 直後の「トリガが作った `customers` 行を `authUserId` で読み戻す」が RLS で弾かれ 404 になっていた（本番も同じ潜在バグ）。`composition-root.ts` でサインアップ用に `CustomerSupabaseRepository(createAdminClient(env))` を 1 本足し、サインアップ経路の `customers` 参照のみ RLS バイパスの service_role 経由に（`auth.signUp()` 自体は公開 auth 操作なので anon のまま）。副次効果として `findByEmail` の重複チェックが実際に効くようになり、同一メール再登録が 409 `CONFLICT` を返すようになった
+  - [x] **Step 2（2026-05-14 完了）**: メールテンプレートを **リポジトリ管理**化。`supabase/templates/{confirmation,recovery,magic_link,email_change}.html` を新設（日本語＋ブランド色 `#b85c5c`・テーブルレイアウト + インライン CSS で HTML メール互換）。`supabase/config.toml` の `[auth.email.template.*]` 4 セクションを有効化、件名を `【ケーキショップ】…` に日本語化。Go template 変数（`{{ .ConfirmationURL }}` / `{{ .Token }}` / `{{ .SiteURL }}` / `{{ .Email }}` / `{{ .NewEmail }}` / `{{ .Data }}`）の使い方を冒頭コメントに整理。confirmation メールは Mailpit で実機表示を確認済（recovery / magic_link / email_change は同じ仕組みなので個別検証は省略）。`.prettierignore` に `supabase/templates/` を追加（HTML メールの属性改行を prettier に壊させないため）
+  - [x] **Step 3（2026-05-14 完了）**: 確認後リダイレクトの三層設計（`site_url` / `additional_redirect_urls` / `redirect_to`）と PKCE/Implicit フローを整理し、README に新節「## 認証メールのリダイレクト設計（Supabase Auth・Phase 8 Step 3）」を追加。`additional_redirect_urls` に将来のフロント用 `http://127.0.0.1:3000/auth/callback` を許可リストとして追加（着地先の切替コスト最小化）。フロント不在での実機観察手順（Mailpit からリンク → `?code=...` でブラウザのアドレスバーに着地 → PKCE 動作確認）と、フロント有り時の Next.js App Router `app/auth/callback/route.ts` の理屈（`exchangeCodeForSession` + `type` 分岐 + cookie 保存）も README に明記
+  - [x] **Step 4（2026-05-14 完了 — 方針変更）**: 当初は「ローカルで `[auth.email.smtp]` を Resend に切替えて実メール送信を体験」と定義していたが、実行段階で **ホスト Windows の Norton Antivirus "Web/Mail Shield" が outbound TLS を巻き取り、自社 CA で再署名する** ため、gotrue コンテナ → smtp.resend.com の TLS 検証が `x509: certificate signed by unknown authority` で必ず失敗することが判明（PowerShell の生 TLS で確認した Issuer が `CN=Norton Web/Mail Shield Root` だった）。Norton Root を コンテナの CA 束に注入する案は学習リポジトリの clean さを壊し、Norton の TLS スキャンを切る案は PC のセキュリティ運用を犠牲にするため不採用。**Step 5 と統合して「Cloud 上の Supabase に直接 Resend を繋ぐ」に再定義**することで、Custom SMTP の学習目的（設定経験・送信元検証・ブランド差出人）は完全達成可能と判断。リポジトリには「ローカルで実 SMTP 検証は TLS インスペクション環境では成立しない」旨を `supabase/config.toml` のコメントブロック / `.env.example` / README に記録（同じ罠を踏まないため）。ローカルは引き続き Inbucket（http://127.0.0.1:54324）で運用
+  - [ ] **Step 5（再定義済み）**: **Cloud 上の Supabase（production / staging）に Custom SMTP を直接設定**して実メールを送る。
+    - Resend Dashboard でドメイン検証（DNS の TXT/CNAME 追加で SPF/DKIM）
+    - Supabase Cloud Dashboard → Authentication → SMTP Settings に Resend の SMTP 情報を入力（API キーはここ＝Supabase 側 secret として管理。アプリの `.env` / `wrangler secret` には置かない）
+    - 本番 / staging URL に対して `POST /v1/customers` を叩き、確認メールが**ブランド差出人・日本語テンプレ**で実受信箱に届くことを確認
+    - Phase 7 手2（認証フロー E2E）の実メール経由版を staging で一度通す
 
 ---
 
@@ -586,6 +605,10 @@ pnpm format
 
 # 型チェック
 pnpm typecheck
+
+# 手動の総合チェック（CI が回しているのと同じセット = lint + typecheck + format:check + test）
+# push 前 / PR 前にローカルで一度叩く運用
+pnpm verify
 
 # Supabase ローカル起動（Docker が起動している必要あり）
 supabase start

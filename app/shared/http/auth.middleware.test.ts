@@ -3,10 +3,7 @@ import { Hono } from 'hono';
 import { createOptionalAuthMiddleware } from './auth.middleware';
 import type { AppEnv } from './request-context';
 import type { Env } from './env';
-import type {
-  JwksFetcher,
-  JwksFetcherProvider,
-} from '@/shared/infrastructure/jwks-fetcher';
+import type { JwksFetcher, JwksFetcherProvider } from '@/shared/infrastructure/jwks-fetcher';
 
 // ---------------------------------------------------------------------------
 // Node ランタイム再現テスト
@@ -33,9 +30,7 @@ describe('createOptionalAuthMiddleware (Node 経路)', () => {
     const provider: JwksFetcherProvider = vi.fn(() => fetcher);
 
     const app = new Hono<AppEnv>();
-    app.use(
-      createOptionalAuthMiddleware({ env: buildEnv(), jwksFetcherProvider: provider }),
-    );
+    app.use(createOptionalAuthMiddleware({ env: buildEnv(), jwksFetcherProvider: provider }));
     app.get('/test', (c) => c.json({ ok: true }));
 
     // app.request() は executionCtx を注入しないため、Hono の getter は throw する。
@@ -53,9 +48,7 @@ describe('createOptionalAuthMiddleware (Node 経路)', () => {
     const provider: JwksFetcherProvider = vi.fn(() => fetcher);
 
     const app = new Hono<AppEnv>();
-    app.use(
-      createOptionalAuthMiddleware({ env: buildEnv(), jwksFetcherProvider: provider }),
-    );
+    app.use(createOptionalAuthMiddleware({ env: buildEnv(), jwksFetcherProvider: provider }));
     app.get('/test', (c) => c.json({ user: c.get('user') ?? null }));
 
     const res = await app.request('/test');

@@ -17,11 +17,7 @@ import { createPlaceOrderUseCase } from '@/modules/orders/application/place-orde
 import { createGetOrderUseCase } from '@/modules/orders/application/get-order.usecase';
 import { createOrderController } from '@/modules/orders/presentation/order.controller';
 import { InMemoryOrderRepository } from '@/modules/orders/application/__test-helpers__/in-memory-order.repository';
-import {
-  createFakeAuthMiddleware,
-  requireAuth,
-  requireAdmin,
-} from '@/shared/http/auth.middleware';
+import { createFakeAuthMiddleware, requireAuth, requireAdmin } from '@/shared/http/auth.middleware';
 import type { AppEnv, AuthUser, RequestModules } from '@/shared/http/request-context';
 
 // ---------------------------------------------------------------------------
@@ -62,11 +58,7 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
   const customerAuth = new FakeCustomerAuth(customersRepo);
   const customersController = createCustomerController({
     listCustomers: createListCustomersUseCase(customersRepo),
-    signUpCustomer: createSignUpCustomerUseCase(
-      customerAuth,
-      customersRepo,
-      silentLogger,
-    ),
+    signUpCustomer: createSignUpCustomerUseCase(customerAuth, customersRepo, silentLogger),
   });
 
   const cakesRepo = new InMemoryCakeRepository();
@@ -99,10 +91,7 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
   };
 
   const app = createApp({
-    rootMiddlewares: [
-      createFakeAuthMiddleware(params.user ?? null),
-      fakeModulesMiddleware,
-    ],
+    rootMiddlewares: [createFakeAuthMiddleware(params.user ?? null), fakeModulesMiddleware],
     guards: {
       adminGuard: [requireAuth(), requireAdmin()],
       authGuard: [requireAuth()],

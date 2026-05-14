@@ -4,8 +4,7 @@ import { OrderItem } from './order-item';
 import { OrderQuantity } from './order-quantity.vo';
 import { InvalidOrderItemError } from './order.errors';
 
-const cakeId = () =>
-  CakeId.from('11111111-1111-4111-8111-111111111111');
+const cakeId = () => CakeId.from('11111111-1111-4111-8111-111111111111');
 const quantity = (n: number) => OrderQuantity.of(n);
 
 describe('OrderItem.of', () => {
