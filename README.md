@@ -481,6 +481,42 @@ export async function GET(req: Request) {
 | `supabase db push`                                 | マイグレーション適用（リンク済みプロジェクトに対し）                                                                                                            |
 | `supabase db query --linked -f F`                  | リンク済みプロジェクトに SQL ファイル F を実行（Management API 経由・DB パスワード不要）                                                                        |
 | `powershell -File scripts/zero-downtime-watch.ps1` | デプロイ中に `/health` を叩き続け無停止切替を観察する体験用ループ（→ [体験用スクリプト](#体験用スクリプトscripts) / bash 版: `scripts/zero-downtime-watch.sh`） |
+| `pnpm verify`                                      | 手動の総合チェック（`lint` + `typecheck` + `format:check` + `test` を順に実行）。push 前や PR 前のセルフ確認に使う                                              |
+
+---
+
+## ローカルの品質ゲート（pre-commit / verify）
+
+CI で初めて lint / format 違反に気づくと「ローカルでは緑なのにリモートで赤」になりやすい。**手元で芽を摘む二段構え** を入れてあります。
+
+### 1 段目: pre-commit フック（自動）— husky + lint-staged
+
+`git commit` の瞬間に **ステージされたファイルだけ** に対して整形と簡易 lint をかける。コミット作者がフォーマットを意識しなくても、リポジトリに入る瞬間に揃う。
+
+- **何が走るか**: `package.json` の `lint-staged` セクションで定義
+  - `*.{ts,tsx,js,mjs,cjs}` → `eslint --fix` ＋ `prettier --write`
+  - `*.{json,md,yml,yaml,toml,html,css}` → `prettier --write --ignore-unknown`（`.prettierignore` で `supabase/templates/` 等は除外）
+- **どう動くか**: `.husky/pre-commit` が `pnpm exec lint-staged` を起動 → 自動修正後、修正済みファイルが自動で再ステージ → そのままコミットが続行する
+- **失敗時の挙動**: 修正不能なエラー（型エラー級の lint 違反など）はコミットを中断。`lint-staged` が **元の状態に git stash でリストアしてくれる** ので、未コミット作業が壊れることはない
+- **初回セットアップ**: `pnpm install` 時に `prepare` スクリプトが `husky` を実行して `.husky/` を有効化するので、リポジトリを clone した人が追加で何かする必要はない
+
+> なぜ pre-commit は **format 系（自動修正で済むもの）に絞っているか**: 「重い検査（typecheck・全 test）まで走らせると、コミットのたびに数十秒〜数分待たされて結局フックを `--no-verify` で潰されがち」という現場あるあるを回避するため。重い検査は次の `pnpm verify` と CI に任せる。
+
+### 2 段目: 手動コマンド `pnpm verify`（push 前のセルフ確認）
+
+```bash
+pnpm verify   # = pnpm lint && pnpm typecheck && pnpm format:check && pnpm test
+```
+
+CI（`.github/workflows/checks.yml`）が回しているのと同じセットをローカルで一気に流せる。**push する前に手元で 1 回叩く習慣** をつけておくと、CI がレッドになる事故をほぼゼロにできる。
+
+### 3 段目: GitHub Actions の `checks.yml`（PR / deploy）
+
+PR と各環境への deploy ワークフローが必ず `checks.yml`（`workflow_call`）を呼び、Lint & Typecheck / Bundle check / Test を再実行する。`main` のブランチ保護でこれら 3 ジョブを必須 status checks に設定済なので、**CI が緑にならないと本番に出ない**。
+
+### 緊急脱出（フックを一時的にバイパス）
+
+仕組み上 `git commit --no-verify` でスキップは可能ですが、**通常運用では絶対に使わない**。`--no-verify` した瞬間に CI が赤くなって結局直すことになるだけ。
 
 ---
 

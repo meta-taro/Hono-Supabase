@@ -26,7 +26,18 @@
     "wrangler:secret:staging": "wrangler secret put --env staging",
     "wrangler:secret:production": "wrangler secret put --env production",
     "wrangler:tail:staging": "wrangler tail --env staging",
-    "wrangler:tail:production": "wrangler tail --env production"
+    "wrangler:tail:production": "wrangler tail --env production",
+    "verify": "pnpm lint && pnpm typecheck && pnpm format:check && pnpm test",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,mjs,cjs}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml,toml,html,css}": [
+      "prettier --write --ignore-unknown"
+    ]
   },
   "dependencies": {
     "@hono/zod-openapi": "^0.18.0",
@@ -44,6 +55,8 @@
     "@typescript-eslint/parser": "^8.0.0",
     "@vitest/coverage-v8": "^3.0.0",
     "eslint": "^9.0.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.4",
     "pino": "^9.5.0",
     "pino-pretty": "^13.0.0",
     "prettier": "^3.4.0",

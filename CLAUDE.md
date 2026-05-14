@@ -525,6 +525,12 @@ console.log('order created');
 4. `infrastructure/` の Repository 実装を更新
 5. `application/` UseCase は domain interface 経由なので最小限の修正で済むはず
 
+### コミット前の品質ゲート（必ず通す）
+
+- **pre-commit フック（husky + lint-staged）が自動で走る**: ステージされたファイルに対して `eslint --fix` / `prettier --write` を実行。修正不能なエラーがあればコミットを中断する。詳細は README の「ローカルの品質ゲート（pre-commit / verify）」参照
+- **push 前は `pnpm verify` を必ず叩く**: `lint + typecheck + format:check + test` を一括実行。CI と同じセットなので、ここが緑なら CI もほぼ緑（過去に `format:check` だけローカルで踏まずに staging deploy が落ちた事故あり）
+- **`git commit --no-verify` でフックを潰すのは禁止**（CI で結局赤くなる）
+
 ---
 
 ## Implementation Progress（実装進捗）
@@ -594,6 +600,10 @@ pnpm format
 
 # 型チェック
 pnpm typecheck
+
+# 手動の総合チェック（CI が回しているのと同じセット = lint + typecheck + format:check + test）
+# push 前 / PR 前にローカルで一度叩く運用
+pnpm verify
 
 # Supabase ローカル起動（Docker が起動している必要あり）
 supabase start
