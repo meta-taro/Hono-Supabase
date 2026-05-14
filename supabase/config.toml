@@ -242,6 +242,32 @@ otp_expiry = 3600
 # admin_email = "admin@email.com"
 # sender_name = "Admin"
 
+# Email templates — Phase 8 Step 2 でリポジトリ管理に変更。
+# Supabase Auth が送信する確認メール本文を、ブランド付き日本語 HTML に差し替える。
+# `content_path` はプロジェクトルート（このリポジトリのトップ）からの相対パス。
+# 利用できる変数:
+#   {{ .ConfirmationURL }}  確認用URL（type=signup / recovery / magiclink / email_change で共通）
+#   {{ .Token }}            6 桁 OTP（テンプレに含めれば届く）
+#   {{ .SiteURL }}          [auth] site_url の値
+#   {{ .Email }}            受信者の現在のメールアドレス
+#   {{ .NewEmail }}         email_change 時の新しいメールアドレス
+#   {{ .Data }}             user_metadata（任意のJSON）
+[auth.email.template.confirmation]
+subject = "【ケーキショップ】メールアドレスの確認をお願いします"
+content_path = "./supabase/templates/confirmation.html"
+
+[auth.email.template.recovery]
+subject = "【ケーキショップ】パスワードのリセット"
+content_path = "./supabase/templates/recovery.html"
+
+[auth.email.template.magic_link]
+subject = "【ケーキショップ】ログイン用リンク"
+content_path = "./supabase/templates/magic_link.html"
+
+[auth.email.template.email_change]
+subject = "【ケーキショップ】メールアドレス変更の確認"
+content_path = "./supabase/templates/email_change.html"
+
 # Uncomment to customize email template
 # [auth.email.template.invite]
 # subject = "You have been invited"

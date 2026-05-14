@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>メールアドレス変更の確認</title>
+  </head>
+  <body
+    style="margin: 0; padding: 0; background-color: #fdf6f0; font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Yu Gothic UI', 'Meiryo', sans-serif; color: #333;"
+  >
+    <table
+      role="presentation"
+      width="100%"
+      cellpadding="0"
+      cellspacing="0"
+      style="background-color: #fdf6f0; padding: 32px 0;"
+    >
+      <tr>
+        <td align="center">
+          <table
+            role="presentation"
+            width="560"
+            cellpadding="0"
+            cellspacing="0"
+            style="background-color: #ffffff; border-radius: 8px; padding: 32px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);"
+          >
+            <tr>
+              <td>
+                <h1 style="margin: 0 0 16px; font-size: 20px; color: #b85c5c;">
+                  🍰 ケーキショップ
+                </h1>
+                <h2 style="margin: 0 0 24px; font-size: 18px; color: #333;">
+                  メールアドレス変更の確認
+                </h2>
+                <p style="margin: 0 0 16px; line-height: 1.7;">
+                  メールアドレス変更のリクエストを受け付けました。
+                </p>
+                <table
+                  role="presentation"
+                  cellpadding="0"
+                  cellspacing="0"
+                  style="margin: 0 0 24px; background-color: #faf3ee; border-radius: 6px; padding: 12px 16px;"
+                >
+                  <tr>
+                    <td style="font-size: 14px; color: #555; line-height: 1.7;">
+                      変更前:&nbsp;<strong>{{ .Email }}</strong><br />
+                      変更後:&nbsp;<strong>{{ .NewEmail }}</strong>
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin: 0 0 24px; line-height: 1.7;">
+                  下記のボタンをクリックして、メールアドレス変更を確定してください。
+                </p>
+                <table role="presentation" cellpadding="0" cellspacing="0" style="margin: 0 auto;">
+                  <tr>
+                    <td align="center" style="border-radius: 6px; background-color: #b85c5c;">
+                      <a
+                        href="{{ .ConfirmationURL }}"
+                        style="display: inline-block; padding: 12px 28px; color: #ffffff; text-decoration: none; font-weight: bold; font-size: 15px;"
+                      >
+                        メールアドレス変更を確定する
+                      </a>
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin: 24px 0 0; font-size: 13px; color: #888; line-height: 1.6;">
+                  ボタンが押せない場合は、以下のURLをブラウザに貼り付けてください。<br />
+                  <a href="{{ .ConfirmationURL }}" style="color: #b85c5c; word-break: break-all;">
+                    {{ .ConfirmationURL }}
+                  </a>
+                </p>
+                <p style="margin: 24px 0 0; font-size: 13px; color: #888; line-height: 1.6;">
+                  ※ このリンクの有効期限は1時間です。<br />
+                  ※
+                  リクエストに心当たりがない場合は、このメールを破棄し、現在のパスワードを変更してください。
+                </p>
+                <hr style="margin: 32px 0 16px; border: none; border-top: 1px solid #eee;" />
+                <p style="margin: 0; font-size: 12px; color: #aaa; text-align: center;">
+                  ケーキショップ
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
