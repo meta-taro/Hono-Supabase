@@ -50,7 +50,7 @@
 | Logger（ローカル開発 / Node） | pino + pino-pretty（**`devDependencies`**）                                | ^9.x       | Node ローカル開発時のみ整形ログ。`app/shared/infrastructure/node-pino-logger.ts` に物理隔離し、Workers バンドルに混入させない                                                       |
 | Workers 型定義                | @cloudflare/workers-types                                                  | ^4.x       | `Env` バインディング型を提供                                                                                                                                                        |
 | Test                          | Vitest                                                                     | ^3.x       | Vite ベース。高速・ESM ネイティブ・型安全。`@cloudflare/vitest-pool-workers` で Workers 環境テストにも拡張可能                                                                      |
-| Package Mgr                   | pnpm                                                                       | ^9.x       | 高速・ディスク効率・モノレポ対応                                                                                                                                                    |
+| Package Mgr                   | pnpm                                                                       | ^9.x       | 高速・ディスク効率・モノレポ対応。**npm の使用（特に `npm i -g`）は禁止**（後述）                                                                                                   |
 | Container                     | Docker Compose                                                             | —          | アプリコンテナのみ管理（**ローカル学習用途**）。本番は Workers なのでコンテナ不要                                                                                                   |
 | Supabase Dev                  | Supabase CLI                                                               | latest     | ローカル環境・マイグレーション管理の公式ツール                                                                                                                                      |
 
@@ -390,6 +390,7 @@ import { Cake } from '@/modules/cakes/domain/cake'; // orders/ では NG
 - **Cloudflare Workers 互換性を壊す Node 専用 API の使用禁止**（`fs`, `child_process`, `net` 生 TCP, `process.cwd()` 等）。本番デプロイ先が Workers のため、これらに依存すると本番で動かなくなる。どうしても Node 環境に閉じた処理が必要なら `app/index.node.ts` 側だけに置き、共通ロジック（`app.ts` 以下）には漏らさない
 - **ネイティブモジュール（C 拡張）の依存禁止**（`bcrypt`, `sharp`, `pino-pretty` の本番投入等）。Workers では動かない。本番ロジックには Web 標準 API ベースのライブラリのみ採用
 - **Node 専用パッケージは `devDependencies` に配置**（`pino`, `pino-pretty`, `@hono/node-server` 等）。`dependencies` には Workers / Node 双方で動くものだけを置く。`pino` は `app/shared/infrastructure/node-pino-logger.ts` に隔離して `app/index.node.ts` からのみ import すること（`app/shared/infrastructure/logger.ts` から pino を import すると Workers で `process is not defined` で落ちる）
+- **npm の使用禁止（特に `npm i -g`）**。本リポジトリの依存解決は **pnpm 一本**（`packageManager: "pnpm@..."` で固定）。`npm install` / `npm i -g` / `npx` は**使わない**。理由: 2024〜2026 にかけて npm registry を経由したサプライチェーン攻撃（typosquatting・既存パッケージ乗っ取り・malicious postinstall）が連発しており、グローバル `npm i -g` は最も攻撃面が広い。CLI 系ツール（supabase / wrangler 等）は OS のパッケージマネージャ（**scoop / winget / Homebrew / mise** 等）か公式バイナリで入れる。一時実行は `pnpm dlx <pkg>`（npx 相当）に置き換える
 
 ---
 
