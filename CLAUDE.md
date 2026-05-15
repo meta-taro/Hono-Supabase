@@ -404,14 +404,29 @@ import { Cake } from '@/modules/cakes/domain/cake'; // orders/ では NG
 
 ### テスト分類と配置
 
-| 種類                   | 対象                                 | 配置                         | DB                            |
-| ---------------------- | ------------------------------------ | ---------------------------- | ----------------------------- |
-| 単体（domain）         | Entity / VO / Repository interface   | 実装と共置（`*.test.ts`）    | 不要                          |
-| 単体（application）    | UseCase（in-memory repo で差し替え） | 実装と共置                   | 不要                          |
-| 単体（infrastructure） | Repository 実装                      | 実装と共置                   | **必要**（Supabase ローカル） |
-| 統合（presentation）   | routes / controllers                 | `app/__tests__/integration/` | UseCase mock or 実 Supabase   |
-| 統合（shared 跨り）    | error-handler 等                     | `app/__tests__/integration/` | 不要                          |
-| E2E                    | 全エンドポイント疎通                 | `bruno/`                     | 必要                          |
+`vitest.config.ts` の `projects` で **2 プールに分割**（Phase 7 / Step 9 後の保留タスクで導入）。`pnpm test` 一発で両プールが順に走る。
+
+| プール      | ランタイム           | 速度 | 対象                                                                                                                                  |
+| ----------- | -------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `node-unit` | Node (threads)       | 速い | `modules/*/domain` / `modules/*/application` / `shared/domain` / `shared/http` / 純粋な shared/infrastructure（logger / supabase 等） |
+| `workers`   | workerd（miniflare） | 遅い | `modules/*/infrastructure` / `__tests__/integration` / `jwks-fetcher`                                                                 |
+
+| 種類                   | プール      | 対象                                 | 配置                         | DB                            |
+| ---------------------- | ----------- | ------------------------------------ | ---------------------------- | ----------------------------- |
+| 単体（domain）         | `node-unit` | Entity / VO / Repository interface   | 実装と共置（`*.test.ts`）    | 不要                          |
+| 単体（application）    | `node-unit` | UseCase（in-memory repo で差し替え） | 実装と共置                   | 不要                          |
+| 単体（infrastructure） | `workers`   | Repository 実装                      | 実装と共置                   | **必要**（Supabase ローカル） |
+| 統合（presentation）   | `workers`   | routes / controllers                 | `app/__tests__/integration/` | UseCase mock or 実 Supabase   |
+| 統合（shared 跨り）    | `workers`   | error-handler 等                     | `app/__tests__/integration/` | 不要                          |
+| E2E                    | —           | 全エンドポイント疎通                 | `bruno/`                     | 必要                          |
+
+**狙い**: typecheck だけでは検出できない Workers 互換事故（`node:crypto` 等の Node 専用 API・トップレベル `process.env`・pino 引きずり込み等）を、本番と同じ workerd 上で `infrastructure/` と `__tests__/integration/` を回すことで弾く。純粋層は速度優先で Node プールに残す。
+
+**workers プールでのテスト実装上の注意**:
+
+- workerd 上では `process.env` が空。`loadEnv()` に渡す env は `cloudflare:test` の `env`（= `vitest.config.ts` の `miniflare.bindings` で注入された値）を `loadEnv(workerEnv as unknown as RawEnv)` で渡す
+- `cloudflare:test` モジュールの型は `app/__tests__/cloudflare-test.d.ts` の triple-slash reference で取り込む（本番ビルドの `tsconfig.json` `types` を汚さないため）
+- 依存版: `@cloudflare/vitest-pool-workers@0.8.x` が vitest 3.x の peer（0.15.x 以降は vitest 4.x 必須で `/config` サブパスも撤去されているため、vitest 3.x のままなら 0.8 系を pin する）
 
 ### 共置テストの利点（DDD-lite で重要）
 

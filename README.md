@@ -129,7 +129,7 @@ Next.js が無くても、本 API 単体で以下のように利用可能:
 - **TDD の内ループの速さ**: `tsx watch` + Node デバッガ（ブレークポイント・即時再起動）は、`wrangler dev` より起動が軽く回しやすい。本プロジェクトは TDD 必須なのでここを重視
 - **ログの可読性**: 高速イテレーション中は pino-pretty の色付き整形ログが、`{"level":30,"time":...}` の生 JSON より読みやすい
 - **ランタイム抽象化パターンの練習**: 「`app.ts` 以下はランタイム非依存に保ち、ランタイム固有部分（ロガー実装・HTTP サーバ起動・JWKS フェッチのキャッシュ戦略）はエントリポイント（composition root）で注入する」── `AppLogger` interface + 手動 DI のこの形は、実務で「既存 Node アプリを Workers/エッジへ載せ替える」「ベンダーロックインを避ける」場面で実際に使う。それを小さく実演している
-- **テストランタイムの単純さ**: 後述のとおり純粋ロジックの単体テストは Node でも workerd でも結果が同じなので、速い Node プール（Vitest デフォルト）のままにしている
+- **テストランタイムの忠実さ**: 純粋ロジックの単体テストは Node プールで高速に回し、`infrastructure/` と `__tests__/integration/` は **`@cloudflare/vitest-pool-workers` で本番と同じ workerd 上で実行**するハイブリッド構成（後述）
 
 ### 二段構えの代償
 
@@ -156,7 +156,7 @@ Next.js が無くても、本 API 単体で以下のように利用可能:
 - **純粋な domain / application 単体**（Entity・VO・UseCase + in-memory repo）→ ECMAScript そのものなので Node でも workerd でも結果は同じ。workerd で走らせる旨味はほぼ無く、起動が遅くなる・Vitest 版の制約が増えるコストだけ払う
 - **infrastructure / integration**（fetch で Supabase REST、Web Crypto、`caches.default`、Hono ルーティング）→ ここは Node と workerd で実際にズレうるので、workerd で走らせる価値がある
 
-なので「全部 workerd」でも「全部 Node」でもなく、**ハイブリッド**（純粋ユニットは Node プール、`infrastructure/` と `__tests__/integration/` は workers プール）が現実解です。本リポジトリは現状シンプルさ優先で全部 Node プールにしていますが、`vitest.config.ts` を 2 プロジェクトに分ければハイブリッドに移行できます。
+なので「全部 workerd」でも「全部 Node」でもなく、**ハイブリッド**（純粋ユニットは Node プール、`infrastructure/` と `__tests__/integration/` は workers プール）が現実解です。**本リポジトリは Phase 7 / Step 9 後の保留タスクとして 2 プール構成に移行済み**（`vitest.config.ts` の `projects` で `node-unit`（threads）と `workers`（`@cloudflare/vitest-pool-workers`）を分割）。詳細は後述「## テスト方針」を参照してください。
 
 ---
 
@@ -729,17 +729,33 @@ curl "$BASE/v1/customers" -H "Authorization: Bearer $ADMIN_TOKEN"
 
 ## テスト方針
 
-| 種類                   | ツール                        | 対象                                 | 配置                         | DB                          |
-| ---------------------- | ----------------------------- | ------------------------------------ | ---------------------------- | --------------------------- |
-| 単体（domain）         | Vitest                        | Entity / VO / Repository interface   | 実装と共置                   | 不要                        |
-| 単体（application）    | Vitest                        | UseCase（in-memory repo で差し替え） | 実装と共置                   | 不要                        |
-| 単体（infrastructure） | Vitest                        | Repository 実装                      | 実装と共置                   | 必要（Supabase ローカル）   |
-| 統合                   | Vitest + Hono `app.request()` | routes / controllers / 跨り系        | `app/__tests__/integration/` | UseCase mock or 実 Supabase |
-| E2E                    | Bruno                         | 全エンドポイント疎通                 | `bruno/`                     | 必要                        |
+### ハイブリッドテスト構成（2 プール分割）
 
-カバレッジ閾値: **80%**（lines / functions / branches / statements 全て）。未達はビルドエラー扱い。
+`vitest.config.ts` の `projects` 機能で **`node-unit` プール（threads）と `workers` プール（`@cloudflare/vitest-pool-workers`）** を分割している。`pnpm test` 一発で両プールが順に走る。
+
+| プール      | ランタイム           | 対象 include                                                                                                                                                                    | 速度 | 狙い                                                                                                                   |
+| ----------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------- |
+| `node-unit` | Node (threads)       | `app/modules/*/domain/**` / `app/modules/*/application/**` / `app/shared/domain/**` / `app/shared/http/**` / `logger.test.ts` / `node-pino-logger.test.ts` / `supabase.test.ts` | 速い | TDD の内ループ。純粋層を ECMAScript として高速に検証                                                                   |
+| `workers`   | workerd（miniflare） | `app/modules/*/infrastructure/**` / `app/__tests__/integration/**` / `jwks-fetcher.test.ts`                                                                                     | 遅い | 本番と同じランタイムで `fetch` / Web Crypto / `caches.default` / Hono / Supabase REST を実行し、Workers 互換事故を検出 |
+
+| 種類                   | プール      | 対象                                 | 配置                         | DB                          |
+| ---------------------- | ----------- | ------------------------------------ | ---------------------------- | --------------------------- |
+| 単体（domain）         | `node-unit` | Entity / VO / Repository interface   | 実装と共置                   | 不要                        |
+| 単体（application）    | `node-unit` | UseCase（in-memory repo で差し替え） | 実装と共置                   | 不要                        |
+| 単体（infrastructure） | `workers`   | Repository 実装                      | 実装と共置                   | 必要（Supabase ローカル）   |
+| 統合                   | `workers`   | routes / controllers / 跨り系        | `app/__tests__/integration/` | UseCase mock or 実 Supabase |
+| E2E                    | Bruno       | 全エンドポイント疎通                 | `bruno/`                     | 必要                        |
+
+カバレッジ閾値: **80%**（lines / functions / branches / statements 全て）。両プール合算で計測する。未達はビルドエラー扱い。
 
 DDD-lite ではドメイン層が DB 非依存になるため、`application/` のテストが**爆速**（in-memory 実装で差し替え可能）。
+
+### workers プールの実装メモ
+
+- `defineWorkersProject` で `wrangler.toml` を読ませることで、本番に近い `compatibility_date` / バインディング設定で workerd を起動する（`@cloudflare/vitest-pool-workers@0.8.x` が vitest 3.x の peer）
+- `miniflare.bindings` で `SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` / `NODE_ENV=test` / `LOG_LEVEL=error` を注入（`wrangler.toml` の `[vars]` を上書き）
+- workers プールでは `process.env` が空になるため、infrastructure テストは **`cloudflare:test` から `env` を import** し `loadEnv(env)` に渡す。`loadEnv()` は引数省略時に `process.env` を読むので、両ランタイムで同じ関数を使い分けられる構造（`app/shared/http/env.ts:33`）
+- `cloudflare:test` モジュールの型は `app/__tests__/cloudflare-test.d.ts` の triple-slash reference で取り込む（本番ビルドの `tsconfig.json` `types` を汚さない）
 
 ---
 

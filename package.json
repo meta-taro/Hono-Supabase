@@ -47,6 +47,7 @@
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.8.43",
     "@cloudflare/workers-types": "^4.20260507.1",
     "@eslint/js": "^9.0.0",
     "@hono/node-server": "^1.13.0",

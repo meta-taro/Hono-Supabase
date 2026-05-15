@@ -1,14 +1,15 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { env as workerEnv } from 'cloudflare:test';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { Cake } from '../domain/cake';
 import { ConflictError } from '@/shared/domain/errors';
 import { CakeSupabaseRepository } from './cake.supabase-repository';
-import { loadEnv } from '@/shared/http/env';
+import { loadEnv, type RawEnv } from '@/shared/http/env';
 
 // このテストは「実 Supabase ローカルに対して動く」ことの確認なので、
 // 起動済みの Supabase（`supabase start`）が必要。
-// .env の SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY を vitest.config.ts が読み込み、
-// loadEnv() で取得できる前提で動く。
+// vitest-pool-workers では miniflare.bindings を `cloudflare:test` の env 経由で受け取る
+// （process.env は workerd 上では空。Node 側と挙動を揃えるため loadEnv() に注入する）。
 
 // テストデータの目印。
 // このプレフィックスで始まる行だけを掃除対象にすることで、
@@ -18,7 +19,7 @@ const TEST_NAME_PREFIX = '__test_cake_';
 // service_role キーで RLS をバイパスして cakes に INSERT/DELETE する。
 // （本プロジェクトの cakes テーブルは現状 anon に SELECT しか許可していないため、
 //  テストで挿入・削除するには service_role が必要。Phase 6 で管理者ロール用ポリシーを追加する。）
-const env = loadEnv();
+const env = loadEnv(workerEnv as unknown as RawEnv);
 const sbAdmin: SupabaseClient = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
