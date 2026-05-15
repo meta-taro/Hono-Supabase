@@ -97,8 +97,16 @@ export default defineConfig({
     ],
 
     // カバレッジ設定（両プール合算）
+    //
+    // provider: 'istanbul' を使う理由（Phase 7 / Step 9 後のハイブリッドテスト導入で必要に）:
+    //   v8 provider は内部で Node の `node:inspector` を import するため、
+    //   workers プール（workerd）では「No such module 'node:inspector'」で起動できず、
+    //   `pnpm test:coverage` が CI で落ちる。
+    //   istanbul provider はソースコードに計装コード（counter）を埋め込む方式で、
+    //   ランタイム API（inspector）に依存しないため Node / workerd の両プールで動く。
+    //   速度は v8 より遅いが、本プロジェクトは CI でしか coverage を取らないので影響軽微。
     coverage: {
-      provider: 'v8',
+      provider: 'istanbul',
       include: ['app/**/*.ts'],
       exclude: [
         '**/*.test.ts',
@@ -107,10 +115,16 @@ export default defineConfig({
         'app/index.node.ts',
         'app/index.workers.ts',
       ],
+      // 閾値:
+      //   istanbul は `??` / `||` / optional chaining / switch default 等の分岐を
+      //   v8 より細かく数えるため、同じソースでも branches だけ数字が下がる。
+      //   現状の v8 換算で 80% 強だったコードベースが istanbul では branches 70%
+      //   前後に出る（lines / functions / statements は 80% 維持）ので、branches
+      //   だけ 70% に緩める。閾値の絶対値より「数字が後退していないこと」を見る。
       thresholds: {
         lines: 80,
         functions: 80,
-        branches: 80,
+        branches: 70,
         statements: 80,
       },
       reporter: ['text', 'lcov', 'html'],
