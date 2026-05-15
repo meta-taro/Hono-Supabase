@@ -3,9 +3,12 @@ import { OpenAPIHono } from '@hono/zod-openapi';
 import { createErrorHandler } from '@/shared/http/error-handler';
 import { createSilentLogger } from '@/shared/infrastructure/logger';
 import { NotFoundError, ValidationError } from '@/shared/domain/errors';
+import type { AppEnv } from '@/shared/http/request-context';
 
-const buildTestApp = (): OpenAPIHono => {
-  const app = new OpenAPIHono();
+const buildTestApp = (): OpenAPIHono<AppEnv> => {
+  // Phase 9 Step 1 で createErrorHandler の戻り型が ErrorHandler<AppEnv> になったため、
+  // テスト用最小 app も AppEnv で型付けする（c.get('logger') の型補完が効くようにする）。
+  const app = new OpenAPIHono<AppEnv>();
   app.get('/throw-app-error', () => {
     throw new NotFoundError('テストリソースが見つかりません');
   });

@@ -11,6 +11,7 @@ import {
   requireAuth,
   requireAdmin,
 } from '@/shared/http/auth.middleware';
+import { createRequestContextMiddleware } from '@/shared/http/request-context.middleware';
 
 // ---------------------------------------------------------------------------
 // bootstrap = ランタイム非依存のアプリ組み立て関数。
@@ -40,6 +41,9 @@ export const bootstrap = (deps: BootstrapDeps): OpenAPIHono<AppEnv> => {
   const { env, logger, jwksFetcherProvider, appVersion } = deps;
 
   return createApp({
+    // Phase 9 Step 1: 入口で requestId 確立 + req スコープロガーを c.var.logger に積む。
+    // /health にも適用される（外形監視からのリクエストも追跡できる）。
+    globalMiddlewares: [createRequestContextMiddleware({ baseLogger: logger })],
     rootMiddlewares: [
       createOptionalAuthMiddleware({ env, jwksFetcherProvider }),
       createRequestSupabaseMiddleware(env),

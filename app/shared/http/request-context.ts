@@ -2,18 +2,28 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { CakeController } from '@/modules/cakes/presentation/cake.controller';
 import type { CustomerController } from '@/modules/customers/presentation/customer.controller';
 import type { OrderController } from '@/modules/orders/presentation/order.controller';
+import type { AppLogger } from '@/shared/infrastructure/logger';
 
 // ---------------------------------------------------------------------------
 // リクエストごとに Hono の c.var に積む値を 1 ヵ所で型定義する。
-//   - user:    認証済みユーザー情報（optional auth が JWT を検証してセット）
-//   - sb:      このリクエストに紐づく Supabase クライアント
-//              （未認証なら anon、認証済みなら anon + Authorization ヘッダ）
-//   - jwt:     受信した生 JWT（必要時に Supabase 側へ転送するため保持）
-//   - modules: per-request に組み立てた Bounded Context 別 Controller
-//              composition-root の modulesMiddleware が sb から組み立てて積む
+//   - requestId: このリクエスト固有の ID（X-Request-Id を反射する元）
+//   - logger:    requestId / method / path を child bindings に積んだ req スコープロガー
+//                （Phase 9 Step 1 で導入。UseCase / error-handler がこれを使うことで、
+//                障害発生時に「requestId=xxx で grep すれば 1 リクエスト分のログが追える」運用が成立）
+//   - user:      認証済みユーザー情報（optional auth が JWT を検証してセット）
+//   - sb:        このリクエストに紐づく Supabase クライアント
+//                （未認証なら anon、認証済みなら anon + Authorization ヘッダ）
+//   - jwt:       受信した生 JWT（必要時に Supabase 側へ転送するため保持）
+//   - modules:   per-request に組み立てた Bounded Context 別 Controller
+//                composition-root の modulesMiddleware が sb から組み立てて積む
 //
 // `c.set('user', ...)` 経路は型安全にしたいため、Hono の Variables を拡張する形で公開する。
 // 各 router / middleware は { Variables: AppVariables } を受けることで補完が効く。
+//
+// requestId / logger を optional にしている理由:
+//   `createApp()` を引数なしで呼ぶ最小構成（health.test.ts 互換）や、req-context
+//   middleware を意図的に外したユニットテストでは未セットになりうる。型上 optional に
+//   しておき、利用側（error-handler 等）で fallback を持つ実装にする。
 // ---------------------------------------------------------------------------
 
 export type AppRole = 'admin' | 'authenticated';
@@ -34,6 +44,8 @@ export interface RequestModules {
 }
 
 export interface AppVariables {
+  requestId?: string;
+  logger?: AppLogger;
   user?: AuthUser;
   sb: SupabaseClient;
   jwt?: string;

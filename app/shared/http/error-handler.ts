@@ -1,5 +1,6 @@
 import type { ErrorHandler } from 'hono';
 import { AppError } from '@/shared/domain/errors';
+import type { AppEnv } from '@/shared/http/request-context';
 import type { AppLogger } from '@/shared/infrastructure/logger';
 
 // ---------------------------------------------------------------------------
@@ -12,17 +13,21 @@ import type { AppLogger } from '@/shared/infrastructure/logger';
 //     読みにいって `process is not defined` でクラッシュする
 //   - factory 化することで、ランタイム別に組み立てた logger（Node=pino /
 //     Workers=console-based）を bootstrap → createApp 経由で渡せる
+//
+// Phase 9 Step 1:
+//   c.get('logger') があれば req スコープロガーを優先する。requestId / method / path が
+//   child binding として既に乗っているので、エラーログも 1 リクエスト単位で grep できる。
+//   middleware 未挿入の経路（テストの最小 app 等）では引数の fallback logger を使う。
 // ---------------------------------------------------------------------------
 
-export const createErrorHandler = (logger: AppLogger): ErrorHandler => {
+export const createErrorHandler = (fallbackLogger: AppLogger): ErrorHandler<AppEnv> => {
   return (err, c) => {
+    const logger = c.get('logger') ?? fallbackLogger;
+
     if (err instanceof AppError) {
-      // 業務エラーは warn レベル。method/path をセットで残すことで
-      // 同一パスの GET/POST を障害調査時に区別できるようにする。
-      logger.warn(
-        { err, code: err.code, method: c.req.method, path: c.req.path },
-        'Application error',
-      );
+      // 業務エラーは warn レベル。req スコープロガーが乗っていれば requestId / method / path は
+      // child binding 側で出るので、ここでは AppError 固有の code だけ追加で乗せる。
+      logger.warn({ err, code: err.code }, 'Application error');
       return c.json(
         {
           error: {
@@ -36,7 +41,7 @@ export const createErrorHandler = (logger: AppLogger): ErrorHandler => {
     }
 
     // 想定外の例外はスタックトレース付きで error レベルで記録する。
-    logger.error({ err, method: c.req.method, path: c.req.path }, 'Unhandled internal error');
+    logger.error({ err }, 'Unhandled internal error');
     return c.json(
       {
         error: {

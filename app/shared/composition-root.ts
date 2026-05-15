@@ -81,10 +81,15 @@ export const buildRequestModules = (sb: SupabaseClient, deps: ModuleDeps): Reque
 
 // per-request にモジュールを組み立てて c.var.modules に積むミドルウェア。
 // auth + requestSupabase の後に通すこと。
+//
+// Phase 9 Step 1: c.get('logger') が req スコープロガー（requestId / method / path 付き）に
+// 差し替わっていれば、その時点で UseCase / Repository に渡る logger も自動的に req スコープに
+// 格上げされる。requestContextMiddleware を入れていない経路では deps.logger をそのまま使う。
 export const createModulesMiddleware = (deps: ModuleDeps): MiddlewareHandler<AppEnv> => {
   return async (c, next) => {
     const sb = c.get('sb');
-    c.set('modules', buildRequestModules(sb, deps));
+    const logger = c.get('logger') ?? deps.logger;
+    c.set('modules', buildRequestModules(sb, { env: deps.env, logger }));
     await next();
   };
 };
