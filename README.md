@@ -459,6 +459,134 @@ export async function GET(req: Request) {
 
 ---
 
+## ログ運用の学び — JSON 構造化ログの旨味（Phase 9 Step 1/2 学習サマリー）
+
+Phase 9 Step 1（requestId 伝播 + req スコープ child logger）と Step 2（アクセスログミドルウェア）で本番運用に耐えるロギング基盤が一段落した。ここで「なぜ pino 互換 JSON で吐くのか・テキストログでは何ができないのか」を `jq` 体験ベースで残しておく。
+
+### 観察セットアップ（Workers ローカル）
+
+`pnpm wrangler:dev`（V8 Isolate を再現するローカル Workers、port 8787）を tee 付きで起動 → 5 パターン叩いて出力を `access.log` に残す。
+
+```powershell
+# 1) tee 付きで起動（ターミナル表示と同時に access.log にも書く）
+pnpm wrangler:dev 2>&1 | Tee-Object access.log
+
+# 2) 別ターミナルから 5 本叩く
+curl.exe -i http://127.0.0.1:8787/health
+curl.exe -i http://127.0.0.1:8787/v1/cakes
+curl.exe -i -H "X-Request-Id: trace-experiment-001" http://127.0.0.1:8787/v1/cakes
+curl.exe -i http://127.0.0.1:8787/v1/orders/00000000-0000-0000-0000-000000000001
+curl.exe -i -X POST -H "Content-Type: application/json" -d "{}" http://127.0.0.1:8787/v1/customers
+
+# 3) JSON 行だけ抽出（wrangler 自身のテキスト行 `[wrangler:info] ...` を除外）
+Get-Content access.log | Where-Object { $_ -match '^\{"level"' } | Set-Content json.log
+```
+
+**ローカル観察用の罠**: PowerShell の `Tee-Object` はデフォルトでコンソールコードページ（日本語 Windows なら cp932）で書くため、`err.message` の日本語が `???` 化けする。本番（Cloudflare Logs）は UTF-8 そのままで化けないので**設計問題ではない**が、ローカル jq 観察前に下記を投げておくと綺麗:
+
+```powershell
+$PSDefaultParameterValues['Tee-Object:Encoding']='utf8'
+$PSDefaultParameterValues['Set-Content:Encoding']='utf8'
+```
+
+### jq による「フィールド型を保ったクエリ」5 本
+
+PowerShell では `jq 'select(...)'` の内側ダブルクォートが PS のクォート処理で剥がれて jq に届かないことがあるので、クエリは `.jq` ファイルに置いて `-f` で渡すのが安全。
+
+#### (a) 異常系だけ拾う — 数値比較
+
+```jq
+select(.status >= 400)
+```
+
+→ 4xx/5xx の access-log 行だけ抽出。sed/awk で書くと `grep '"status":4'` のような前方一致になり、`status:500` を漏らさないための個別列挙が必要。**JSON ログなら数値型として比較できる**。
+
+#### (b) 1 リクエストの全ログを串刺し — Step 1/2 の見せ場
+
+```jq
+select(.requestId == "b2d1bd52-3554-42a4-9338-0984d0dbc131")
+```
+
+→ 同じ requestId で **error-handler 行**（`msg: "Application error"`、`err.stack` 付き）と **access-log 行**（`msg: "request completed"`、`status`、`duration_ms`）の **2 行が並ぶ**。Step 1 で req スコープ child logger を `c.var.logger` に積み、Step 2 もその child logger を引いて吐くようにしたため、**何も意識しなくても全行に requestId が刺さる**。これが今回の設計の最大のリターン。
+
+#### (c) 遅い順 top 5 — sort_by + slice
+
+```jq
+map(select(.msg=="request completed"))
+| sort_by(-.duration_ms)
+| .[0:5]
+| .[] | {path, status, duration_ms, requestId}
+```
+
+→ パフォーマンス劣化の検出。手元の観察結果でも `X-Request-Id: trace-experiment-001` 付きの `/v1/cakes` が 180ms で 1 位に来た（=「あの遅かったやつどれだっけ」を即引ける）。sed/awk では「フィールド抽出 → 数値 cast → ソート」の 3 段が手作業になり、フィールド順序を変えると全壊する。
+
+#### (d) パス別集計 — group_by + 平均
+
+```jq
+map(select(.msg=="request completed"))
+| group_by(.path)
+| map({path: .[0].path, count: length, avg_duration: (map(.duration_ms) | add / length)})
+```
+
+→ SQL の `GROUP BY path` + `AVG(duration_ms)` 相当が 1 行で書ける。出力例:
+
+```json
+[
+  { "path": "/v1/cakes", "count": 1, "avg_duration": 180 },
+  { "path": "/v1/customers", "count": 1, "avg_duration": 2 },
+  { "path": "/v1/orders/00000000-0000-0000-0000-000000000001", "count": 1, "avg_duration": 7 }
+]
+```
+
+#### (e) エラー時の stack だけ取り出す — 入れ子オブジェクトのパス指定
+
+```jq
+select(.err) | {requestId, path, status, stack: .err.stack}
+```
+
+→ `err.stack` / `err.details[].field` のような **入れ子フィールドにパスで届く**のが JSON ログの強み。フラットなテキストログだと正規表現で stack の境界を切り出す処理が要り、改行・引用符・空白の混入で簡単に壊れる。
+
+### 運用シナリオ — 実際の障害対応で効くフロー
+
+```
+1. ユーザー「16:23 ごろ注文が失敗しました」と報告
+2. ブラウザ DevTools の Network → レスポンスヘッダ X-Request-Id をコピペしてもらう
+3. Cloudflare Logs（or Datadog / Logflare）で `requestId = <ID>` 検索
+4. 該当 reqId の 2 行（access-log + error-handler）が即ヒット
+5. err.stack と err.details で原因即特定
+```
+
+これは **pino-pretty テキストや Hono 標準 `logger()` では成立しない**:
+
+- テキスト `grep <ID>` は ID が path 等に偶然マッチしてノイズを拾う
+- 数値条件（`duration_ms > 1000`）は型がないと書けない
+- access-log と error-handler のリンクが人間の目視マッチングになる
+- クライアントから貰える `X-Request-Id` はキーが構造化されていないと「同じ ID で検索」が単純な文字列マッチに退化する
+
+### JSON ログ採用の恩恵まとめ
+
+| 観点                                             | 効き目                                                                                                       |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| **手元（jq）**                                   | `>=`, `sort_by`, `group_by` がフィールド型のまま使える。コードが変わってもクエリが壊れない                   |
+| **CI / スクリプト**                              | 負荷試験・障害再現の出力をそのまま機械処理。SLO 違反検出を CI に組める                                       |
+| **本番（Cloudflare Logs / Datadog / Logflare）** | ブラウザ UI で SQL ライク検索 + ダッシュボード + アラート（Step 4/5 で扱う）                                 |
+| **ランタイム共通**                               | Node 開発（pino-pretty 整形）と Workers 本番（`console.log` JSON）で同スキーマ。同じ jq クエリが両環境で通る |
+
+### sed/awk では届かないポイント
+
+- フィールド型を保ったクエリ（`status >= 500` のような数値条件、`duration_ms > 1000`）
+- 入れ子オブジェクト（`err.stack` / `err.details[].field`）へのパス指定
+- スキーマが安定 ＝ クエリが将来も壊れない運用契約
+- `group_by` / `sort_by` / `map` / `select` で SQL 相当の集計が成立
+
+### 次の Step 3/4/5 への接続
+
+- **Step 3（`/health` 充実）**: 同じ JSON スキーマで `db: {ok, latency_ms}` を返し、外形監視 / uptime monitor から拾える形に
+- **Step 4（Workers Analytics Engine）**: ここで吐いた structured ログを Analytics Engine に流し、Cloudflare Dashboard でグラフ化
+- **Step 5（Logpush / アラート）**: Cloudflare Logs を R2 / 外部 SaaS に送って「5xx 率 1% 超え → Slack」のアラート連携。`level >= 40` での絞り込みがそのまま使える
+
+---
+
 ## 主要コマンド
 
 | コマンド                                           | 用途                                                                                                                                                            |
