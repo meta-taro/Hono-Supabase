@@ -773,15 +773,32 @@ interface CakeRow {
 - `cakes` を選ぶ理由 = RLS が public read を許可している唯一のテーブル（auth 不要で probe 可能）
 - 失敗パス（タイムアウト・HTTP エラー・接続不到達）は全て catch して `{ ok: false, latency_ms: <経過時間> }` に丸める
 
-**仮の閾値（Step 3a 時点）**:
+**閾値（Step 3a で仮置き → Step 3b で実測検証済・据え置き）**:
 
 - probe timeout: `1500ms`
 - degraded boundary: `latency_ms > 800`
-- 連続失敗集計なし（stateless）
-
-これらは Phase 9 Step 3b（任意・後日）で `pg_sleep` RPC や `supabase stop` を使った実測体験を経て調整する。「決め事をしすぎず、まず動かして、後で実測で詰める」分割にしている。
+- 連続失敗集計なし（stateless）— アラートと連動するなら Phase 9 Step 5 で再検討
 
 **テストでの差し替え**: `createApp({ healthDbProbe })` に fake probe を注入できる DI 形状にしてあるので、4 状態（ok / degraded / down(タイムアウト相当) / down(クエリエラー相当)）を全部ユニットテストで網羅できる。probe を省略すれば従来通り `{ status: "ok", version }` のみの最小 health（既存テスト互換）。
+
+#### Step 3b 実測体験のまとめ（2026-05-18）
+
+ローカル（Node + Supabase ローカル）で 3 シナリオを実際に踏み、閾値の妥当性を確認した。コードは各シナリオで一時改変 → 観察 → revert する運用（恒久的な env 化はしない）。
+
+| シナリオ             | 引き起こし方                        | 観察結果                                                   | 学び                                                                                                 |
+| -------------------- | ----------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| ベースライン         | 何もしない                          | HTTP 200 / `ok` / `latency_ms: 36–290`（初回が遅め）       | ウォームアップ込みでも 290ms。定常で 36–66ms。`DEGRADED_LATENCY_MS=800` は十分マージンあり           |
+| 1. degraded          | `DEGRADED_LATENCY_MS` を 5 に下げる | HTTP 200 / `degraded` / `db.ok:true` / `latency_ms: 36`    | 「DB 到達しているが遅い」を pager を鳴らさず警告だけ出せる挙動が確認できた                           |
+| 2. down(timeout)     | `PROBE_TIMEOUT_MS` を 50 に下げる   | HTTP 503 / `down` / `db.ok:false` / `latency_ms: 59`       | timeout から +9ms（abort 後処理）で probe 失敗。`AbortSignal.timeout` が REST 呼び出しを正しく切れる |
+| 3. down(unreachable) | `supabase stop` で REST 自体を停止  | HTTP 503 / `down` / `db.ok:false` / **`latency_ms: 1518`** | 接続拒否（ECONNREFUSED）が即返らず **`PROBE_TIMEOUT_MS=1500` でタイムアウト発火**                    |
+
+**シナリオ 3 の重要な学び**: ローカルの Docker Desktop / WSL2 ネットワークスタックは、停止したコンテナのポートに対して **TCP RST を即時に返さず、SYN を吸い込んで応答しない**挙動を示すことがある。これは本番でも「上流が応答しないハング系障害」として頻発するシナリオで、もし `AbortSignal.timeout` を設定していなければ `/health` 自体が OS デフォルトの fetch timeout（数十秒〜120秒）まで pending してしまう。外形監視・uptime monitor からの health check が詰まる最悪のシナリオを避けるための **probe timeout の存在意義**がここで実測できた。
+
+**閾値の最終判断**:
+
+- `DEGRADED_LATENCY_MS = 800`: 据え置き。ベースライン定常 36–66ms / 初回 290ms から十分なマージン。本番（Supabase Cloud）はネットワーク往復が増えるため定常 latency は上がる想定だが、それでも 800ms ならまだ余裕がある
+- `PROBE_TIMEOUT_MS = 1500`: 据え置き。ハング系を 1.5 秒で検知できるバランス。短すぎると正常な遅延を down に倒してしまい、長すぎるとハング検知が遅れる
+- stateless 設計: 据え置き。連続失敗集計は Phase 9 Step 5（アラート連携）と一緒に設計するのが筋。1 リクエストごとに独立判定なら、外形監視側で「N 回連続失敗で pager」と組むのがシンプル
 
 ### 統一エラーレスポンス
 
