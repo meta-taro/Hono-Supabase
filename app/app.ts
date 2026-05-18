@@ -8,6 +8,27 @@ import { createCakeRouter } from '@/modules/cakes/presentation/cake.routes';
 import { createCustomerRouter } from '@/modules/customers/presentation/customer.routes';
 import { createOrderRouter } from '@/modules/orders/presentation/order.routes';
 
+// Phase 9 Step 3a: /health の DB プローブ結果。
+//   ok        = REST 応答が成功した
+//   latency_ms = プローブにかかった所要時間（プローブ関数が start→end で実測）
+// プローブ関数自身がタイムアウト/例外をハンドリングして「失敗 = ok:false」に丸める。
+// /health 側はこの結果を 3 状態（ok | degraded | down）に振り分ける責務のみを持つ。
+export interface HealthDbProbeResult {
+  ok: boolean;
+  latency_ms: number;
+}
+
+export type HealthDbProbe = () => Promise<HealthDbProbeResult>;
+
+// /health が公開する状態。
+//   ok       = DB 到達 + latency が閾値以下（正常）
+//   degraded = DB 到達したが latency が閾値超過（劣化警告。HTTP は 200 のまま）
+//   down     = DB 到達失敗（タイムアウト or エラー）。HTTP 503 で uptime monitor に拾わせる
+export type HealthStatus = 'ok' | 'degraded' | 'down';
+
+// degraded の閾値（仮置き）。Phase 9 Step 3b で実測ベースに調整予定。
+const DEGRADED_LATENCY_MS = 800;
+
 // ---------------------------------------------------------------------------
 // Phase 6 / Phase 9 Step 1: createApp はミドルウェアを「composable な配列」として受け取る。
 //   - globalMiddlewares: /health を含む全パスに通す（Phase 9 Step 1 で追加）
@@ -48,6 +69,10 @@ export interface AppOptions {
   // Node / テストでは 'local' 等。これにより段階展開（カナリア）中にどのバージョンが
   // 応答したかをクライアント側（curl ループ等）から観察できる。
   appVersion?: string;
+  // /health の DB プローブ。省略時は DB を触らない最小 /health（テスト互換）。
+  // bootstrap 経由の本番組み立てでは Supabase REST を AbortSignal.timeout で叩く実装が
+  // 注入される。テストでは fake probe で 4 状態を網羅する。
+  healthDbProbe?: HealthDbProbe;
 }
 
 export const createApp = (options?: AppOptions): OpenAPIHono<AppEnv> => {
@@ -64,7 +89,26 @@ export const createApp = (options?: AppOptions): OpenAPIHono<AppEnv> => {
   }
 
   // /health は非バージョン・認証不要（CLAUDE.md API 設計）。
-  app.get('/health', (c) => c.json({ status: 'ok', version: appVersion }));
+  // Phase 9 Step 3a: probe 注入時は 3 状態（ok / degraded / down）+ db フィールド付き。
+  //   - ok       → HTTP 200
+  //   - degraded → HTTP 200（DB は応答したが latency 超過。アラートではなく観察用）
+  //   - down     → HTTP 503（外形監視を pager に乗せるため明確に異常側へ倒す）
+  // probe 省略時は backward-compat の {status:'ok', version} のみ（最小 health.test.ts 互換）。
+  const probe = options?.healthDbProbe;
+  if (probe) {
+    app.get('/health', async (c) => {
+      const db = await probe();
+      const status: HealthStatus = !db.ok
+        ? 'down'
+        : db.latency_ms > DEGRADED_LATENCY_MS
+          ? 'degraded'
+          : 'ok';
+      const httpStatus = status === 'down' ? 503 : 200;
+      return c.json({ status, version: appVersion, db }, httpStatus);
+    });
+  } else {
+    app.get('/health', (c) => c.json({ status: 'ok', version: appVersion }));
+  }
 
   if (options) {
     // /v1/* 全体に通すグローバルミドルウェア。

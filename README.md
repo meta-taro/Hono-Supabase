@@ -745,6 +745,44 @@ interface CakeRow {
 | POST   | `/v1/orders`     | 必須   | 注文作成         |
 | GET    | `/v1/orders/:id` | 本人   | 注文詳細         |
 
+### `/health` の応答仕様（Phase 9 Step 3a）
+
+`/health` は **DB 到達性も含めた 3 状態のヘルスチェック**を返す（外形監視・uptime monitor の連携前提）。
+
+**レスポンス形状**:
+
+```json
+{
+  "status": "ok" | "degraded" | "down",
+  "version": "<deployment id>",
+  "db": { "ok": true, "latency_ms": 42 }
+}
+```
+
+**状態と HTTP マッピング**:
+
+| status     | HTTP | 条件                                                                   | 監視側の扱い                               |
+| ---------- | ---- | ---------------------------------------------------------------------- | ------------------------------------------ |
+| `ok`       | 200  | probe 成功 かつ `db.latency_ms ≤ 800`                                  | 正常                                       |
+| `degraded` | 200  | probe 成功 だが `db.latency_ms > 800`                                  | 警告（pager は鳴らさない・観察用）         |
+| `down`     | 503  | probe 失敗（タイムアウト・Supabase REST エラー・接続不到達のいずれか） | 障害（uptime monitor から pager に乗せる） |
+
+**probe 実装**:
+
+- bootstrap で anon Supabase client を 1 回だけ作り、`cakes` を `select('id').limit(1).abortSignal(AbortSignal.timeout(1500))` で叩く
+- `cakes` を選ぶ理由 = RLS が public read を許可している唯一のテーブル（auth 不要で probe 可能）
+- 失敗パス（タイムアウト・HTTP エラー・接続不到達）は全て catch して `{ ok: false, latency_ms: <経過時間> }` に丸める
+
+**仮の閾値（Step 3a 時点）**:
+
+- probe timeout: `1500ms`
+- degraded boundary: `latency_ms > 800`
+- 連続失敗集計なし（stateless）
+
+これらは Phase 9 Step 3b（任意・後日）で `pg_sleep` RPC や `supabase stop` を使った実測体験を経て調整する。「決め事をしすぎず、まず動かして、後で実測で詰める」分割にしている。
+
+**テストでの差し替え**: `createApp({ healthDbProbe })` に fake probe を注入できる DI 形状にしてあるので、4 状態（ok / degraded / down(タイムアウト相当) / down(クエリエラー相当)）を全部ユニットテストで網羅できる。probe を省略すれば従来通り `{ status: "ok", version }` のみの最小 health（既存テスト互換）。
+
 ### 統一エラーレスポンス
 
 ```json
@@ -917,7 +955,8 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
   - 動機: Phase 7 で Workers 互換ロガー（pino 互換 JSON 出力）の土台は整ったが、**1 リクエストで吐かれた全ログを追える / 依存サービス異常を `/health` で検知できる / エラー率急騰でアラートが飛ぶ**までは未整備。本番に出した API を運用できる状態にするための観測ハードを一周する
   - [x] Step 1（2026-05-15 完了）: **リクエスト ID 伝播 + リクエストスコープロガー** — `app/shared/http/request-context.middleware.ts` を新設。入口で `X-Request-Id` 採用（サニタイズ `/^[A-Za-z0-9_-]{1,128}$/` を通らない値はログ汚染対策で拒否）→ 無ければ `crypto.randomUUID()`（Web Crypto API、Workers / Node 22 共通）で生成。`AppVariables` に `requestId?` / `logger?` を追加 → `c.set('logger', baseLogger.child({ requestId, method, path }))` で req スコープロガーを積む。`createApp` に `globalMiddlewares` フィールドを足して `*`（`/health` 含む）に適用し、外形監視からの叩きも `requestId` 付きでログ追跡可能に。レスポンスヘッダ `X-Request-Id` に反射（クライアントが障害報告時に貼ってもらう運用）。`error-handler` は `c.get('logger') ?? fallbackLogger` 優先に切替（child binding に requestId/method/path が乗るので重複出力を削除）。`createModulesMiddleware` も同様に `c.get('logger')` を優先採用し、per-request UseCase / Repository に req スコープロガーが行き渡る。テスト 7 ケース（有効ヘッダ採用 / 未指定で自前生成 / 空白拒否 / 不許可文字拒否 / 128 文字超拒否 / child bindings 検証 / デフォルト UUID v4 形式）+ `pnpm verify` 緑（267 テスト）+ `pnpm test:coverage` 緑（middleware 100% カバー、全体閾値クリア）
   - [x] Step 2（2026-05-15 完了）: **アクセスログミドルウェア** — `app/shared/http/access-log.middleware.ts` を新設。入口で `start = Date.now()` を取り `await next()` 後に `{status, duration_ms, userId}` を req スコープロガー経由で出力（`method` / `path` / `requestId` は Step 1 の child binding に既に乗っているので二重出力しない）。ステータス別にレベルを出し分け（5xx → `error` / 4xx → `warn` / それ以外 → `info`）して、Cloudflare Logs / Datadog の `level=error` 検索で障害だけ拾える形に。`userId` は `c.get('user')?.id` を spread して**未認証時はキーごと省略**（誤って `userId: undefined` を残さない）。`bootstrap.ts` で `requestContextMiddleware` の直後に並べて `/health` 含む全パスに適用（外形監視からの叩きも duration が観測できる）。Hono 標準 `logger()` を使わない理由は「console.log にプレーンテキストで吐くため structured 検索ができない」+「req スコープロガーに乗せた `requestId` バインドを引き継げない」。`logger` が積まれていない最小テスト app 経路では no-op（fallback logger を import すると Workers バンドルに pino / 裸 console を混ぜるリスクが出るため）。テスト 6 ケース（2xx info / 4xx warn / 5xx error / 認証済 userId 出力 / 未認証で userId キーごと省略 / logger 未挿入時 no-op）+ `pnpm verify` 緑（273 テスト）+ `pnpm test:coverage` 緑（middleware 100% カバー、全体閾値クリア）
-  - [ ] Step 3: **`/health` の充実** — Supabase REST に軽量 `select('id').limit(1)` を投げて `db: {ok, latency_ms}` を返す。`ok | degraded | down` の階段化（外形監視・uptime monitor 連携前提）
+  - [x] Step 3a（2026-05-18 完了）: **`/health` の充実（骨格・仮の閾値）** — `app.ts` の `AppOptions` に `healthDbProbe?: HealthDbProbe` を追加。probe は `() => Promise<{ok, latency_ms}>` の純粋関数で、tests から fake 注入できる DI 形状。本番 probe は `bootstrap.ts` で anon Supabase client を 1 つ作って `cakes` を `select('id').limit(1).abortSignal(AbortSignal.timeout(1500))` で叩く実装（per-request ではなく cold start 時に 1 度だけ作る／RLS は public read を許可している cakes のみに依存）。/health は 3 状態 (`ok | degraded | down`) を返す: probe.ok かつ `latency_ms ≤ 800` → `ok` / probe.ok かつ `latency_ms > 800` → `degraded` / それ以外（タイムアウト・クエリエラー・接続不到達）→ `down`。HTTP ステータスは `ok`/`degraded` → 200・`down` → 503（外形監視・uptime monitor を pager に乗せるため `degraded` では緑、`down` のみ赤に倒す）。**現状の仮の閾値**: probe timeout 1500ms / degraded boundary 800ms / stateless（連続失敗カウントなし）。これらは Step 3b（任意・後日）で実測ベースに調整予定。テスト 6 ケース（既存 2: probe 省略 / appVersion 反映 + 新規 4: ok / degraded / down(タイムアウト相当) / down(クエリエラー相当)）+ `pnpm verify` 緑（277 テスト）
+  - [ ] Step 3b（任意・後日）: **`/health` 閾値の実測すり合わせ** — pg_sleep RPC で graduated latency を発生させて degraded 閾値の妥当性を確認 / 一時的に `PROBE_TIMEOUT_MS` を 50ms に絞って down 経路を観察 / `supabase stop`（ローカル）または staging URL の意図的破壊で接続不到達時の挙動を観察 / 連続失敗集計を導入する場合は Step 5（アラート）と一緒に設計。「決め事をしすぎず、まず動かして、後で実測で詰める」流れを意識した分割
   - [ ] Step 4: **メトリクス収集（Workers Analytics Engine）** — `wrangler.toml` に `[[analytics_engine_datasets]]` を追加し、注文数 / エラー率 / p95 latency を書き込み。Node では no-op（DI で吸収）。Cloudflare Dashboard でグラフ化 + SQL クエリ確認
   - [ ] Step 5: **Logpush / アラート** — Cloudflare Logs を R2 / 外部 SaaS（Logpush）に送る設定 + Notifications でメール/Slack 連携。「わざと 5xx を出してアラートが飛ぶ」演習で end-to-end 確認
 - [ ] **Phase 10**: **API のリッチ化**（実運用 REST API でよく出てくる設計パターンを縦切りで実演）
