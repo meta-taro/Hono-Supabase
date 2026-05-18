@@ -1,9 +1,12 @@
 import type { MiddlewareHandler } from 'hono';
+import { routePath } from 'hono/route';
 import type { AppEnv } from '@/shared/http/request-context';
+import type { MetricsRecorder } from '@/shared/infrastructure/metrics';
 
 // ---------------------------------------------------------------------------
-// accessLogMiddleware (Phase 9 Step 2)
+// accessLogMiddleware (Phase 9 Step 2 + Step 4)
 //   1 リクエスト = 1 行のアクセスログを req スコープロガー経由で吐く。
+//   Step 4 で同じタイミングに Workers Analytics Engine へのメトリクス書き込みを追加。
 //
 //   何を残すか:
 //     - status:      レスポンスの HTTP ステータス
@@ -24,6 +27,14 @@ import type { AppEnv } from '@/shared/http/request-context';
 //     - 4xx は警告として warn レベル（バリデーション / 認証エラー等の正常な拒否）
 //     - 2xx/3xx は info レベル（通常運用ログ）
 //
+//   Step 4: メトリクス書き込み:
+//     - options.metrics 注入時のみ Analytics Engine に 1 データポイント書く
+//       （binding 未バインドの Node ローカル / テストでは options を渡さない or
+//       noop recorder を渡す）
+//     - route は c.req.routePath（Hono が正規化した「ハンドラに登録されたパス」、
+//       例 '/v1/orders/:id'）を使う。生 path だと UUID 分カーディナリティ爆発する
+//     - 未マッチ経路（404）は routePath が空 / undefined になりうるので '/unknown' に倒す
+//
 //   設置位置 (bootstrap):
 //     globalMiddlewares で requestContextMiddleware の直後に並べる。
 //     入口で start = Date.now() を取り、await next() の後にステータスを読む。
@@ -33,7 +44,23 @@ import type { AppEnv } from '@/shared/http/request-context';
 const isClientError = (status: number): boolean => status >= 400 && status < 500;
 const isServerError = (status: number): boolean => status >= 500;
 
-export const createAccessLogMiddleware = (): MiddlewareHandler<AppEnv> => {
+// metrics binding をひとまとめにする理由:
+//   recorder 単体だと「どの env / どの app_version からの書き込みか」が
+//   Analytics Engine 側で分からなくなる。bootstrap 時に固定値が決まるので、
+//   middleware に渡すときも 1 つの塊として渡す方が呼び出し側もシンプル。
+export interface AccessLogMetricsBinding {
+  recorder: MetricsRecorder;
+  env: string;
+  app_version: string;
+}
+
+export interface AccessLogOptions {
+  metrics?: AccessLogMetricsBinding;
+}
+
+export const createAccessLogMiddleware = (
+  options: AccessLogOptions = {},
+): MiddlewareHandler<AppEnv> => {
   return async (c, next) => {
     const start = Date.now();
 
@@ -47,10 +74,11 @@ export const createAccessLogMiddleware = (): MiddlewareHandler<AppEnv> => {
     if (!logger) return;
 
     const status = c.res.status;
+    const duration_ms = Date.now() - start;
     const userId = c.get('user')?.id;
     const bindings = {
       status,
-      duration_ms: Date.now() - start,
+      duration_ms,
       ...(userId !== undefined ? { userId } : {}),
     };
 
@@ -60,6 +88,26 @@ export const createAccessLogMiddleware = (): MiddlewareHandler<AppEnv> => {
       logger.warn(bindings, 'request completed');
     } else {
       logger.info(bindings, 'request completed');
+    }
+
+    // Step 4: Workers Analytics Engine へのメトリクス書き込み（注入時のみ）。
+    // writeDataPoint は fire-and-forget なのでレスポンス遅延に乗らない。
+    //
+    // routePath(c, -1) で「マッチしたハンドラルートのパス」を取得する。
+    //   - middleware 経由 (`app.use('*', ...)`) で素の routePath(c) を呼ぶと
+    //     ミドルウェア自身のルート（'*'）が返ってしまう。-1 で末尾＝最も内側の
+    //     ハンドラのルート（例 '/v1/orders/:id'）を取る。
+    //   - 未マッチ経路（404）では空文字 / undefined になりうるので '/unknown' に倒す。
+    if (options.metrics) {
+      const route = routePath(c, -1) || '/unknown';
+      options.metrics.recorder.recordRequest({
+        method: c.req.method,
+        route,
+        status,
+        duration_ms,
+        env: options.metrics.env,
+        app_version: options.metrics.app_version,
+      });
     }
   };
 };

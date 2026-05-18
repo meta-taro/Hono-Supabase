@@ -50,6 +50,7 @@ export default defineConfig({
             'app/shared/infrastructure/logger.test.ts',
             'app/shared/infrastructure/node-pino-logger.test.ts',
             'app/shared/infrastructure/supabase.test.ts',
+            'app/shared/infrastructure/metrics.test.ts',
           ],
           env: {
             SUPABASE_URL: supabaseUrl,

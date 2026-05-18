@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { createAccessLogMiddleware } from '@/shared/http/access-log.middleware';
+import {
+  createAccessLogMiddleware,
+  type AccessLogMetricsBinding,
+} from '@/shared/http/access-log.middleware';
 import type { AppEnv, AuthUser } from '@/shared/http/request-context';
 import type { AppLogger } from '@/shared/infrastructure/logger';
 import { createSilentLogger } from '@/shared/infrastructure/logger';
+import type { MetricsRecorder, RequestMetricInput } from '@/shared/infrastructure/metrics';
 
 // AppLogger interface を満たす spy ロガーを返す。
 // 個別の mock fn をトップレベルで返すのは、`expect(logger.info)` 形式で参照すると
@@ -132,5 +136,100 @@ describe('accessLogMiddleware', () => {
 
     expect(res.status).toBe(200);
     expect(consoleSpy).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 9 Step 4: metrics 注入時のメトリクス書き込み検証
+  // -------------------------------------------------------------------------
+
+  const createSpyRecorder = () => {
+    const recordRequest = vi.fn<(input: RequestMetricInput) => void>();
+    const recorder: MetricsRecorder = { recordRequest };
+    return { recorder, recordRequest };
+  };
+
+  const buildAppWithMetrics = (params: { logger: AppLogger; metrics: AccessLogMetricsBinding }) => {
+    const app = new Hono<AppEnv>();
+    app.use('*', async (c, next) => {
+      c.set('logger', params.logger);
+      await next();
+    });
+    app.use('*', createAccessLogMiddleware({ metrics: params.metrics }));
+    app.get('/ok', (c) => c.json({ ok: true }));
+    // 動的セグメントを含むルートで routePath が正規化形（'/v1/orders/:id'）に
+    // なることを確認するためのハンドラ。
+    app.get('/v1/orders/:id', (c) => c.json({ id: c.req.param('id') }));
+    app.get('/boom', (c) => c.json({ error: 'boom' }, 500));
+    return app;
+  };
+
+  it('metrics 注入時は recordRequest が呼ばれる（method/route/status/duration_ms/env/app_version）', async () => {
+    const spy = createSpyLogger();
+    const m = createSpyRecorder();
+    const app = buildAppWithMetrics({
+      logger: spy.logger,
+      metrics: { recorder: m.recorder, env: 'staging', app_version: 'v-123' },
+    });
+
+    await app.request('/ok');
+
+    expect(m.recordRequest).toHaveBeenCalledTimes(1);
+    expect(m.recordRequest).toHaveBeenCalledWith({
+      method: 'GET',
+      route: '/ok',
+      status: 200,
+      duration_ms: 42,
+      env: 'staging',
+      app_version: 'v-123',
+    });
+  });
+
+  it('動的セグメントのルートは正規化形（/v1/orders/:id）として route に渡る', async () => {
+    const spy = createSpyLogger();
+    const m = createSpyRecorder();
+    const app = buildAppWithMetrics({
+      logger: spy.logger,
+      metrics: { recorder: m.recorder, env: 'staging', app_version: 'v-123' },
+    });
+
+    await app.request('/v1/orders/abc-123');
+
+    expect(m.recordRequest).toHaveBeenCalledTimes(1);
+    const arg = m.recordRequest.mock.calls[0]?.[0];
+    expect(arg?.route).toBe('/v1/orders/:id');
+  });
+
+  it('5xx でも metrics は呼ばれる（status はそのまま渡る）', async () => {
+    const spy = createSpyLogger();
+    const m = createSpyRecorder();
+    const app = buildAppWithMetrics({
+      logger: spy.logger,
+      metrics: { recorder: m.recorder, env: 'production', app_version: 'v-zzz' },
+    });
+
+    await app.request('/boom');
+
+    expect(m.recordRequest).toHaveBeenCalledTimes(1);
+    const arg = m.recordRequest.mock.calls[0]?.[0];
+    expect(arg?.status).toBe(500);
+    expect(arg?.env).toBe('production');
+  });
+
+  it('metrics 未注入時は recordRequest を一切呼ばない（既存挙動と同じ）', async () => {
+    const spy = createSpyLogger();
+    const m = createSpyRecorder();
+    const app = new Hono<AppEnv>();
+    app.use('*', async (c, next) => {
+      c.set('logger', spy.logger);
+      await next();
+    });
+    // metrics 引数を省略 → no-op 経路
+    app.use('*', createAccessLogMiddleware());
+    app.get('/ok', (c) => c.json({ ok: true }));
+
+    await app.request('/ok');
+
+    expect(spy.info).toHaveBeenCalledTimes(1);
+    expect(m.recordRequest).not.toHaveBeenCalled();
   });
 });

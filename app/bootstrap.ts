@@ -5,6 +5,7 @@ import type { AppEnv } from '@/shared/http/request-context';
 import type { Env } from '@/shared/http/env';
 import type { AppLogger } from '@/shared/infrastructure/logger';
 import type { JwksFetcherProvider } from '@/shared/infrastructure/jwks-fetcher';
+import type { MetricsRecorder } from '@/shared/infrastructure/metrics';
 import { createModulesMiddleware } from '@/shared/composition-root';
 import {
   createOptionalAuthMiddleware,
@@ -13,7 +14,10 @@ import {
   requireAdmin,
 } from '@/shared/http/auth.middleware';
 import { createRequestContextMiddleware } from '@/shared/http/request-context.middleware';
-import { createAccessLogMiddleware } from '@/shared/http/access-log.middleware';
+import {
+  createAccessLogMiddleware,
+  type AccessLogMetricsBinding,
+} from '@/shared/http/access-log.middleware';
 
 // Phase 9 Step 3a: /health の DB プローブ実装。
 //   - anon キーで cakes を 1 行 select するだけ（RLS で public read 可能）
@@ -70,20 +74,36 @@ export interface BootstrapDeps {
   // /health に晒すデプロイ識別子。Workers = version_metadata のバージョン ID、
   // Node = 'local'。省略時は createApp 側で 'local' になる。
   appVersion?: string;
+  // Phase 9 Step 4: Workers Analytics Engine 用 recorder。
+  // 省略時は計測しない（Node 起点 / 最小テスト / binding 未注入時）。
+  // Workers エントリ側で bindings.API_REQUESTS から
+  // createAnalyticsEngineRecorder で組み立てて渡す。
+  metricsRecorder?: MetricsRecorder;
 }
 
 export const bootstrap = (deps: BootstrapDeps): OpenAPIHono<AppEnv> => {
-  const { env, logger, jwksFetcherProvider, appVersion } = deps;
+  const { env, logger, jwksFetcherProvider, appVersion, metricsRecorder } = deps;
+
+  // accessLog に渡す metrics binding を組み立てる。recorder 未注入時は undefined
+  // のまま渡して middleware 側でも no-op に倒す（書き込み経路を一切走らせない）。
+  const accessLogMetrics: AccessLogMetricsBinding | undefined = metricsRecorder
+    ? {
+        recorder: metricsRecorder,
+        env: env.NODE_ENV,
+        app_version: appVersion ?? 'local',
+      }
+    : undefined;
 
   return createApp({
-    // Phase 9 Step 1/2: 全パス（/health 含む）に通すグローバルミドルウェア。
+    // Phase 9 Step 1/2/4: 全パス（/health 含む）に通すグローバルミドルウェア。
     //   1. requestContext: requestId 採用/生成 + req スコープロガーを c.var.logger に積む
     //   2. accessLog:      入口で start を取り、出口で {status, duration_ms, userId} を
     //                      ステータス別レベル（5xx→error / 4xx→warn / 他→info）で吐く
+    //                      + Step 4: metrics 注入時は Analytics Engine にも 1 イベント書く
     // 順序は厳守: accessLog は requestContext より後（c.var.logger を消費するため）。
     globalMiddlewares: [
       createRequestContextMiddleware({ baseLogger: logger }),
-      createAccessLogMiddleware(),
+      createAccessLogMiddleware({ metrics: accessLogMetrics }),
     ],
     rootMiddlewares: [
       createOptionalAuthMiddleware({ env, jwksFetcherProvider }),

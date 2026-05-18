@@ -8,6 +8,11 @@ import {
   createWorkersJwksFetcher,
   type JwksFetcherProvider,
 } from '@/shared/infrastructure/jwks-fetcher';
+import {
+  createAnalyticsEngineRecorder,
+  createNoopMetricsRecorder,
+  type MetricsRecorder,
+} from '@/shared/infrastructure/metrics';
 
 // ---------------------------------------------------------------------------
 // Cloudflare Workers エントリ（本番デプロイ先）。
@@ -43,6 +48,11 @@ interface WorkersBindings {
   // ローカル wrangler dev では placeholder 値、未宣言環境では undefined になりうるので
   // 参照側は ?. + フォールバックで扱う。
   CF_VERSION_METADATA?: WorkerVersionMetadata;
+  // wrangler.toml の [[analytics_engine_datasets]] バインディング（Phase 9 Step 4）。
+  // staging / production それぞれ別 dataset に書き込む構成（A 案: 物理分離）。
+  // `wrangler dev` では undefined になりうる（Analytics Engine は本物の Workers に
+  // デプロイされてから初めて writeDataPoint が実書き込みされる）ので optional。
+  API_REQUESTS?: AnalyticsEngineDataset;
 }
 
 type Handler = (request: Request, ctx: ExecutionContext) => Promise<Response>;
@@ -50,9 +60,10 @@ type Handler = (request: Request, ctx: ExecutionContext) => Promise<Response>;
 let cachedHandler: Handler | null = null;
 
 const buildHandler = (bindings: WorkersBindings): Handler => {
-  // CF_VERSION_METADATA はオブジェクト型のバインディングなので、文字列だけを期待する
-  // loadEnv（RawEnv = string の Record）には渡さない。残りのキーだけスプレッドする。
-  const { CF_VERSION_METADATA, ...envBindings } = bindings;
+  // CF_VERSION_METADATA / API_REQUESTS はオブジェクト型のバインディングなので、
+  // 文字列だけを期待する loadEnv（RawEnv = string の Record）には渡さない。
+  // 残りの文字列キーだけスプレッドする。
+  const { CF_VERSION_METADATA, API_REQUESTS, ...envBindings } = bindings;
   // WorkersBindings は固定キーの interface のため RawEnv（任意キー Record）に
   // 直接キャストできない。スプレッドで「普通の Record」を作って渡す。
   const env = loadEnv({ ...envBindings });
@@ -77,7 +88,15 @@ const buildHandler = (bindings: WorkersBindings): Handler => {
   // 1 回読めば十分。/health に晒して段階展開（カナリア）中の応答元バージョンを観察可能にする。
   const appVersion = CF_VERSION_METADATA?.id ?? 'unknown';
 
-  const app = bootstrap({ env, logger, jwksFetcherProvider, appVersion });
+  // Phase 9 Step 4: Analytics Engine binding が来ていれば実 recorder、無ければ noop。
+  //   - `wrangler dev` は API_REQUESTS が undefined になりがち（ローカルでは書き込まない）
+  //   - 本番 / staging deploy 後は wrangler.toml の [[analytics_engine_datasets]]
+  //     で必ず注入される
+  const metricsRecorder: MetricsRecorder = API_REQUESTS
+    ? createAnalyticsEngineRecorder(API_REQUESTS)
+    : createNoopMetricsRecorder();
+
+  const app = bootstrap({ env, logger, jwksFetcherProvider, appVersion, metricsRecorder });
   return async (request, ctx) => app.fetch(request, bindings, ctx);
 };
 

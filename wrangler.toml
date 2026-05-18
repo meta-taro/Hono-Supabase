@@ -55,6 +55,21 @@ enabled = true
 [version_metadata]
 binding = "CF_VERSION_METADATA"
 
+# Workers Analytics Engine（Phase 9 Step 4）。
+#   1 リクエスト = 1 データポイントで blobs/doubles/indexes を書き込む観測用 binding。
+#   - binding 名は staging / production / トップレベル すべて "API_REQUESTS" で揃える
+#     （アプリ側コードは env を意識しない）。
+#   - dataset 名は env 別に物理分離する: staging のゴミデータが production の集計に
+#     混ざらないようにするため。「dataset 名は後から変えると過去データが分断される」
+#     という制約があるので最初から分けておく。
+#   - トップレベルは `--env` 未指定時のフォールバック（= production 相当）。
+#   - 注意: `wrangler dev` では Analytics Engine への実書き込みは行われない
+#     （ローカルでは no-op）。実機検証は staging deploy 後の Cloudflare Dashboard /
+#     `wrangler analytics-engine sql` / GraphQL Analytics API で行う。
+[[analytics_engine_datasets]]
+binding = "API_REQUESTS"
+dataset = "api_requests_production"
+
 # -----------------------------------------------------------------------------
 # staging 環境
 #   pnpm wrangler:deploy:staging で name=cake-shop-api-staging に展開。
@@ -75,6 +90,12 @@ enabled = true
 [env.staging.version_metadata]
 binding = "CF_VERSION_METADATA"
 
+# staging 専用 dataset。production と物理分離して「staging で 5xx を意図的に出す検証」が
+# production の集計に混ざらないようにする。
+[[env.staging.analytics_engine_datasets]]
+binding = "API_REQUESTS"
+dataset = "api_requests_staging"
+
 # -----------------------------------------------------------------------------
 # production 環境
 #   pnpm wrangler:deploy:production で name=cake-shop-api（Step 7 でデプロイ済の本番）へ。
@@ -94,3 +115,8 @@ enabled = true
 # バインディングは --env で継承されないので、production にも明示的に宣言する。
 [env.production.version_metadata]
 binding = "CF_VERSION_METADATA"
+
+# production 専用 dataset。
+[[env.production.analytics_engine_datasets]]
+binding = "API_REQUESTS"
+dataset = "api_requests_production"
