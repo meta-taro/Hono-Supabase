@@ -16,7 +16,7 @@
 - [x] **Phase 6**: 認証（Supabase Auth + RLS + 認証ミドルウェア）+ OpenAPI 仕上げ
 - [x] **Phase 7**: Cloudflare Workers 化（本番デプロイ想定の最終段）
 - [x] **Phase 8（2026-05-14 完了）**: Supabase Auth メール運用（テンプレート / Custom SMTP / 確認後リダイレクト）
-- [ ] **Phase 9**: 観測・運用の質を上げる（ロギング・ヘルス・メトリクス・アラート）— **Step 3b まで完了**
+- [ ] **Phase 9**: 観測・運用の質を上げる（ロギング・ヘルス・メトリクス・アラート）— **Step 4 のコード実装まで完了（staging 実機の SQL 検証は残）**
 - [ ] **Phase 10**: API のリッチ化（ページネーション / ソート / 検索 / 楽観ロック / Rate Limit / Idempotency-Key / Webhook）
 
 ---
@@ -73,7 +73,28 @@
   - **シナリオ 2（down: タイムアウト経路）**: `PROBE_TIMEOUT_MS=50` に一時変更 → REST 応答が AbortSignal で打ち切られ `status:"down"` / HTTP 503 / `latency_ms=59ms`。タイムアウト→down→503 の経路がドキュメント通り動く
   - **シナリオ 3（down: 接続不到達経路）**: `supabase stop` で REST 側を完全に落としてから curl → `status:"down"` / HTTP 503 / `latency_ms=1518ms`（= ほぼ `PROBE_TIMEOUT_MS=1500`）。**最大の学び**: Docker Desktop / WSL2 経由のポートはコンテナ停止直後でも TCP SYN を即座に RST せず吸い込んでしまうため、TCP 層で「接続不到達」は観測されず**全部タイムアウト経由で down に倒れる**。逆に言えば `AbortSignal.timeout()` を入れていなければ /health は OS のデフォルト fetch タイムアウト（30–120 秒）まで握り続け、外形監視が真っ赤になる前にユーザが先に気付く事故になりうる。**probe timeout の存在価値が実機で証明**された
   - **結論**: 3 閾値とも本番投入に十分。連続失敗集計の追加は Step 5（アラート）と一緒に設計する方が筋がよい（/health 単体に状態を持たせると Worker isolate 跨ぎで一貫性が出ず、結局 Analytics Engine / Logpush 側で時系列集計する方が素直）ため Step 3b 範囲では見送り。詳細は README「`/health` の応答仕様」節「Step 3b 実測体験のまとめ」
-- [ ] **Step 4**: メトリクス収集（Workers Analytics Engine） — `wrangler.toml` に `[[analytics_engine_datasets]]` を追加し、注文数 / エラー率 / p95 latency 等を書き込み。Node では no-op（Workers 限定 binding なので DI で吸収）。Cloudflare Dashboard でグラフ化、SQL クエリ可能であることを確認
+- [~] **Step 4（2026-05-18 — コード実装完了 / staging 実機の SQL 検証は残）**: メトリクス収集（Workers Analytics Engine） — commit `f939de1` で実装一式が乗った。Cloudflare Dashboard での SQL 検証（p95 latency / 5xx 率）はこの後 staging に試走させて行う。
+  - **何を作ったか**:
+    - `app/shared/infrastructure/metrics.ts` を新設。`MetricsRecorder` interface + `RequestMetricInput`（method / route / status / duration_ms / env / app_version）+ ファクトリ 2 種（`createAnalyticsEngineRecorder` = 実書き込み、`createNoopMetricsRecorder` = Node ローカル / テスト / binding 未注入用）。`writeDataPoint` に渡すペイロードは固定順 = **blob `[method, route, status_class, env, app_version]` / doubles `[duration_ms]` / indexes `[status_class]`**。`statusClass(status)` で HTTP ステータスを `'1xx'..'5xx'` に粗く分類（SQL の `WHERE index1='5xx'` 直撃用、`status` 生値は blob に別途残す）
+    - `app/shared/http/access-log.middleware.ts` に `metrics?: AccessLogMetricsBinding` 注入オプションを追加。注入時はアクセスログ出力直後に `recorder.recordRequest({ method, route, status, duration_ms, env, app_version })` を呼ぶだけ。`writeDataPoint` は fire-and-forget なのでレスポンス遅延に乗らない
+    - `wrangler.toml` の **`[env.staging]` / `[env.production]` の両方に `[[…analytics_engine_datasets]]`** を追加。dataset は **A 案: 物理分離**（`api_requests_staging` / `api_requests_production`）を採用、binding 名 `API_REQUESTS` は共通でアプリコード側を env 非依存に保つ。トップレベルにも fallback dataset を 1 個書いておく（`--env` 付け忘れ時の保険、Phase 7 Step 8a の運用方針と整合）
+    - `app/bootstrap.ts` に `metricsRecorder?: MetricsRecorder` を BootstrapDeps に追加し、注入されていれば `AccessLogMetricsBinding = { recorder, env: env.NODE_ENV, app_version: appVersion ?? 'local' }` を組んで `createAccessLogMiddleware({ metrics })` に渡す
+    - `app/index.workers.ts` で `bindings.API_REQUESTS` が来ていれば `createAnalyticsEngineRecorder`、無ければ `createNoopMetricsRecorder()` を採用（`wrangler dev` で binding 未バインドのまま動かしてもクラッシュしない）。`index.node.ts` は metricsRecorder を渡さず未注入経路に落とす
+  - **設計判断と理由**:
+    - **`@cloudflare/workers-types` への直接依存を避ける**: `AnalyticsBinding` / `AnalyticsDataPoint` を `metrics.ts` 内に自前 interface で定義（duck typing）。Phase 7 でロガーを Workers / Node 両対応にした時と同じ DI 隔離方針 — `shared/infrastructure/` から `@cloudflare/workers-types` を引っ張ると Node 経路で型衝突が起きやすい
+    - **`hono/route` の `routePath(c, -1)` を使う**: middleware 経由（`app.use('*', ...)`）で素の `routePath(c)` を呼ぶとミドルウェア自身の `'*'` が返ってしまう。`-1` を渡すと末尾＝最も内側のハンドラのルートを取れる（例 `/v1/orders/:id`）。**生 path だと UUID / 注文 ID 分カーディナリティが爆発**して dataset の上限（Analytics Engine は high-cardinality に弱い）を一気に食い潰す。未マッチ経路（404）では空文字 / undefined になりうるので `'/unknown'` に倒す
+    - **PII は 1 つも入れない**: `userId` はアクセスログ（structured logs）には載せるが、メトリクス（Analytics Engine）には載せない。一覧性のあるテーブル系ストアに userId を入れると統計集計時の誤プロファイリングや 90 日リテンション中の GDPR 相当の話が絡む。アクセスログは「個別障害調査」用、メトリクスは「集計」用と用途を分離
+    - **物理分離（A 案）採用**: staging と production の dataset を分けると **SQL の WHERE 句で env 混入事故を構造的に防げる**（同じ dataset に `blob4='staging'` で混ぜる B 案より安全）。Analytics Engine は 10M events/month の無料枠 + 90 日保持なので学習リポジトリでも余裕で 2 本持てる
+    - **5xx でもメトリクスは出す**: アクセスログでは error レベルになるが、メトリクスは「5xx の発生数 / 率」を後から集計するのが目的なので **status はそのまま渡して dataset に書く**。SQL 側で `WHERE index1='5xx'` でフィルタする想定
+  - **テスト**:
+    - `app/shared/infrastructure/metrics.test.ts`（新設、19 ケース）— `statusClass` の境界（199/200/299/300/399/400/499/500/負値）+ `createAnalyticsEngineRecorder` の blob 順検証（5xx/4xx で `blobs[2]` / `indexes[0]` が `'5xx'`/`'4xx'`）+ `doubles[0] = duration_ms` + noop が例外を投げない
+    - `app/shared/http/access-log.middleware.test.ts`（既存 6 ケースに 4 ケース追加）— metrics 注入時の `recordRequest` payload 検証 / 動的セグメント `/v1/orders/:id` が正規化形で渡る / 5xx でも記録される / 未注入時は `recordRequest` を呼ばない
+    - `vitest.config.ts` の `node-unit` プール include に `metrics.test.ts` を追加（純粋ユニットなので Node プールで速く回す）
+    - `pnpm verify` 緑（37 ファイル / 300 テスト、Node プール + workers プール両方）
+  - **残タスク**: staging に push 済の deploy パイプライン経由でデプロイ → 20–30 curl で 2xx/4xx/5xx を混ぜて投げる → Cloudflare Dashboard → Workers & Pages → Analytics → Analytics Engine の SQL コンソールで以下 2 本を確認:
+    - **p95 latency**: `SELECT quantileWeighted(0.95)(double1, _sample_interval) AS p95_ms FROM api_requests_staging WHERE timestamp > now() - INTERVAL '1' HOUR`
+    - **5xx 率**: `SELECT countIf(index1 = '5xx') / count() AS error_rate FROM api_requests_staging WHERE timestamp > now() - INTERVAL '1' HOUR`
+  - **fire-and-forget の含意**: `writeDataPoint` の戻り値を await しない → レスポンス遅延ゼロ。ただし書き込み失敗は呼び出し側で観測不能（Analytics Engine の障害時は静かに欠測になる）。「観測の観測」までは無料枠でやりすぎなので Step 5（Logpush / アラート）と合わせて検討
 - [ ] **Step 5**: Logpush / アラート — Cloudflare Logs を R2 / 外部 SaaS（Logpush）に送る設定 + Notifications でメール / Slack 連携。「わざと 5xx を出してアラートが飛ぶ」演習で end-to-end 確認
 
 ---
