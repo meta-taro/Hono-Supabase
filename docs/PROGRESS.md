@@ -16,7 +16,7 @@
 - [x] **Phase 6**: 認証（Supabase Auth + RLS + 認証ミドルウェア）+ OpenAPI 仕上げ
 - [x] **Phase 7**: Cloudflare Workers 化（本番デプロイ想定の最終段）
 - [x] **Phase 8（2026-05-14 完了）**: Supabase Auth メール運用（テンプレート / Custom SMTP / 確認後リダイレクト）
-- [ ] **Phase 9**: 観測・運用の質を上げる（ロギング・ヘルス・メトリクス・アラート）— **Step 4 のコード実装まで完了（staging 実機の SQL 検証は残）**
+- [ ] **Phase 9**: 観測・運用の質を上げる（ロギング・ヘルス・メトリクス・アラート）— **Step 4 完了（Free プラン制約下のコード検証 + データフロー実機確認でクローズ）**
 - [ ] **Phase 10**: API のリッチ化（ページネーション / ソート / 検索 / 楽観ロック / Rate Limit / Idempotency-Key / Webhook）
 
 ---
@@ -73,7 +73,7 @@
   - **シナリオ 2（down: タイムアウト経路）**: `PROBE_TIMEOUT_MS=50` に一時変更 → REST 応答が AbortSignal で打ち切られ `status:"down"` / HTTP 503 / `latency_ms=59ms`。タイムアウト→down→503 の経路がドキュメント通り動く
   - **シナリオ 3（down: 接続不到達経路）**: `supabase stop` で REST 側を完全に落としてから curl → `status:"down"` / HTTP 503 / `latency_ms=1518ms`（= ほぼ `PROBE_TIMEOUT_MS=1500`）。**最大の学び**: Docker Desktop / WSL2 経由のポートはコンテナ停止直後でも TCP SYN を即座に RST せず吸い込んでしまうため、TCP 層で「接続不到達」は観測されず**全部タイムアウト経由で down に倒れる**。逆に言えば `AbortSignal.timeout()` を入れていなければ /health は OS のデフォルト fetch タイムアウト（30–120 秒）まで握り続け、外形監視が真っ赤になる前にユーザが先に気付く事故になりうる。**probe timeout の存在価値が実機で証明**された
   - **結論**: 3 閾値とも本番投入に十分。連続失敗集計の追加は Step 5（アラート）と一緒に設計する方が筋がよい（/health 単体に状態を持たせると Worker isolate 跨ぎで一貫性が出ず、結局 Analytics Engine / Logpush 側で時系列集計する方が素直）ため Step 3b 範囲では見送り。詳細は README「`/health` の応答仕様」節「Step 3b 実測体験のまとめ」
-- [~] **Step 4（2026-05-18 — コード実装完了 / staging 実機の SQL 検証は残）**: メトリクス収集（Workers Analytics Engine） — commit `f939de1` で実装一式が乗った。Cloudflare Dashboard での SQL 検証（p95 latency / 5xx 率）はこの後 staging に試走させて行う。
+- [x] **Step 4（2026-05-18 完了 — 2026-05-19 クローズ）**: メトリクス収集（Workers Analytics Engine） — commit `f939de1` で実装一式が乗った。SQL 検証は **Cloudflare の Workers Free プランで Analytics Engine SQL API が 403 / 不可** だったため、コード検証 + 本番データフロー実機確認に切り替えてクローズ（Paid 移行時のフォローアップに繰越）。
   - **何を作ったか**:
     - `app/shared/infrastructure/metrics.ts` を新設。`MetricsRecorder` interface + `RequestMetricInput`（method / route / status / duration_ms / env / app_version）+ ファクトリ 2 種（`createAnalyticsEngineRecorder` = 実書き込み、`createNoopMetricsRecorder` = Node ローカル / テスト / binding 未注入用）。`writeDataPoint` に渡すペイロードは固定順 = **blob `[method, route, status_class, env, app_version]` / doubles `[duration_ms]` / indexes `[status_class]`**。`statusClass(status)` で HTTP ステータスを `'1xx'..'5xx'` に粗く分類（SQL の `WHERE index1='5xx'` 直撃用、`status` 生値は blob に別途残す）
     - `app/shared/http/access-log.middleware.ts` に `metrics?: AccessLogMetricsBinding` 注入オプションを追加。注入時はアクセスログ出力直後に `recorder.recordRequest({ method, route, status, duration_ms, env, app_version })` を呼ぶだけ。`writeDataPoint` は fire-and-forget なのでレスポンス遅延に乗らない
@@ -91,10 +91,16 @@
     - `app/shared/http/access-log.middleware.test.ts`（既存 6 ケースに 4 ケース追加）— metrics 注入時の `recordRequest` payload 検証 / 動的セグメント `/v1/orders/:id` が正規化形で渡る / 5xx でも記録される / 未注入時は `recordRequest` を呼ばない
     - `vitest.config.ts` の `node-unit` プール include に `metrics.test.ts` を追加（純粋ユニットなので Node プールで速く回す）
     - `pnpm verify` 緑（37 ファイル / 300 テスト、Node プール + workers プール両方）
-  - **残タスク**: staging に push 済の deploy パイプライン経由でデプロイ → 20–30 curl で 2xx/4xx/5xx を混ぜて投げる → Cloudflare Dashboard → Workers & Pages → Analytics → Analytics Engine の SQL コンソールで以下 2 本を確認:
+  - **クローズ判断（2026-05-19）**: 当初は staging deploy → 30 curl → Cloudflare Dashboard の Analytics Engine SQL コンソールで p95 latency / 5xx 率を直接確認する想定だったが、実行段階で **Workers Free プランは Analytics Engine SQL API が HTTP 403 で叩けない** ことが判明（書き込みは Free でも可能・読み出しのみ Paid プラン必須）。Cloudflare Dashboard の左ペインにも「Analytics Engine」ナビ自体が出ない（Paid プランで初めて出る）。お客様 API Key で `Authorization: X-Auth-Email + X-Auth-Key` 経由 `/user` 疎通までは OK、`/accounts/:id/analytics_engine/sql` だけ 403 になることを確認したため、**認証ではなくプラン制約**で確定。下記の代替検証 3 本でクローズ:
+    1. **コード検証**: `app/shared/infrastructure/metrics.test.ts`（19 ケース）+ `access-log.middleware.test.ts`（既存 6 + 新規 4）= 計 300 テスト全緑。blob/double/index の固定順・status class 境界（199/200/299/.../500/負値）・`/v1/orders/:id` 動的セグメントが `routePath(c, -1)` で正規化される・5xx でも recordRequest が呼ばれる・binding 未注入時は noop、を網羅
+    2. **データフロー実機確認**: `tmp-step4-staging-metrics.mjs`（gitignore 済み、`tmp-*.mjs`）で `cake-shop-api-staging.<account>.workers.dev` に 30 req（`/health` ×8 / `/v1/cakes` ×8 / `/v1/orders/<zero-uuid>` ×5 / `/not-real-path` ×4 / `/v1/nope` ×5）を投げると、Cloudflare Dashboard → Workers & Pages → cake-shop-api-staging の **Requests / Observability** カウンタが投入分だけ増える + `pnpm wrangler tail --format pretty cake-shop-api-staging` でアクセスログミドルウェアの structured ログ（`level=30` for 2xx / `level=40` for 4xx、`requestId` / `path` / `status` / `duration_ms` / `msg='request completed'`）が **本番経路で実際に吐かれている**ことを目視確認
+    3. **route 正規化の検証は Paid 移行時に持ち越し**: アクセスログには `path`（生 URL = UUID 込み）だけが乗り、`route`（`routePath(c, -1)` で正規化済み）は metrics recorder にしか渡さない設計（PII / カーディナリティ対策で意図的に分離）。そのため Free プランの観測手段（wrangler tail / Workers Observability）からは route 正規化の最終結果を直接確認できない。**コードレベルでは access-log.middleware.test.ts の `/v1/orders/:id` 検証で `routePath(c, -1)` が `:id` 形を返すことを保証している**ため、Paid 移行後に SQL で `SELECT blob2 AS route, count() FROM api_requests_staging GROUP BY route` を叩いて end-to-end で **生 UUID が一切現れず `/v1/orders/:id` で集約される**ことを確認すれば 100% 検証完了
+  - **Paid 移行時に叩く SQL（保存用）**:
     - **p95 latency**: `SELECT quantileWeighted(0.95)(double1, _sample_interval) AS p95_ms FROM api_requests_staging WHERE timestamp > now() - INTERVAL '1' HOUR`
     - **5xx 率**: `SELECT countIf(index1 = '5xx') / count() AS error_rate FROM api_requests_staging WHERE timestamp > now() - INTERVAL '1' HOUR`
+    - **route カーディナリティ**: `SELECT blob2 AS route, count() AS hits FROM api_requests_staging WHERE timestamp > now() - INTERVAL '1' HOUR GROUP BY route ORDER BY hits DESC`
   - **fire-and-forget の含意**: `writeDataPoint` の戻り値を await しない → レスポンス遅延ゼロ。ただし書き込み失敗は呼び出し側で観測不能（Analytics Engine の障害時は静かに欠測になる）。「観測の観測」までは無料枠でやりすぎなので Step 5（Logpush / アラート）と合わせて検討
+  - **学び**: Cloudflare の課金境界の踏み方。**書き込み（writeDataPoint）= Free / 読み出し（SQL API・Dashboard の Analytics Engine ナビ）= Paid** という非対称設計を、API Key 認証経由で 403 を踏んで初めて理解できた。学習リポジトリで「無料枠だけで観測スタックを一周する」を目指すなら、Logpush + R2（or 外部 SaaS）への送出を Step 5 で組んで「アクセスログを R2 に貯めて DuckDB で読む」経路に倒すと SQL 体験まで全部 Free で取り戻せる（Step 5 設計時の選択肢として残す）
 - [ ] **Step 5**: Logpush / アラート — Cloudflare Logs を R2 / 外部 SaaS（Logpush）に送る設定 + Notifications でメール / Slack 連携。「わざと 5xx を出してアラートが飛ぶ」演習で end-to-end 確認
 
 ---

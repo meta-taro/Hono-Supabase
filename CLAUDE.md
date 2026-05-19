@@ -543,7 +543,7 @@ console.log('order created');
   - [x] Step 2 (2026-05-15): アクセスログミドルウェア（`access-log.middleware.ts`、ステータス別レベル分岐）
   - [x] Step 3a (2026-05-18): `/health` 3 状態化（ok / degraded / down、HTTP 200 / 200 / 503）
   - [x] Step 3b (2026-05-18): `/health` 閾値の実測すり合わせ — 3 シナリオ実機検証で `DEGRADED=800ms` / `TIMEOUT=1500ms` / stateless を全て据え置きで妥当と確認
-  - [ ] Step 4: メトリクス収集（Workers Analytics Engine）
+  - [x] Step 4 (2026-05-19): メトリクス収集（Workers Analytics Engine） — Free プランで SQL API が 403 のため、コード検証（300 テスト全緑）+ wrangler tail での本番データフロー目視確認でクローズ。route 正規化の SQL 直接検証は Paid 移行時のフォローアップに繰越
   - [ ] Step 5: Logpush / アラート（Cloudflare Notifications）
 - [ ] Phase 10: **API のリッチ化** — ページネーション / ソート・フィルタ / 検索 / 楽観ロック / Rate Limit / Idempotency-Key / Webhook 配信
 
