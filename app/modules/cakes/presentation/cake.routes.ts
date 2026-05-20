@@ -7,6 +7,7 @@ import {
   CakeResponseSchema,
   CreateCakeRequestSchema,
   ErrorResponseSchema,
+  ListCakesQuerySchema,
   ListCakesResponseSchema,
 } from './cake.dto';
 
@@ -23,12 +24,21 @@ const listCakesRoute = createRoute({
   method: 'get',
   path: '/',
   tags: ['cakes'],
-  summary: 'ケーキ一覧を取得する',
-  description: 'すべてのケーキを名前昇順で返す。認証不要。',
+  summary: 'ケーキ一覧を取得する（カーソルページネーション）',
+  description:
+    'ケーキを名前昇順で返す。認証不要。limit（既定 20・最大 100）で 1 ページ件数を指定し、' +
+    'レスポンスの next_cursor を after に渡して次ページを取得する（next_cursor が null なら最終ページ）。',
+  request: {
+    query: ListCakesQuerySchema,
+  },
   responses: {
     200: {
-      description: 'ケーキ一覧',
+      description: 'ケーキ一覧（1 ページ分 + ページネーションメタ）',
       content: { 'application/json': { schema: ListCakesResponseSchema } },
+    },
+    400: {
+      description: 'limit が範囲外、または after カーソルが不正',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
     },
   },
 });
@@ -81,7 +91,18 @@ export const createCakeRouter = (deps: CakeRouterDeps): OpenAPIHono<AppEnv> => {
 
   router.openapi(listCakesRoute, async (c) => {
     const controller = c.get('modules').cakes;
-    const body = await controller.list();
+    const query = c.req.valid('query');
+    const body = await controller.list(query);
+
+    // RFC 5988 Link ヘッダで次ページ URL を提示する（body の next_cursor と二重提供）。
+    // クライアントは Link を辿るだけで次ページに進める（HATEOAS 的な利便性）。
+    if (body.next_cursor) {
+      const nextUrl = new URL(c.req.url);
+      nextUrl.searchParams.set('limit', String(query.limit));
+      nextUrl.searchParams.set('after', body.next_cursor);
+      c.header('Link', `<${nextUrl.toString()}>; rel="next"`);
+    }
+
     return c.json(body, 200);
   });
 

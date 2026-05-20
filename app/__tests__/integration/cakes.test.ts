@@ -105,26 +105,30 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+interface ListCakesBody {
+  cakes: Array<{ id: string; name: string; price: number; stock: number }>;
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
 describe('GET /v1/cakes（認証不要）', () => {
-  it('リポジトリが空のときは空配列を返す', async () => {
+  it('リポジトリが空のときは空ページを返す', async () => {
     const { app } = buildTestApp();
 
     const res = await app.request('/v1/cakes');
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ cakes: [] });
+    expect(await res.json()).toEqual({ cakes: [], next_cursor: null, has_more: false });
   });
 
-  it('保存済みケーキを Response DTO 形式で返す', async () => {
+  it('保存済みケーキを Response DTO 形式 + ページネーションメタで返す', async () => {
     const { app, cakesRepo } = buildTestApp();
     await cakesRepo.save(Cake.create({ name: 'モンブラン', price: 600, stock: 10 }));
 
     const res = await app.request('/v1/cakes');
 
     expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      cakes: Array<{ id: string; name: string; price: number; stock: number }>;
-    };
+    const body = (await res.json()) as ListCakesBody;
     expect(body.cakes).toHaveLength(1);
     expect(body.cakes[0]).toMatchObject({
       name: 'モンブラン',
@@ -132,12 +136,78 @@ describe('GET /v1/cakes（認証不要）', () => {
       stock: 10,
     });
     expect(body.cakes[0]?.id).toMatch(UUID_REGEX);
+    // 1 件 < 既定 limit(20) なので次ページなし
+    expect(body.next_cursor).toBeNull();
+    expect(body.has_more).toBe(false);
   });
 
   it('認証なしでもアクセスできる', async () => {
     const { app } = buildTestApp({ user: null });
     const res = await app.request('/v1/cakes');
     expect(res.status).toBe(200);
+  });
+
+  describe('カーソルページネーション', () => {
+    const seedCakes = async (repo: InMemoryCakeRepository, count: number): Promise<void> => {
+      for (let i = 0; i < count; i += 1) {
+        await repo.save(
+          Cake.create({ name: `cake-${String(i).padStart(2, '0')}`, price: 500, stock: 1 }),
+        );
+      }
+    };
+
+    it('limit で件数を絞り、has_more=true と next_cursor を返す', async () => {
+      const { app, cakesRepo } = buildTestApp();
+      await seedCakes(cakesRepo, 5);
+
+      const res = await app.request('/v1/cakes?limit=2');
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ListCakesBody;
+      expect(body.cakes.map((c) => c.name)).toEqual(['cake-00', 'cake-01']);
+      expect(body.has_more).toBe(true);
+      expect(body.next_cursor).not.toBeNull();
+      // Link ヘッダに次ページ URL（rel="next"）が付く
+      expect(res.headers.get('Link')).toContain('rel="next"');
+    });
+
+    it('next_cursor を after に渡すと続きのページを返し、最終ページで has_more=false', async () => {
+      const { app, cakesRepo } = buildTestApp();
+      await seedCakes(cakesRepo, 3);
+
+      const first = (await (await app.request('/v1/cakes?limit=2')).json()) as ListCakesBody;
+      const after = encodeURIComponent(first.next_cursor ?? '');
+      const res = await app.request(`/v1/cakes?limit=2&after=${after}`);
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ListCakesBody;
+      expect(body.cakes.map((c) => c.name)).toEqual(['cake-02']);
+      expect(body.has_more).toBe(false);
+      expect(body.next_cursor).toBeNull();
+      expect(res.headers.get('Link')).toBeNull();
+    });
+
+    it('limit が範囲外（0）のとき 400 + VALIDATION_ERROR', async () => {
+      const { app } = buildTestApp();
+      const res = await app.request('/v1/cakes?limit=0');
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('limit が上限超過（101）のとき 400', async () => {
+      const { app } = buildTestApp();
+      const res = await app.request('/v1/cakes?limit=101');
+      expect(res.status).toBe(400);
+    });
+
+    it('after カーソルが壊れているとき 400 + VALIDATION_ERROR', async () => {
+      const { app } = buildTestApp();
+      const res = await app.request('/v1/cakes?after=!!!not-a-valid-cursor!!!');
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('VALIDATION_ERROR');
+    });
   });
 });
 

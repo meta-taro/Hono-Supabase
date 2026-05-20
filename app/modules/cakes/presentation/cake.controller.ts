@@ -1,7 +1,13 @@
 import type { Cake } from '../domain/cake';
 import type { ListCakesUseCase } from '../application/list-cakes.usecase';
 import type { CreateCakeUseCase, CreateCakeInput } from '../application/create-cake.usecase';
-import type { CakeResponse } from './cake.dto';
+import { decodeCursor, encodeCursor } from '@/shared/http/cursor';
+import {
+  CakeCursorSchema,
+  type CakeResponse,
+  type ListCakesQuery,
+  type ListCakesResponse,
+} from './cake.dto';
 
 // Controller の責務:
 //   - UseCase を呼び出す（業務手順は知らない）
@@ -28,9 +34,18 @@ export interface CakeControllerDeps {
 
 export const createCakeController = (deps: CakeControllerDeps) => ({
   // GET /v1/cakes
-  list: async (): Promise<{ cakes: CakeResponse[] }> => {
-    const cakes = await deps.listCakes();
-    return { cakes: cakes.map(toCakeResponse) };
+  //   after（不透明カーソル）をデコード・検証して UseCase に渡し、
+  //   返ってきた nextCursor を再エンコードしてレスポンスに載せる。
+  //   不正・改竄カーソルは decodeCursor が ValidationError(400) を投げる。
+  list: async (query: ListCakesQuery): Promise<ListCakesResponse> => {
+    const after = query.after ? decodeCursor(query.after, CakeCursorSchema) : undefined;
+    const page = await deps.listCakes({ limit: query.limit, after });
+    const nextCursor = page.nextCursor ? encodeCursor(page.nextCursor) : null;
+    return {
+      cakes: page.cakes.map(toCakeResponse),
+      next_cursor: nextCursor,
+      has_more: nextCursor !== null,
+    };
   },
 
   // POST /v1/cakes

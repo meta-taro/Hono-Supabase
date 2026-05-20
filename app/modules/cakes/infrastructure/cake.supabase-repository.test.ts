@@ -86,6 +86,10 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
   });
 
   describe('list()', () => {
+    // seed.sql の 5 件や手動登録データと共存するため、十分大きな limit で全件取り、
+    // テスト目印付きの行だけにフィルタしてアサーションする（行レベル prefix 隔離）。
+    const LARGE_LIMIT = 1000;
+
     it('保存したケーキを取得できる', async () => {
       const cakeA = Cake.create({
         name: `${TEST_NAME_PREFIX}a-モンブラン`,
@@ -100,10 +104,8 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
       await repo.save(cakeA);
       await repo.save(cakeB);
 
-      const all = await repo.list();
-      // seed.sql の 5 件や手動登録データを除外し、本テストが入れた行だけをアサーション対象にする。
-      // これが行レベル prefix 隔離のキモ：他データと共存しつつ、テストは自分が入れたデータだけを見る。
-      const testCakes = all.filter((c) => c.name.startsWith(TEST_NAME_PREFIX));
+      const page = await repo.list({ limit: LARGE_LIMIT });
+      const testCakes = page.cakes.filter((c) => c.name.startsWith(TEST_NAME_PREFIX));
 
       expect(testCakes).toHaveLength(2);
       // CakeSupabaseRepository.list() は name 昇順で返すので a → b の順
@@ -120,8 +122,8 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
       await repo.save(Cake.create({ name: `${TEST_NAME_PREFIX}a`, price: 500, stock: 1 }));
       await repo.save(Cake.create({ name: `${TEST_NAME_PREFIX}b`, price: 500, stock: 1 }));
 
-      const all = await repo.list();
-      const testNames = all.map((c) => c.name).filter((n) => n.startsWith(TEST_NAME_PREFIX));
+      const page = await repo.list({ limit: LARGE_LIMIT });
+      const testNames = page.cakes.map((c) => c.name).filter((n) => n.startsWith(TEST_NAME_PREFIX));
 
       expect(testNames).toEqual([
         `${TEST_NAME_PREFIX}a`,
@@ -141,14 +143,89 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
       });
       await repo.save(cake);
 
-      const all = await repo.list();
-      const reconstructed = all.find((c) => c.id.value === cake.id.value);
+      const page = await repo.list({ limit: LARGE_LIMIT });
+      const reconstructed = page.cakes.find((c) => c.id.value === cake.id.value);
 
       expect(reconstructed).toBeDefined();
       // VO 経由で値が取り出せる = 検証を通過している証拠
       expect(reconstructed?.id.value).toBe(cake.id.value);
       expect(reconstructed?.price.value).toBe(1234);
       expect(reconstructed?.stock).toBe(7);
+    });
+  });
+
+  describe('list() のページネーション（キーセット法）', () => {
+    // 名前を辞書順で固定し、prefix で他データから隔離しつつ複数ページを検証する。
+    // 名前の数字を 2 桁ゼロ詰めにして name 昇順が投入順と一致するようにする。
+    const seedSequentialCakes = async (count: number): Promise<string[]> => {
+      const ids: string[] = [];
+      for (let i = 0; i < count; i += 1) {
+        const cake = Cake.create({
+          name: `${TEST_NAME_PREFIX}p${String(i).padStart(2, '0')}`,
+          price: 500,
+          stock: 1,
+        });
+        await repo.save(cake);
+        ids.push(cake.id.value);
+      }
+      return ids;
+    };
+
+    it('limit 件ちょうど返し、続きがあれば nextCursor を発行する', async () => {
+      await seedSequentialCakes(3);
+
+      const page = await repo.list({ limit: 2 });
+      // 他データが混じり得るので「テスト行が想定順で含まれるか」をスコープして確認する。
+      // ただし limit=2 は全データ横断なので、ここでは nextCursor が出ることだけを保証する。
+      expect(page.cakes).toHaveLength(2);
+      expect(page.nextCursor).not.toBeNull();
+    });
+
+    it('nextCursor を after に渡して全ページを辿ると、テスト投入分を重複なく取得できる', async () => {
+      const ids = await seedSequentialCakes(5);
+      const wanted = new Set(ids);
+
+      const collected: string[] = [];
+      let after = undefined as { name: string; id: string } | undefined;
+      // 2 件ずつ。seed/他データ込みなので十分な回数ループして全ページを舐める。
+      for (let guard = 0; guard < 1000; guard += 1) {
+        const page = await repo.list({ limit: 2, after });
+        for (const cake of page.cakes) {
+          if (wanted.has(cake.id.value)) collected.push(cake.id.value);
+        }
+        if (!page.nextCursor) break;
+        after = page.nextCursor;
+      }
+
+      // 5 件すべてが重複なく 1 回ずつ取得できている（同名 prefix の境界またぎ耐性）
+      expect(new Set(collected).size).toBe(5);
+      expect(collected).toHaveLength(5);
+    });
+
+    it('同名ケーキが複数あっても (name,id) 複合キーで取りこぼさない', async () => {
+      // name を完全に同一にして 4 件投入。name だけのカーソルだと境界で重複/欠落する。
+      const sameName = `${TEST_NAME_PREFIX}same`;
+      const ids: string[] = [];
+      for (let i = 0; i < 4; i += 1) {
+        const cake = Cake.create({ name: sameName, price: 500, stock: 1 });
+        await repo.save(cake);
+        ids.push(cake.id.value);
+      }
+      const wanted = new Set(ids);
+
+      const collected: string[] = [];
+      let after = undefined as { name: string; id: string } | undefined;
+      for (let guard = 0; guard < 1000; guard += 1) {
+        const page = await repo.list({ limit: 1, after });
+        for (const cake of page.cakes) {
+          if (wanted.has(cake.id.value)) collected.push(cake.id.value);
+        }
+        if (!page.nextCursor) break;
+        after = page.nextCursor;
+      }
+
+      expect(new Set(collected).size).toBe(4);
+      expect(collected).toHaveLength(4);
     });
   });
 });

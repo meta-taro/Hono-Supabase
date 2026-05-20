@@ -21,16 +21,60 @@ export const CakeResponseSchema = z
 
 export type CakeResponse = z.infer<typeof CakeResponseSchema>;
 
+// ページネーションの既定値・上限。
+//   DEFAULT_LIMIT: クライアントが limit 未指定のときの 1 ページ件数。
+//   MAX_LIMIT: 1 リクエストで取得できる最大件数（無制限取得 = 重い全件スキャンを防ぐ）。
+export const DEFAULT_LIMIT = 20;
+export const MAX_LIMIT = 100;
+
+// ---------------------------------------------------------------------------
+// Request: GET /v1/cakes のクエリパラメータ
+//   limit … 1 ページ件数（1〜MAX_LIMIT、未指定なら DEFAULT_LIMIT）。
+//           クエリ文字列は常に string で届くため coerce で数値化する。
+//   after … 前ページのレスポンスが返した next_cursor（不透明トークン）をそのまま渡す。
+// ---------------------------------------------------------------------------
+export const ListCakesQuerySchema = z.object({
+  limit: z.coerce
+    .number()
+    .int({ message: 'limit は整数である必要があります' })
+    .min(1, { message: 'limit は 1 以上である必要があります' })
+    .max(MAX_LIMIT, { message: `limit は ${String(MAX_LIMIT)} 以下である必要があります` })
+    .default(DEFAULT_LIMIT)
+    .openapi({ example: 20, description: '1 ページの件数（1〜100、既定 20）' }),
+  after: z
+    .string()
+    .optional()
+    .openapi({ description: '前ページの next_cursor。先頭ページでは省略する。' }),
+});
+
+export type ListCakesQuery = z.infer<typeof ListCakesQuerySchema>;
+
+// カーソルの中身（不透明トークンをデコードした後の形）。
+// controller が decodeCursor() で検証に使う。改竄されていれば 400 に倒す。
+export const CakeCursorSchema = z.object({
+  name: z.string(),
+  id: z.string().uuid(),
+});
+
 // ---------------------------------------------------------------------------
 // Response: GET /v1/cakes
-//   配列直返しではなくオブジェクトに包むのは、将来 pagination / total を
-//   ルートに追加しても破壊的変更にならないようにするため（API 設計の定石）。
+//   配列直返しではなくオブジェクトに包むことで、ページネーションのメタ情報を
+//   同居させても破壊的変更にならない（API 設計の定石）。
+//   next_cursor: 次ページがある場合の不透明トークン。無ければ null。
+//   has_more:    次ページの有無（next_cursor !== null と同義の利便フラグ）。
 // ---------------------------------------------------------------------------
 export const ListCakesResponseSchema = z
   .object({
     cakes: z.array(CakeResponseSchema),
+    next_cursor: z.string().nullable().openapi({
+      example: 'eyJuYW1lIjoi...',
+      description: '次ページ取得用カーソル（無ければ null）',
+    }),
+    has_more: z.boolean().openapi({ example: true, description: '次ページが存在するか' }),
   })
   .openapi('ListCakesResponse');
+
+export type ListCakesResponse = z.infer<typeof ListCakesResponseSchema>;
 
 // ---------------------------------------------------------------------------
 // Request: POST /v1/cakes
