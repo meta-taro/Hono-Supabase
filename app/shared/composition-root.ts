@@ -16,6 +16,7 @@ import { createCustomerController } from '@/modules/customers/presentation/custo
 import { OrderSupabaseRepository } from '@/modules/orders/infrastructure/order.supabase-repository';
 import { createPlaceOrderUseCase } from '@/modules/orders/application/place-order.usecase';
 import { createGetOrderUseCase } from '@/modules/orders/application/get-order.usecase';
+import { createListOrdersUseCase } from '@/modules/orders/application/list-orders.usecase';
 import { createOrderController } from '@/modules/orders/presentation/order.controller';
 
 // ---------------------------------------------------------------------------
@@ -67,6 +68,7 @@ export const buildRequestModules = (sb: SupabaseClient, deps: ModuleDeps): Reque
   const orders = createOrderController({
     placeOrder: createPlaceOrderUseCase(orderRepo, deps.logger),
     getOrder: createGetOrderUseCase(orderRepo),
+    listOrders: createListOrdersUseCase(orderRepo),
     // authUserId → customers.id の解決は customers リポジトリを使う。
     // controller は port (ResolveCustomerId) のみに依存し、
     // customers コンテキストの中身（Customer Entity 等）は知らない。

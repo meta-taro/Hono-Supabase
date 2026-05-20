@@ -15,6 +15,7 @@ import { FakeCustomerAuth } from '@/modules/customers/application/__test-helpers
 import { Customer } from '@/modules/customers/domain/customer';
 import { createPlaceOrderUseCase } from '@/modules/orders/application/place-order.usecase';
 import { createGetOrderUseCase } from '@/modules/orders/application/get-order.usecase';
+import { createListOrdersUseCase } from '@/modules/orders/application/list-orders.usecase';
 import { createOrderController } from '@/modules/orders/presentation/order.controller';
 import { InMemoryOrderRepository } from '@/modules/orders/application/__test-helpers__/in-memory-order.repository';
 import { createFakeAuthMiddleware, requireAuth, requireAdmin } from '@/shared/http/auth.middleware';
@@ -71,6 +72,7 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
   const ordersController = createOrderController({
     placeOrder: createPlaceOrderUseCase(ordersRepo, silentLogger),
     getOrder: createGetOrderUseCase(ordersRepo),
+    listOrders: createListOrdersUseCase(ordersRepo),
     resolveCustomerId: async (authUserId) => {
       const c = await customersRepo.findByAuthUserId(authUserId);
       return c?.id.value ?? null;

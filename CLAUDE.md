@@ -150,6 +150,7 @@ GET  /v1/customers          # 顧客一覧（要認証・管理者ロール）
 POST /v1/customers          # 顧客登録（認証不要・サインアップ相当）
 
 POST /v1/orders             # 注文作成（要認証）
+GET  /v1/orders             # 自分の注文一覧（要認証・本人のみ・カーソルページネーション）
 GET  /v1/orders/:id         # 注文詳細（要認証・本人のみ）
 ```
 
@@ -547,7 +548,7 @@ console.log('order created');
   - [x] Step 5 (2026-05-20): 観測・アラート — **Free プラン制約下で再定義してクローズ**。Logpush（=Workers Paid 必須）/ Slack webhook（=Pro 以上）が Free 枠外と裏取りできたため、`wrangler.toml` の `[observability]` 明示化（`head_sampling_rate`）+ 「わざと 5xx → Workers Logs を requestId/status/route で検索」体験 + Free 範囲のメール通知に再定義。Logpush 送出 / 5xx 率アラート / Slack 連携 / Step 4 の SQL 検証は Paid 移行時の繰越
 - [ ] Phase 10: **API のリッチ化** — ページネーション / ソート・フィルタ / 検索 / 楽観ロック / Rate Limit / Idempotency-Key / Webhook 配信
   - [x] Step 1 (2026-05-20): **カーソルページネーション（`/v1/cakes`）** — keyset 方式。`(name, id)` 複合カーソルを base64url の不透明トークン化（UTF-8 は `TextEncoder`/`TextDecoder` 経由で Workers 互換）。`limit`（1〜100, 既定 20）+ `after` クエリ、`next_cursor`/`has_more` ボディ + RFC 5988 `Link` ヘッダ。改竄カーソルは `400 VALIDATION_ERROR`。汎用コーデックは `app/shared/http/cursor.ts`。詳細は README「`GET /v1/cakes` のページネーション仕様」
-  - [ ] Step 1.5: ページネーション（`/v1/orders`） — 一覧エンドポイント未実装のため RLS 保護付き `GET /v1/orders` を新設後に cursor codec を再利用
+  - [x] Step 1.5 (2026-05-20): **カーソルページネーション（`/v1/orders`）** — RLS 保護付き `GET /v1/orders`（本人の注文のみ）を新設し Step 1 の cursor codec を再利用。`(placed_at, id)` 複合カーソルで新しい順（`placed_at DESC, id DESC`）。本人フィルタは多重防御（RLS `orders_select_self` + repository の明示 `customer_id` 絞り込み）で service_role 経路でも漏れない。`authUserId → customerId` は controller の `resolveCustomerId` ポート経由（未解決は `404`）。詳細は README「`GET /v1/orders` のページネーション仕様」
 
 ---
 

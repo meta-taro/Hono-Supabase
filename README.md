@@ -786,15 +786,16 @@ interface CakeRow {
 
 ### エンドポイント
 
-| Method | Path             | 認証   | 概要                                   |
-| ------ | ---------------- | ------ | -------------------------------------- |
-| GET    | `/health`        | 不要   | ヘルスチェック                         |
-| GET    | `/v1/cakes`      | 不要   | ケーキ一覧（カーソルページネーション） |
-| POST   | `/v1/cakes`      | 管理者 | ケーキ登録                             |
-| POST   | `/v1/customers`  | 不要   | 顧客サインアップ                       |
-| GET    | `/v1/customers`  | 管理者 | 顧客一覧                               |
-| POST   | `/v1/orders`     | 必須   | 注文作成                               |
-| GET    | `/v1/orders/:id` | 本人   | 注文詳細                               |
+| Method | Path             | 認証   | 概要                                       |
+| ------ | ---------------- | ------ | ------------------------------------------ |
+| GET    | `/health`        | 不要   | ヘルスチェック                             |
+| GET    | `/v1/cakes`      | 不要   | ケーキ一覧（カーソルページネーション）     |
+| POST   | `/v1/cakes`      | 管理者 | ケーキ登録                                 |
+| POST   | `/v1/customers`  | 不要   | 顧客サインアップ                           |
+| GET    | `/v1/customers`  | 管理者 | 顧客一覧                                   |
+| POST   | `/v1/orders`     | 必須   | 注文作成                                   |
+| GET    | `/v1/orders`     | 本人   | 自分の注文一覧（カーソルページネーション） |
+| GET    | `/v1/orders/:id` | 本人   | 注文詳細                                   |
 
 ### `GET /v1/cakes` のページネーション仕様（Phase 10 Step 1）
 
@@ -828,6 +829,46 @@ interface CakeRow {
 - カーソルは UTF-8 を `TextEncoder`/`TextDecoder` 経由で base64url 化する（`btoa`/`atob` は Latin1 限定で日本語のケーキ名が壊れる。Workers には `Buffer` が無いため Web 標準 API で完結させる）。
 - 改竄・壊れた `after` は Zod 検証で弾いて `400 VALIDATION_ERROR` に倒す（500 にしない＝クライアント起因の入力だから）。
 - コーデックは `app/shared/http/cursor.ts` に汎用化（`encodeCursor`/`decodeCursor`）。`/v1/orders` 一覧（Step 1.5）でも再利用する。
+
+### `GET /v1/orders` のページネーション仕様（Phase 10 Step 1.5）
+
+注文一覧は **認証ユーザー本人の注文のみ**を、**カーソルベース（キーセット）ページネーション**で新しい順に返す。Step 1（cakes）のコーデックをそのまま再利用し、カーソルのキーだけ `(placed_at, id)` に差し替えた構成。
+
+**クエリパラメータ**（cakes と同形）:
+
+| パラメータ | 型      | 既定 | 制約           | 説明                                                        |
+| ---------- | ------- | ---- | -------------- | ----------------------------------------------------------- |
+| `limit`    | integer | 20   | 1〜100         | 1 ページの件数。範囲外は `400 VALIDATION_ERROR`             |
+| `after`    | string  | —    | 不透明トークン | 前ページの `next_cursor` をそのまま渡す。先頭ページでは省略 |
+
+**レスポンス形状**:
+
+```json
+{
+  "orders": [
+    {
+      "id": "...",
+      "customerId": "...",
+      "status": "PLACED",
+      "totalAmount": 1200,
+      "placedAt": "2026-05-06T10:00:00.000Z",
+      "items": []
+    }
+  ],
+  "next_cursor": "eyJwbGFjZWRBdCI6...",
+  "has_more": true
+}
+```
+
+- 並び順は **新しい順**（`placed_at DESC, id DESC`）。`next_cursor` は `{ placedAt, id }` を base64url で包んだ不透明トークンで、最終ページでは `null`。
+- 次ページがある場合は **RFC 5988 `Link` ヘッダ**（`rel="next"`）にも次ページ URL を載せる（cakes と同じ二重提供）。
+
+**設計判断のメモ**:
+
+- `placed_at` は同時刻の注文がありうる**非一意キー**のため、カーソルは `(placed_at, id)` の**複合キー**にする（cakes が `name` 非一意ゆえ `(name, id)` にしたのと同じ理屈）。`placed_at` は ISO 8601 UTC 文字列で持ち、辞書順 = 時系列順になるよう揃える。
+- 本人フィルタは**多重防御**: RLS ポリシー `orders_select_self`（`customers.auth_user_id = auth.uid()` または admin）で DB が一次的に絞り、加えて repository でも明示的に `customer_id` で絞る。これにより `service_role`（RLS バイパス）クライアントが注入された経路でも他人の注文が漏れない。
+- `authUserId → 業務 customerId` の解決は controller が `resolveCustomerId` ポート経由で行う（POST と同じ。対応する customer がいなければ `404 NOT_FOUND`）。
+- 改竄・壊れた `after` は Zod 検証で `400 VALIDATION_ERROR` に倒す（cakes と同じ）。
 
 ### `/health` の応答仕様（Phase 9 Step 3a）
 
@@ -1063,7 +1104,7 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
 - [ ] **Phase 10**: **API のリッチ化**（実運用 REST API でよく出てくる設計パターンを縦切りで実演）
   - 動機: 現状の cakes/customers/orders は MVP 規模。実運用なら必須レベルの「ページネーション / ソート / 検索 / 楽観ロック / Rate Limit / Idempotency-Key / Webhook」を**設計判断の練習場**として一周する。それぞれ単独機能というより「設計上のトレードオフを言語化する素材」として扱う
   - [x] Step 1（2026-05-20 完了）: **ページネーション（`/v1/cakes`）** — cursor-based（keyset）を採用。`?limit=20&after=<opaque-cursor>` 形式で、`Link` ヘッダ（RFC 5988, `rel="next"`）とレスポンスボディ `next_cursor` / `has_more` を両論併記。カーソルは `(name, id)` 複合キー（`name` 非一意のため境界またぎ耐性が要る）を base64url で包んだ不透明トークンにし、`TextEncoder`/`TextDecoder` で UTF-8 安全化（`btoa`/`atob` の Latin1 制約と Workers の `Buffer` 不在を回避）。改竄カーソルは Zod 検証で `400 VALIDATION_ERROR`。汎用コーデックを `app/shared/http/cursor.ts` に切り出し。詳細仕様は「[`GET /v1/cakes` のページネーション仕様](#get-v1cakes-のページネーション仕様phase-10-step-1)」参照
-  - [ ] Step 1.5: **ページネーション（`/v1/orders`）** — orders は一覧エンドポイントが未実装のため、RLS 保護付き `GET /v1/orders`（本人の注文のみ）を新設してから cursor codec を再利用する
+  - [x] Step 1.5（2026-05-20 完了）: **ページネーション（`/v1/orders`）** — orders は一覧エンドポイントが未実装だったため、RLS 保護付き `GET /v1/orders`（本人の注文のみ）を新設し、Step 1 の cursor codec（`app/shared/http/cursor.ts`）を再利用。カーソルは `(placed_at, id)` 複合キー（同時刻の注文がありうる非一意キーのため id を tiebreaker に複合化）で、新しい順（`placed_at DESC, id DESC`）に並べる。本人フィルタは **多重防御**（RLS の `orders_select_self` + repository の明示 `customer_id` 絞り込み）で、`service_role` 経路でも漏れない設計。`PostgREST` の `.or('placed_at.lt."X",and(placed_at.eq."X",id.lt."Y")')` でキーセット前進。詳細仕様は「[`GET /v1/orders` のページネーション仕様](#get-v1orders-のページネーション仕様phase-10-step-15)」参照
   - [ ] Step 2: **ソート・フィルタ** — `?sort=-created_at,name` 書式 + Zod 検証。`?available=true` の単純フィルタ
   - [ ] Step 3: **検索** — Postgres `pg_trgm` / `tsvector` の使い分けを言語化しつつ実装
   - [ ] Step 4: **楽観ロック** — `ETag` + `If-Match` で更新競合検知。Cake の在庫更新（追加発注）に導入。`409 CONFLICT`

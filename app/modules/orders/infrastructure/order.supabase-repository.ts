@@ -1,6 +1,11 @@
 import type { PostgrestError, SupabaseClient } from '@supabase/supabase-js';
 import { Order } from '@/modules/orders/domain/order';
-import type { OrderRepository, PlaceOrderInput } from '@/modules/orders/domain/order.repository';
+import type {
+  ListOrdersByCustomerParams,
+  OrderPage,
+  OrderRepository,
+  PlaceOrderInput,
+} from '@/modules/orders/domain/order.repository';
 import { OrderId } from '@/modules/orders/domain/order-id.vo';
 import {
   CakeNotFoundInOrderError,
@@ -44,6 +49,13 @@ const SELECT_WITH_ITEMS = `
 
 // PostgREST が「結果 0 件 + .single()」のときに返すコード。
 const PGRST_NO_ROWS = 'PGRST116';
+
+// PostgREST のフィルタ値（タイムスタンプ・UUID）に予約文字が混ざっても
+// `or(...)` の構文を壊さないよう、ダブルクォートで囲んで \ と " をエスケープする。
+// （cakes 実装と同じ防御。値は PostgREST 側で SQL にバインドされるため
+//   インジェクションは起きないが、引用しないとフィルタ式が壊れて 400 になる。）
+const pgrstQuoteValue = (value: string): string =>
+  `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
 export class OrderSupabaseRepository implements OrderRepository {
   // SupabaseClient は composition-root で anon / admin を選んで注入する。
@@ -95,15 +107,62 @@ export class OrderSupabaseRepository implements OrderRepository {
       return null;
     }
 
+    return this.toOrder(data);
+  }
+
+  async listByCustomer(params: ListOrdersByCustomerParams): Promise<OrderPage> {
+    // customer_id を明示的に絞り込む（多重防御）。RLS でも本人に絞られるが、
+    // service_role クライアントが注入された経路でも漏れないよう repository でも絞る。
+    const base = this.sb
+      .from(TABLE_NAME)
+      .select(SELECT_WITH_ITEMS)
+      .eq('customer_id', params.customerId.value);
+
+    // キーセット法（新しい順 placed_at DESC, id DESC）。
+    //   placed_at.lt.X            … X より過去の行
+    //   and(placed_at.eq.X, id.lt.Y) … 同時刻なら id で先に進む（取りこぼし防止）
+    const filtered = params.after
+      ? base.or(
+          `placed_at.lt.${pgrstQuoteValue(params.after.placedAt)},` +
+            `and(placed_at.eq.${pgrstQuoteValue(params.after.placedAt)},id.lt.${pgrstQuoteValue(params.after.id)})`,
+        )
+      : base;
+
+    // limit + 1 件取得し、超過分があれば「次ページあり」と判定する。
+    // ORDER BY はキーセット条件と同じ並び（placed_at DESC, id DESC）でなければ整合しない。
+    const { data, error } = await filtered
+      .order('placed_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(params.limit + 1)
+      .overrideTypes<OrderRow[], { merge: false }>();
+
+    if (error) {
+      throw new Error(`Order 一覧の取得に失敗しました: ${error.message}`);
+    }
+
+    const hasMore = data.length > params.limit;
+    const rows = hasMore ? data.slice(0, params.limit) : data;
+    const orders = rows.map((row) => this.toOrder(row));
+
+    const last = orders[orders.length - 1];
+    const nextCursor =
+      hasMore && last ? { placedAt: last.placedAt.toISOString(), id: last.id.value } : null;
+
+    return { orders, nextCursor };
+  }
+
+  // OrderRow（nested select 結果）→ domain の Order へ復元する。
+  // 復元は必ず reconstruct 経由で、DB 由来データにも不変条件を適用する。
+  private toOrder(row: OrderRow): Order {
     return Order.reconstruct({
-      id: data.id,
-      customerId: data.customer_id,
-      status: data.status,
-      placedAt: new Date(data.placed_at),
-      items: data.order_items.map((row) => ({
-        cakeId: row.cake_id,
-        quantity: row.quantity,
-        unitPrice: row.unit_price,
+      id: row.id,
+      customerId: row.customer_id,
+      status: row.status,
+      placedAt: new Date(row.placed_at),
+      items: row.order_items.map((item) => ({
+        cakeId: item.cake_id,
+        quantity: item.quantity,
+        unitPrice: item.unit_price,
       })),
     });
   }

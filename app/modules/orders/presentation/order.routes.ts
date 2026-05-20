@@ -7,6 +7,8 @@ import { UnauthorizedError } from '@/shared/domain/errors';
 import {
   CreateOrderRequestSchema,
   ErrorResponseSchema,
+  ListOrdersQuerySchema,
+  ListOrdersResponseSchema,
   OrderIdParamSchema,
   OrderResponseSchema,
 } from './order.dto';
@@ -54,6 +56,39 @@ const placeOrderRoute = createRoute({
     },
     409: {
       description: '在庫不足',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+const listOrdersRoute = createRoute({
+  method: 'get',
+  path: '/',
+  tags: ['orders'],
+  summary: '自分の注文一覧を取得する（カーソルページネーション）',
+  description:
+    '認証ユーザー本人の注文を新しい順（placed_at 降順）で返す。RLS により本人の注文のみ可視。' +
+    'limit（既定 20・最大 100）で 1 ページ件数を指定し、レスポンスの next_cursor を after に渡して' +
+    '次ページを取得する（next_cursor が null なら最終ページ）。',
+  security: [{ bearerAuth: [] }],
+  request: {
+    query: ListOrdersQuerySchema,
+  },
+  responses: {
+    200: {
+      description: '注文一覧（1 ページ分 + ページネーションメタ）',
+      content: { 'application/json': { schema: ListOrdersResponseSchema } },
+    },
+    400: {
+      description: 'limit が範囲外、または after カーソルが不正',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+    401: {
+      description: '未認証',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+    404: {
+      description: '認証ユーザーに対応する顧客が見つからない',
       content: { 'application/json': { schema: ErrorResponseSchema } },
     },
   },
@@ -109,6 +144,26 @@ export const createOrderRouter = (deps: OrderRouterDeps): OpenAPIHono<AppEnv> =>
     const input = c.req.valid('json');
     const body = await controller.place(user.id, input);
     return c.json(body, 201);
+  });
+
+  router.openapi(listOrdersRoute, async (c) => {
+    const user = c.get('user');
+    if (!user) {
+      throw new UnauthorizedError('認証情報が取得できませんでした');
+    }
+    const controller = c.get('modules').orders;
+    const query = c.req.valid('query');
+    const body = await controller.list(user.id, query);
+
+    // RFC 5988 Link ヘッダで次ページ URL を提示する（body の next_cursor と二重提供）。
+    if (body.next_cursor) {
+      const nextUrl = new URL(c.req.url);
+      nextUrl.searchParams.set('limit', String(query.limit));
+      nextUrl.searchParams.set('after', body.next_cursor);
+      c.header('Link', `<${nextUrl.toString()}>; rel="next"`);
+    }
+
+    return c.json(body, 200);
   });
 
   router.openapi(getOrderRoute, async (c) => {

@@ -309,4 +309,100 @@ describe('OrderSupabaseRepository（実 Supabase ローカル + place_order Func
       expect(found).toBeNull();
     });
   });
+
+  describe('listByCustomer()', () => {
+    // place() を順に呼ぶと placed_at（= トランザクション開始時刻）が単調増加するため、
+    // 「新しい順」= 後から place した注文が先頭に来る。
+    const placeSequentially = async (
+      customerId: string,
+      cakeId: string,
+      count: number,
+    ): Promise<string[]> => {
+      const ids: string[] = [];
+      for (let i = 0; i < count; i++) {
+        const order = await repo.place({
+          customerId: CustomerId.from(customerId),
+          items: [{ cakeId: CakeId.from(cakeId), quantity: OrderQuantity.of(1) }],
+        });
+        ids.push(order.id.value);
+      }
+      return ids;
+    };
+
+    it('本人の注文を新しい順（placed_at DESC）で返す', async () => {
+      const { customerId, cakeIds } = await seedFixtures([{ name: 'list', price: 500, stock: 10 }]);
+      const placedIds = await placeSequentially(customerId, cakeIds[0]!, 3);
+
+      const page = await repo.listByCustomer({
+        customerId: CustomerId.from(customerId),
+        limit: 20,
+      });
+
+      // 後から place したものが先頭（新しい順）。place 順の逆。
+      expect(page.orders.map((o) => o.id.value)).toEqual([...placedIds].reverse());
+      expect(page.nextCursor).toBeNull(); // 3 件 < limit なので次ページ無し
+    });
+
+    it('別の顧客の注文は混ざらない（多重防御 + RLS 相当）', async () => {
+      const { customerId: customerA, cakeIds } = await seedFixtures([
+        { name: 'mine', price: 500, stock: 10 },
+      ]);
+      const { customerId: customerB } = await seedFixtures([]);
+
+      await placeSequentially(customerA, cakeIds[0]!, 2);
+      // B も同じ商品を 1 件注文（在庫は共有）
+      await repo.place({
+        customerId: CustomerId.from(customerB),
+        items: [{ cakeId: CakeId.from(cakeIds[0]!), quantity: OrderQuantity.of(1) }],
+      });
+
+      const pageA = await repo.listByCustomer({
+        customerId: CustomerId.from(customerA),
+        limit: 20,
+      });
+      const pageB = await repo.listByCustomer({
+        customerId: CustomerId.from(customerB),
+        limit: 20,
+      });
+
+      expect(pageA.orders).toHaveLength(2);
+      expect(pageA.orders.every((o) => o.customerId.value === customerA)).toBe(true);
+      expect(pageB.orders).toHaveLength(1);
+      expect(pageB.orders[0]?.customerId.value).toBe(customerB);
+    });
+
+    it('limit + after でページ分割し、取りこぼし・重複なく全件辿れる', async () => {
+      const { customerId, cakeIds } = await seedFixtures([{ name: 'page', price: 500, stock: 20 }]);
+      const placedIds = await placeSequentially(customerId, cakeIds[0]!, 5);
+      const expectedOrder = [...placedIds].reverse(); // 新しい順
+
+      // limit=2 で 3 ページ（2 + 2 + 1）に分けて全件回収する。
+      const collected: string[] = [];
+      let after: { placedAt: string; id: string } | undefined;
+      for (let i = 0; i < 5; i++) {
+        const page = await repo.listByCustomer({
+          customerId: CustomerId.from(customerId),
+          limit: 2,
+          after,
+        });
+        collected.push(...page.orders.map((o) => o.id.value));
+        if (!page.nextCursor) break;
+        after = page.nextCursor;
+      }
+
+      // 重複なく、新しい順で全 5 件が揃う。
+      expect(collected).toEqual(expectedOrder);
+      expect(new Set(collected).size).toBe(5);
+    });
+
+    it('注文ゼロの顧客には空ページを返す', async () => {
+      const { customerId } = await seedFixtures([]);
+      const page = await repo.listByCustomer({
+        customerId: CustomerId.from(customerId),
+        limit: 20,
+      });
+      expect(page.orders).toHaveLength(0);
+      expect(page.nextCursor).toBeNull();
+    });
+  });
 });
