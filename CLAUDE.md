@@ -543,7 +543,7 @@ console.log('order created');
   - [x] Step 2 (2026-05-15): アクセスログミドルウェア（`access-log.middleware.ts`、ステータス別レベル分岐）
   - [x] Step 3a (2026-05-18): `/health` 3 状態化（ok / degraded / down、HTTP 200 / 200 / 503）
   - [x] Step 3b (2026-05-18): `/health` 閾値の実測すり合わせ — 3 シナリオ実機検証で `DEGRADED=800ms` / `TIMEOUT=1500ms` / stateless を全て据え置きで妥当と確認
-  - [x] Step 4 (2026-05-19): メトリクス収集（Workers Analytics Engine） — Free プランで SQL API が 403 のため、コード検証（300 テスト全緑）+ wrangler tail での本番データフロー目視確認でクローズ。route 正規化の SQL 直接検証は Paid 移行時のフォローアップに繰越
+  - [x] Step 4 (2026-05-18 実装 / 2026-05-20 デプロイ修正で正式クローズ): メトリクス収集（Workers Analytics Engine） — Free プランで SQL **読み出し** API が 403 のため、コード検証（300 テスト全緑）+ wrangler tail での本番データフロー目視確認でクローズ。route 正規化の SQL 直接検証は Paid 移行時のフォローアップに繰越。**注意**: AE バインディング追加後の staging CI 実デプロイが error 10089（AE 未有効化）で `f939de1`〜`456969b` の間ずっと失敗していたのを、当時 dry-run + 旧デプロイへの wrangler tail で検証したため見逃した。2026-05-20 に Dashboard で dataset 作成（=AE 有効化、Free で可能）→ 再デプロイで復旧。AE のナビ / dataset 作成は Free でも可（Paid 必須は SQL 読み出しのみ）。教訓: アカウント有効化を伴う変更は dry-run でなく CI 実デプロイ run の成否を必ず確認する
   - [x] Step 5 (2026-05-20): 観測・アラート — **Free プラン制約下で再定義してクローズ**。Logpush（=Workers Paid 必須）/ Slack webhook（=Pro 以上）が Free 枠外と裏取りできたため、`wrangler.toml` の `[observability]` 明示化（`head_sampling_rate`）+ 「わざと 5xx → Workers Logs を requestId/status/route で検索」体験 + Free 範囲のメール通知に再定義。Logpush 送出 / 5xx 率アラート / Slack 連携 / Step 4 の SQL 検証は Paid 移行時の繰越
 - [ ] Phase 10: **API のリッチ化** — ページネーション / ソート・フィルタ / 検索 / 楽観ロック / Rate Limit / Idempotency-Key / Webhook 配信
 
