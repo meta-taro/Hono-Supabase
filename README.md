@@ -583,7 +583,57 @@ select(.err) | {requestId, path, status, stack: .err.stack}
 
 - **Step 3（`/health` 充実）**: 同じ JSON スキーマで `db: {ok, latency_ms}` を返し、外形監視 / uptime monitor から拾える形に
 - **Step 4（Workers Analytics Engine）**: ここで吐いた structured ログを Analytics Engine に流し、Cloudflare Dashboard でグラフ化
-- **Step 5（Logpush / アラート）**: Cloudflare Logs を R2 / 外部 SaaS に送って「5xx 率 1% 超え → Slack」のアラート連携。`level >= 40` での絞り込みがそのまま使える
+- **Step 5（観測・アラート）**: 当初は「Cloudflare Logs を R2 / 外部 SaaS に送って 5xx 率 1% 超え → Slack」を想定したが、**Logpush も webhook 通知も Free 枠の外**だったため Free で取れる範囲（Workers Logs 検索 + メール通知）に再定義。詳細は [Phase 9 Step 5 — Free 枠の観測・アラート](#phase-9-step-5--free-枠の観測アラート)
+
+---
+
+## Phase 9 Step 5 — Free 枠の観測・アラート
+
+Step 5 は当初「Logpush で Cloudflare Logs を R2 / 外部 SaaS に送出し、Notifications で 5xx 率超過を Slack に飛ばす」設計だった。実装前に課金境界を裏取りしたところ、**送出（Logpush）も webhook 通知も Cloudflare の有償プランが前提**で Free では成立しないと判明したため、Step 4 と同じく **Free 枠で取れる範囲に再定義**してクローズした。
+
+### Cloudflare 観測・通知の課金境界（2026-05-20 裏取り）
+
+| 手段                                                 | Free 可否 | 必要プラン                |
+| ---------------------------------------------------- | --------- | ------------------------- |
+| **Workers Logs**（Dashboard でログ検索 / live tail） | ✅ 可     | Free / Paid 両方          |
+| **Logpush**（R2 / Datadog 等へ送出）                 | ❌ 不可   | **Workers Paid（$5/月）** |
+| Notifications → メール（Workers 使用量・週次・CPU）  | △ 限定可  | Free（種別が限定）        |
+| Notifications → webhook（Slack 等）                  | ❌ 不可   | **Pro 以上**              |
+| Notifications → PagerDuty                            | ❌ 不可   | Business 以上             |
+
+出典: [Workers Logs docs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) / [Available Notifications](https://developers.cloudflare.com/notifications/notification-available/)
+
+> 教訓: Step 4 の「書き込み=Free / 読み出し=Paid」に続き、観測スタックの **"送出・通知" 側も基本 Paid 境界**にある。Free だけで観測を一周するなら「Workers Logs を Dashboard で検索する」が事実上の天井になる。
+
+### 実装（コード）
+
+`wrangler.toml` の `[observability]` を3スコープ（top-level / staging / production）とも明示化し、`head_sampling_rate = 1` を追記した。Workers Logs 自体は以前から `enabled = true` 済みだったので、追加したのは**サンプリングのノブの可視化**と「学習中は低トラフィックなので全件保持。Free 枠の日次取り込み上限に当たったら 0.1 等へ絞る」という Why コメント。
+
+### 観測体験 — 「わざと 5xx を出して Workers Logs で追う」
+
+「わざと 5xx を出してアラートが飛ぶ」演習は Free 枠では成立しない（5xx 率アラートは Notifications の Free 種別に存在しない）。そこで **「わざと 5xx を出して Workers Logs から追跡する」に置換**した。Step 1（requestId 伝播）/ Step 2（アクセスログ）で仕込んだ構造化フィールドが、ここで「障害を検索して特定する」形で初めて回収される。
+
+手順（staging で実施）:
+
+1. `pnpm wrangler:deploy:staging` で staging に反映（`[observability]` 込み）
+2. わざと 5xx を誘発する。例: 存在しない注文 ID を本人トークンで叩く / 一時的に 500 を返す経路を踏む（`pnpm wrangler:tail:staging` を別端末で開いておくと即座に流れる）
+3. Cloudflare Dashboard → Workers & Pages → 対象 Worker → **Observability / Logs** を開く
+4. `level = 50`（error）や `status >= 500` で絞り込み、該当リクエストの `requestId` を特定
+5. その `requestId` で全ログを引き直し、1 リクエストの始端〜終端（access-log の `duration_ms` / `status` 含む）を時系列で追えることを確認
+
+レスポンスヘッダ `X-Request-Id` に同じ ID が反射されるので、**クライアントが障害報告時に貼った ID から Workers Logs を一発で引ける**運用がここで完成する。
+
+### メール通知（Free で設定できる範囲）
+
+Cloudflare Dashboard → 右上アカウントメニュー → **Notifications** → Add で、Free プランでも **Workers 使用量系**（週次サマリ / CPU 使用量閾値）のメール通知を設定できる。「エラー率」ベースのアラートは Free 種別に無いので設定できない（Paid 移行時の繰越）。
+
+### Paid 移行時の繰越
+
+- Logpush → R2 送出（→ DuckDB / 外部 SaaS で SQL 集計）
+- 5xx 率の閾値アラート + Slack webhook 連携
+- Step 4 の Analytics Engine SQL 検証（route 正規化が `/v1/orders/:id` に集約され生 UUID が出ないことの end-to-end 確認）
+
+いずれも Workers Paid（$5/月）移行で一括解消できる。
 
 ---
 
@@ -777,7 +827,7 @@ interface CakeRow {
 
 - probe timeout: `1500ms`
 - degraded boundary: `latency_ms > 800`
-- 連続失敗集計なし（stateless）— アラートと連動するなら Phase 9 Step 5 で再検討
+- 連続失敗集計なし（stateless）— Phase 9 Step 5 で結論: 閾値アラートは Free 枠外（Paid）なので、連続失敗判定は `/health` に持たせず外形監視側に委ねる方針で確定
 
 **テストでの差し替え**: `createApp({ healthDbProbe })` に fake probe を注入できる DI 形状にしてあるので、4 状態（ok / degraded / down(タイムアウト相当) / down(クエリエラー相当)）を全部ユニットテストで網羅できる。probe を省略すれば従来通り `{ status: "ok", version }` のみの最小 health（既存テスト互換）。
 
@@ -798,7 +848,7 @@ interface CakeRow {
 
 - `DEGRADED_LATENCY_MS = 800`: 据え置き。ベースライン定常 36–66ms / 初回 290ms から十分なマージン。本番（Supabase Cloud）はネットワーク往復が増えるため定常 latency は上がる想定だが、それでも 800ms ならまだ余裕がある
 - `PROBE_TIMEOUT_MS = 1500`: 据え置き。ハング系を 1.5 秒で検知できるバランス。短すぎると正常な遅延を down に倒してしまい、長すぎるとハング検知が遅れる
-- stateless 設計: 据え置き。連続失敗集計は Phase 9 Step 5（アラート連携）と一緒に設計するのが筋。1 リクエストごとに独立判定なら、外形監視側で「N 回連続失敗で pager」と組むのがシンプル
+- stateless 設計: 据え置きで確定。Phase 9 Step 5 で「閾値アラートは Cloudflare の Free 枠外（Paid 必須）」と裏取りできたため、連続失敗集計は `/health` には持たせず、1 リクエストごとに独立判定 → 外形監視側で「N 回連続失敗で pager」と組む方針に倒した（isolate 跨ぎで状態を持たない素直さを優先）
 
 ### 統一エラーレスポンス
 
@@ -974,8 +1024,8 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
   - [x] Step 2（2026-05-15 完了）: **アクセスログミドルウェア** — `app/shared/http/access-log.middleware.ts` を新設。入口で `start = Date.now()` を取り `await next()` 後に `{status, duration_ms, userId}` を req スコープロガー経由で出力（`method` / `path` / `requestId` は Step 1 の child binding に既に乗っているので二重出力しない）。ステータス別にレベルを出し分け（5xx → `error` / 4xx → `warn` / それ以外 → `info`）して、Cloudflare Logs / Datadog の `level=error` 検索で障害だけ拾える形に。`userId` は `c.get('user')?.id` を spread して**未認証時はキーごと省略**（誤って `userId: undefined` を残さない）。`bootstrap.ts` で `requestContextMiddleware` の直後に並べて `/health` 含む全パスに適用（外形監視からの叩きも duration が観測できる）。Hono 標準 `logger()` を使わない理由は「console.log にプレーンテキストで吐くため structured 検索ができない」+「req スコープロガーに乗せた `requestId` バインドを引き継げない」。`logger` が積まれていない最小テスト app 経路では no-op（fallback logger を import すると Workers バンドルに pino / 裸 console を混ぜるリスクが出るため）。テスト 6 ケース（2xx info / 4xx warn / 5xx error / 認証済 userId 出力 / 未認証で userId キーごと省略 / logger 未挿入時 no-op）+ `pnpm verify` 緑（273 テスト）+ `pnpm test:coverage` 緑（middleware 100% カバー、全体閾値クリア）
   - [x] Step 3a（2026-05-18 完了）: **`/health` の充実（骨格・仮の閾値）** — `app.ts` の `AppOptions` に `healthDbProbe?: HealthDbProbe` を追加。probe は `() => Promise<{ok, latency_ms}>` の純粋関数で、tests から fake 注入できる DI 形状。本番 probe は `bootstrap.ts` で anon Supabase client を 1 つ作って `cakes` を `select('id').limit(1).abortSignal(AbortSignal.timeout(1500))` で叩く実装（per-request ではなく cold start 時に 1 度だけ作る／RLS は public read を許可している cakes のみに依存）。/health は 3 状態 (`ok | degraded | down`) を返す: probe.ok かつ `latency_ms ≤ 800` → `ok` / probe.ok かつ `latency_ms > 800` → `degraded` / それ以外（タイムアウト・クエリエラー・接続不到達）→ `down`。HTTP ステータスは `ok`/`degraded` → 200・`down` → 503（外形監視・uptime monitor を pager に乗せるため `degraded` では緑、`down` のみ赤に倒す）。**現状の仮の閾値**: probe timeout 1500ms / degraded boundary 800ms / stateless（連続失敗カウントなし）。これらは Step 3b（任意・後日）で実測ベースに調整予定。テスト 6 ケース（既存 2: probe 省略 / appVersion 反映 + 新規 4: ok / degraded / down(タイムアウト相当) / down(クエリエラー相当)）+ `pnpm verify` 緑（277 テスト）
   - [x] Step 3b（2026-05-18 完了）: **`/health` 閾値の実測すり合わせ** — 仮置きした 3 つの判断（`DEGRADED_LATENCY_MS=800` / `PROBE_TIMEOUT_MS=1500` / stateless）を、コードを一時改変 → revert する方式で 3 シナリオ実測検証し**全て据え置きで妥当**と結論。ベースライン: 初回 cold `≈290ms` → 暖機後 `36–66ms`（800ms boundary を大きく下回る）／シナリオ 1（`DEGRADED_LATENCY_MS=5` に一時変更）で 36ms 応答が `degraded` / 200 に切替、3 状態分岐と「degraded は緑のまま」運用方針を確認／シナリオ 2（`PROBE_TIMEOUT_MS=50` に一時変更）で AbortSignal 打ち切り → `down` / 503 / `latency_ms=59ms`、タイムアウト経路がドキュメント通り動く／シナリオ 3（`supabase stop` で REST 完全停止）で `latency_ms=1518ms` ≒ `PROBE_TIMEOUT_MS=1500` の **down via timeout**。最大の学び: Docker Desktop / WSL2 経由のポートはコンテナ停止直後でも TCP SYN を即座に RST せず吸い込むため、TCP 層で「接続不到達」は観測されず**全部タイムアウト経由で down に倒れる**。`AbortSignal.timeout()` が無ければ OS デフォルトの 30–120 秒まで握る事故になる → probe timeout の存在価値が実機で証明された。詳細は [`/health` の応答仕様の Step 3b 実測体験のまとめ](#step-3b-実測体験のまとめ2026-05-18) を参照
-  - [x] Step 4（2026-05-19 完了）: **メトリクス収集（Workers Analytics Engine）** — `app/shared/infrastructure/metrics.ts` で `MetricsRecorder` interface + `createAnalyticsEngineRecorder`（Workers 実書き込み）/ `createNoopMetricsRecorder`（Node・テスト・binding 未注入）を実装。`writeDataPoint` のペイロードは **blob `[method, route, status_class, env, app_version]` / doubles `[duration_ms]` / indexes `[status_class]`** の固定順。`access-log.middleware.ts` に `metrics?: AccessLogMetricsBinding` の DI を足し、`routePath(c, -1)` で正規化した route（middleware 経由の `'*'` 退避）を渡す。`wrangler.toml` は **A 案: 物理分離**（`api_requests_staging` / `api_requests_production`、binding 名 `API_REQUESTS` 共通）+ トップレベル fallback dataset。`@cloudflare/workers-types` への直接依存は避けて自前 duck typing（Phase 7 ロガー隔離と同じ方針）。**PII は入れない**（userId はアクセスログにだけ、メトリクスには載せない）。fire-and-forget で response latency に乗らない。テストは metrics.test.ts（新設 19 ケース）+ access-log.middleware.test.ts（既存 6 + 新規 4）で 300 テスト全緑。**SQL 検証は Workers Free プランで Analytics Engine SQL API が HTTP 403（書き込みは Free でも可・読み出しは Paid 必須）** のため、コード検証（300 テスト緑）+ `pnpm wrangler tail cake-shop-api-staging` で本番アクセスログ（`level=30` 2xx / `level=40` 4xx、`requestId` / `path` / `status` / `duration_ms`）が**本番経路で吐かれていること**を実機目視確認してクローズ。route 正規化の最終形（`/v1/orders/:id` 集約）の SQL 確認は Paid 移行時のフォローアップに繰越（Step 5 で Logpush + R2 + DuckDB に倒せば Free のまま SQL 体験まで取り戻せる可能性あり）
-  - [ ] Step 5: **Logpush / アラート** — Cloudflare Logs を R2 / 外部 SaaS（Logpush）に送る設定 + Notifications でメール/Slack 連携。「わざと 5xx を出してアラートが飛ぶ」演習で end-to-end 確認
+  - [x] Step 4（2026-05-19 完了）: **メトリクス収集（Workers Analytics Engine）** — `app/shared/infrastructure/metrics.ts` で `MetricsRecorder` interface + `createAnalyticsEngineRecorder`（Workers 実書き込み）/ `createNoopMetricsRecorder`（Node・テスト・binding 未注入）を実装。`writeDataPoint` のペイロードは **blob `[method, route, status_class, env, app_version]` / doubles `[duration_ms]` / indexes `[status_class]`** の固定順。`access-log.middleware.ts` に `metrics?: AccessLogMetricsBinding` の DI を足し、`routePath(c, -1)` で正規化した route（middleware 経由の `'*'` 退避）を渡す。`wrangler.toml` は **A 案: 物理分離**（`api_requests_staging` / `api_requests_production`、binding 名 `API_REQUESTS` 共通）+ トップレベル fallback dataset。`@cloudflare/workers-types` への直接依存は避けて自前 duck typing（Phase 7 ロガー隔離と同じ方針）。**PII は入れない**（userId はアクセスログにだけ、メトリクスには載せない）。fire-and-forget で response latency に乗らない。テストは metrics.test.ts（新設 19 ケース）+ access-log.middleware.test.ts（既存 6 + 新規 4）で 300 テスト全緑。**SQL 検証は Workers Free プランで Analytics Engine SQL API が HTTP 403（書き込みは Free でも可・読み出しは Paid 必須）** のため、コード検証（300 テスト緑）+ `pnpm wrangler tail cake-shop-api-staging` で本番アクセスログ（`level=30` 2xx / `level=40` 4xx、`requestId` / `path` / `status` / `duration_ms`）が**本番経路で吐かれていること**を実機目視確認してクローズ。route 正規化の最終形（`/v1/orders/:id` 集約）の SQL 確認は Paid 移行時のフォローアップに繰越（※当初ここに「Step 5 で Logpush + R2 + DuckDB に倒せば Free のまま SQL 体験を取り戻せる可能性あり」と書いていたが、**Step 5 で裏取りした結果 Logpush は Workers Paid 必須で Free では使えない**ことが判明。この見込みは誤りだったため取り消す）
+  - [x] Step 5（2026-05-20 完了 — Free プラン制約下で再定義してクローズ）: **観測・アラート** — 当初は「Logpush で R2 / 外部 SaaS へ送出 + Notifications で Slack」を想定したが、課金境界を裏取りした結果 **Free では送出・通知の主要経路がほぼ Paid 境界の外**（Logpush=Workers Paid 必須 / webhook=Pro 以上 / メール通知=Free だが種別限定）と判明。Step 4 と同じく Free 枠内に再定義した。実装は `wrangler.toml` の `[observability]` を3スコープとも明示化（`head_sampling_rate = 1` を追記し、日次上限に当たったら絞る判断材料を Why コメントで残す。Workers Logs 自体は以前から有効）。観測体験は「わざと 5xx を出してアラートが飛ぶ」が Free 不可（5xx 率アラートは Notifications の Free 種別に無い）ため **「わざと 5xx を出して Workers Logs から requestId / status / route で追う」に置換**し、Step 1/2 で仕込んだ構造化フィールドをここで回収。詳細は [Phase 9 Step 5 — Free 枠の観測・アラート](#phase-9-step-5--free-枠の観測アラート) 参照。Logpush 送出 / 5xx 率アラート / Slack 連携 / Step 4 の SQL 検証は Workers Paid 移行時の繰越
 - [ ] **Phase 10**: **API のリッチ化**（実運用 REST API でよく出てくる設計パターンを縦切りで実演）
   - 動機: 現状の cakes/customers/orders は MVP 規模。実運用なら必須レベルの「ページネーション / ソート / 検索 / 楽観ロック / Rate Limit / Idempotency-Key / Webhook」を**設計判断の練習場**として一周する。それぞれ単独機能というより「設計上のトレードオフを言語化する素材」として扱う
   - [ ] Step 1: **ページネーション** — cursor-based（`?after=<id>&limit=20`）を採用。`/v1/cakes` `/v1/orders` に導入。`Link` ヘッダ（RFC 5988）とレスポンスボディ `next_cursor` の両論併記

@@ -43,9 +43,16 @@ compatibility_flags = []
 NODE_ENV = "production"
 LOG_LEVEL = "info"
 
-# 観測性: Workers の logs が dashboard 上で 24h 残る。Logpush → Datadog 等へ流す前段。
+# 観測性: Workers Logs。構造化 console.log（requestId / status / route 等）が
+#   Cloudflare Dashboard 上で検索可能になる。Free / Paid 両プランに含まれる（Step 5 の主役）。
+#   ★Logpush（R2 / Datadog 等へ送出）は Workers Paid プラン必須で、Free では使えない★
+#   ため、本プロジェクトの Free 枠観測は「この Workers Logs を検索する」までが上限。
+# head_sampling_rate: 残すリクエストの割合（0〜1、既定 1=全件）。
+#   学習中は低トラフィックなので全件保持で困らない。本番トラフィックが増えて
+#   Free 枠の日次取り込み上限に当たるようになったら、ここを 0.1 等へ絞って間引く。
 [observability]
 enabled = true
+head_sampling_rate = 1
 
 # version_metadata バインディング: この isolate が動かしているデプロイ済みバージョンの
 #   { id, tag, timestamp } を env.CF_VERSION_METADATA から取得できる。
@@ -83,8 +90,10 @@ name = "cake-shop-api-staging"
 NODE_ENV = "staging"
 LOG_LEVEL = "debug"
 
+# staging は「わざと 5xx を出して Workers Logs で追う」演習の主舞台なので全件保持。
 [env.staging.observability]
 enabled = true
+head_sampling_rate = 1
 
 # バインディングは --env で継承されないので、staging にも明示的に宣言する。
 [env.staging.version_metadata]
@@ -109,8 +118,11 @@ name = "cake-shop-api"
 NODE_ENV = "production"
 LOG_LEVEL = "info"
 
+# production も学習段階では低トラフィックのため全件保持。実トラフィック増 + Free 枠の
+# 日次上限が見えてきたら head_sampling_rate を下げる（その判断材料を残すのが Step 5 の趣旨）。
 [env.production.observability]
 enabled = true
+head_sampling_rate = 1
 
 # バインディングは --env で継承されないので、production にも明示的に宣言する。
 [env.production.version_metadata]

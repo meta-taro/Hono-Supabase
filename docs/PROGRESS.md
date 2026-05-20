@@ -16,7 +16,7 @@
 - [x] **Phase 6**: 認証（Supabase Auth + RLS + 認証ミドルウェア）+ OpenAPI 仕上げ
 - [x] **Phase 7**: Cloudflare Workers 化（本番デプロイ想定の最終段）
 - [x] **Phase 8（2026-05-14 完了）**: Supabase Auth メール運用（テンプレート / Custom SMTP / 確認後リダイレクト）
-- [ ] **Phase 9**: 観測・運用の質を上げる（ロギング・ヘルス・メトリクス・アラート）— **Step 4 完了（Free プラン制約下のコード検証 + データフロー実機確認でクローズ）**
+- [x] **Phase 9（2026-05-20 完了）**: 観測・運用の質を上げる（ロギング・ヘルス・メトリクス・アラート）— Step 1〜5 完了。Step 4（メトリクス）/ Step 5（観測・アラート）は **Free プラン制約下に再定義してクローズ**（Logpush・SQL 読み出し・Slack 連携は Workers Paid 移行時の繰越）
 - [ ] **Phase 10**: API のリッチ化（ページネーション / ソート / 検索 / 楽観ロック / Rate Limit / Idempotency-Key / Webhook）
 
 ---
@@ -100,8 +100,22 @@
     - **5xx 率**: `SELECT countIf(index1 = '5xx') / count() AS error_rate FROM api_requests_staging WHERE timestamp > now() - INTERVAL '1' HOUR`
     - **route カーディナリティ**: `SELECT blob2 AS route, count() AS hits FROM api_requests_staging WHERE timestamp > now() - INTERVAL '1' HOUR GROUP BY route ORDER BY hits DESC`
   - **fire-and-forget の含意**: `writeDataPoint` の戻り値を await しない → レスポンス遅延ゼロ。ただし書き込み失敗は呼び出し側で観測不能（Analytics Engine の障害時は静かに欠測になる）。「観測の観測」までは無料枠でやりすぎなので Step 5（Logpush / アラート）と合わせて検討
-  - **学び**: Cloudflare の課金境界の踏み方。**書き込み（writeDataPoint）= Free / 読み出し（SQL API・Dashboard の Analytics Engine ナビ）= Paid** という非対称設計を、API Key 認証経由で 403 を踏んで初めて理解できた。学習リポジトリで「無料枠だけで観測スタックを一周する」を目指すなら、Logpush + R2（or 外部 SaaS）への送出を Step 5 で組んで「アクセスログを R2 に貯めて DuckDB で読む」経路に倒すと SQL 体験まで全部 Free で取り戻せる（Step 5 設計時の選択肢として残す）
-- [ ] **Step 5**: Logpush / アラート — Cloudflare Logs を R2 / 外部 SaaS（Logpush）に送る設定 + Notifications でメール / Slack 連携。「わざと 5xx を出してアラートが飛ぶ」演習で end-to-end 確認
+  - **学び**: Cloudflare の課金境界の踏み方。**書き込み（writeDataPoint）= Free / 読み出し（SQL API・Dashboard の Analytics Engine ナビ）= Paid** という非対称設計を、API Key 認証経由で 403 を踏んで初めて理解できた。
+  - **⚠️ 当時の見込み違い（2026-05-20 訂正）**: ここで「Logpush + R2 へ送出すれば SQL 体験まで全部 Free で取り戻せる」と書いたが、**これは裏取りせずに書いた誤り**。Cloudflare の公式ドキュメントを確認したところ **Workers Logpush は Workers Paid プラン（$5/月）必須で、Free では使えない**（[Workers Logs docs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) で明記）。よって「Logpush で Free のまま観測一周」は成立しない。Step 5 は下記の課金境界を踏まえて **Free 枠で取れる範囲（Workers Logs 検索 + メール通知）に再定義**した。
+- [x] **Step 5（2026-05-20 完了 — Free プラン制約下で再定義してクローズ）**: 観測・アラート。当初は「Logpush で R2 / 外部 SaaS に送出 + Notifications で Slack」を想定していたが、課金境界の裏取りで **Free では送出・通知の主要経路がほぼ Paid 境界の外**と判明したため、Step 4 と同じく Free 枠内に再定義してクローズ。
+  - **Cloudflare 観測・通知の課金境界（2026-05-20 裏取り）**:
+
+    | 手段                                                           | Free 可否 | 必要プラン                | 出典                                                                                               |
+    | -------------------------------------------------------------- | --------- | ------------------------- | -------------------------------------------------------------------------------------------------- |
+    | Workers Logs（Dashboard でログ検索 / live tail）               | ✅ 可     | Free / Paid 両方          | [Workers Logs docs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/)    |
+    | Logpush（R2 / 外部 SaaS へ送出）                               | ❌ 不可   | **Workers Paid（$5/月）** | 同上                                                                                               |
+    | Notifications → メール（Workers 使用量・週次サマリ・CPU 閾値） | △ 限定可  | Free（種別が限定）        | [Available Notifications](https://developers.cloudflare.com/notifications/notification-available/) |
+    | Notifications → webhook（Slack 等）                            | ❌ 不可   | **Pro 以上**              | 同上                                                                                               |
+    | Notifications → PagerDuty                                      | ❌ 不可   | Business 以上             | 同上                                                                                               |
+
+  - **実装（コード）**: `wrangler.toml` の `[observability]` を3スコープとも明示化（`head_sampling_rate = 1` を追記）。Workers Logs 自体は以前から `enabled = true` 済みだったため、サンプリングのノブを可視化し「Free 枠の日次取り込み上限に当たったら絞る」判断材料を Why コメントで残した。
+  - **観測体験（Free で完結）**: 「わざと 5xx を出してアラートが飛ぶ」は Free では成立しない（5xx 率アラートは Notifications の Free 種別に無い）ため、**「わざと 5xx を出して Workers Logs から requestId / status / route で追う」に置換**。Step 1（requestId 伝播）/ Step 2（アクセスログ）で仕込んだ構造化フィールドが、ここで「障害を検索して特定する」形で初めて回収される。
+  - **Paid 移行時の繰越**: Logpush → R2 送出、5xx 率の閾値アラート、Slack webhook 連携、Step 4 の SQL 検証（route 正規化）。これらは Workers Paid 移行で一括解消できる。
 
 ---
 

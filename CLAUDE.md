@@ -538,13 +538,13 @@ console.log('order created');
 - [x] Phase 6: 認証（Supabase Auth + RLS + 認証ミドルウェア）+ OpenAPI 仕上げ
 - [x] Phase 7: **Cloudflare Workers 化** — Workers / Node 二系統エントリ、Workers 互換ロガー、JWKS per-request DI、本番 + staging デプロイ、CI/CD（GitHub Actions + カナリア + rollback）
 - [x] Phase 8（2026-05-14 完了）: **Supabase Auth メール運用** — `enable_confirmations = ON` 化、テンプレートのリポジトリ管理、確認後リダイレクト三層設計（README 別節）、Cloud 上の Custom SMTP（Resend）で実メール送信
-- [ ] Phase 9: **観測・運用の質を上げる**（進行中）
+- [x] Phase 9 (2026-05-20 完了): **観測・運用の質を上げる**
   - [x] Step 1 (2026-05-15): リクエスト ID 伝播 + リクエストスコープロガー（`request-context.middleware.ts`）
   - [x] Step 2 (2026-05-15): アクセスログミドルウェア（`access-log.middleware.ts`、ステータス別レベル分岐）
   - [x] Step 3a (2026-05-18): `/health` 3 状態化（ok / degraded / down、HTTP 200 / 200 / 503）
   - [x] Step 3b (2026-05-18): `/health` 閾値の実測すり合わせ — 3 シナリオ実機検証で `DEGRADED=800ms` / `TIMEOUT=1500ms` / stateless を全て据え置きで妥当と確認
   - [x] Step 4 (2026-05-19): メトリクス収集（Workers Analytics Engine） — Free プランで SQL API が 403 のため、コード検証（300 テスト全緑）+ wrangler tail での本番データフロー目視確認でクローズ。route 正規化の SQL 直接検証は Paid 移行時のフォローアップに繰越
-  - [ ] Step 5: Logpush / アラート（Cloudflare Notifications）
+  - [x] Step 5 (2026-05-20): 観測・アラート — **Free プラン制約下で再定義してクローズ**。Logpush（=Workers Paid 必須）/ Slack webhook（=Pro 以上）が Free 枠外と裏取りできたため、`wrangler.toml` の `[observability]` 明示化（`head_sampling_rate`）+ 「わざと 5xx → Workers Logs を requestId/status/route で検索」体験 + Free 範囲のメール通知に再定義。Logpush 送出 / 5xx 率アラート / Slack 連携 / Step 4 の SQL 検証は Paid 移行時の繰越
 - [ ] Phase 10: **API のリッチ化** — ページネーション / ソート・フィルタ / 検索 / 楽観ロック / Rate Limit / Idempotency-Key / Webhook 配信
 
 ---
