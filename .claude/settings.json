@@ -1,13 +1,44 @@
 {
   "permissions": {
     "allow": [
-      "Bash(pnpm:*)",
-      "Bash(supabase:*)",
+      "Read(C:\\claude\\hono_supabase\\**)",
+      "Edit(C:\\claude\\hono_supabase\\**)",
+      "Write(C:\\claude\\hono_supabase\\**)",
+
+      "Bash(pnpm verify:*)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm typecheck:*)",
+      "Bash(pnpm lint:*)",
+      "Bash(pnpm format:check:*)",
+      "Bash(pnpm format:*)",
+      "Bash(pnpm dev:*)",
+      "Bash(pnpm build:*)",
+      "Bash(pnpm install:*)",
+      "Bash(pnpm dlx:*)",
+      "Bash(pnpm wrangler tail:*)",
+      "Bash(pnpm wrangler:tail:*)",
+      "Bash(pnpm wrangler:tail:staging:*)",
+      "Bash(pnpm wrangler:tail:production:*)",
+      "Bash(pnpm wrangler:dev:*)",
+      "Bash(pnpm wrangler whoami:*)",
+
+      "Bash(supabase start:*)",
+      "Bash(supabase stop:*)",
+      "Bash(supabase status:*)",
+
       "Bash(docker:*)",
       "Bash(docker compose:*)",
-      "Bash(git log:*)",
+
+      "Bash(git status:*)",
       "Bash(git diff:*)",
-      "Bash(git status:*)"
-    ]
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(git add:*)",
+
+      "Bash(node tmp-*.mjs:*)"
+    ],
+    "deny": ["Bash(npm *)", "Bash(npx *)"]
   }
 }
