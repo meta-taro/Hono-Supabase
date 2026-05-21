@@ -1,4 +1,4 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { PostgrestError, SupabaseClient } from '@supabase/supabase-js';
 import { Cake } from '@/modules/cakes/domain/cake';
 import type {
   CakePage,
@@ -71,20 +71,48 @@ export class CakeSupabaseRepository implements CakeRepository {
   constructor(private readonly sb: SupabaseClient) {}
 
   async list(params: ListCakesParams): Promise<CakePage> {
+    // nameSearch があれば PGroonga 全文検索（search_cakes RPC）に委譲する。
+    // PostgREST のクエリビルダは PGroonga 演算子 `&@` を表現できないため、
+    // ソート・フィルタ・キーセットごと RPC 側（動的 SQL）に寄せている。
+    // nameSearch が無ければ従来の PostgREST 経路で組み立てる。
+    const rows =
+      params.filter.nameSearch !== undefined
+        ? await this.fetchViaSearch(params)
+        : await this.fetchViaQuery(params);
+
+    // limit + 1 件取得しているので、超過分があれば「次ページあり」と判定する。
+    const hasMore = rows.length > params.limit;
+    const page = hasMore ? rows.slice(0, params.limit) : rows;
+
+    // 行 → Entity 変換は必ず Cake.reconstruct() 経由で行う。
+    // これにより UUID 形式チェック等の domain 不変条件が DB 由来データにも適用される。
+    const cakes = page.map((row) => Cake.reconstruct(row));
+
+    const lastRow = page[page.length - 1];
+    const nextCursor =
+      hasMore && lastRow
+        ? {
+            sort: params.sort,
+            values: Object.fromEntries(
+              params.sort.map((key) => [key.field, rowValueOf(lastRow, key.field)]),
+            ) as Partial<Record<CakeSortField, string | number>>,
+            id: lastRow.id,
+          }
+        : null;
+
+    return { cakes, nextCursor };
+  }
+
+  // PostgREST 経路（検索語なし）。フィルタ + キーセット + 並び順をクエリビルダで組む。
+  private async fetchViaQuery(params: ListCakesParams): Promise<CakeRow[]> {
     let query = this.sb.from(TABLE_NAME).select('id, name, price, stock');
 
     // --- フィルタ（各条件は AND で結合される）---
-    const { available, minPrice, maxPrice, nameContains } = params.filter;
+    const { available, minPrice, maxPrice } = params.filter;
     if (available === true) query = query.gt('stock', 0);
     if (available === false) query = query.eq('stock', 0);
     if (minPrice !== undefined) query = query.gte('price', minPrice);
     if (maxPrice !== undefined) query = query.lte('price', maxPrice);
-    if (nameContains !== undefined) {
-      // ILIKE の部分一致。'%' / '_' を含む入力はワイルドカードとして作用する点に注意
-      // （= 利用者が任意の前方/後方一致を指定できる簡易仕様。値は supabase-js が
-      //   URL エンコードするためフィルタ構文自体は壊れない）。
-      query = query.ilike('name', `%${nameContains}%`);
-    }
 
     // --- キーセット: ORDER BY と同じ並びの「続き」だけに絞る ---
     if (params.after) {
@@ -109,7 +137,6 @@ export class CakeSupabaseRepository implements CakeRepository {
     }
     query = query.order('id', { ascending: true });
 
-    // limit + 1 件取得し、超過分があれば「次ページあり」と判定する。
     const { data, error } = await query
       .limit(params.limit + 1)
       .overrideTypes<CakeRow[], { merge: false }>();
@@ -117,27 +144,29 @@ export class CakeSupabaseRepository implements CakeRepository {
     if (error) {
       throw new Error(`Cake 一覧の取得に失敗しました: ${error.message}`);
     }
+    return data;
+  }
 
-    const hasMore = data.length > params.limit;
-    const rows = hasMore ? data.slice(0, params.limit) : data;
+  // PGroonga 経路（検索語あり）。search_cakes RPC に委譲する。
+  // フィルタ・ソート・キーセットは関数側の動的 SQL が処理するため、
+  // ここはパラメータの受け渡しに徹する（未指定は null で渡し、関数の既定に任せる）。
+  private async fetchViaSearch(params: ListCakesParams): Promise<CakeRow[]> {
+    const { filter, sort, after, limit } = params;
+    const { data, error } = (await this.sb.rpc('search_cakes', {
+      p_q: filter.nameSearch,
+      p_available: filter.available ?? null,
+      p_min_price: filter.minPrice ?? null,
+      p_max_price: filter.maxPrice ?? null,
+      p_sort: sort.map((key) => ({ field: key.field, direction: key.direction })),
+      p_after: after ? { values: after.values, id: after.id } : null,
+      p_limit: limit + 1,
+    })) as { data: CakeRow[] | null; error: PostgrestError | null };
 
-    // 行 → Entity 変換は必ず Cake.reconstruct() 経由で行う。
-    // これにより UUID 形式チェック等の domain 不変条件が DB 由来データにも適用される。
-    const cakes = rows.map((row) => Cake.reconstruct(row));
-
-    const lastRow = rows[rows.length - 1];
-    const nextCursor =
-      hasMore && lastRow
-        ? {
-            sort: params.sort,
-            values: Object.fromEntries(
-              params.sort.map((key) => [key.field, rowValueOf(lastRow, key.field)]),
-            ) as Partial<Record<CakeSortField, string | number>>,
-            id: lastRow.id,
-          }
-        : null;
-
-    return { cakes, nextCursor };
+    if (error) {
+      throw new Error(`Cake 検索に失敗しました: ${error.message}`);
+    }
+    // RPC は cakes 全カラムを返すが、CakeRow が必要とする 4 列だけ読む（余剰は無視）。
+    return data ?? [];
   }
 
   async save(cake: Cake): Promise<void> {

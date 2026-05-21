@@ -836,13 +836,13 @@ Step 1 のカーソルページネーションに、**ソート**（並び替え
 
 **追加クエリパラメータ**:
 
-| パラメータ  | 型      | 既定   | 制約 / 例        | 説明                                                                           |
-| ----------- | ------- | ------ | ---------------- | ------------------------------------------------------------------------------ |
-| `sort`      | string  | `name` | `-price,name`    | 並び順。`-` 接頭辞で降順、カンマ区切りで複数指定。許可: `name`/`price`/`stock` |
-| `available` | boolean | —      | `true` / `false` | 在庫の有無で絞る（`true`=在庫あり`stock>0` / `false`=在庫切れ`stock=0`）       |
-| `min_price` | integer | —      | 1〜1,000,000     | 価格の下限（この値を含む）                                                     |
-| `max_price` | integer | —      | 1〜1,000,000     | 価格の上限（この値を含む）                                                     |
-| `q`         | string  | —      | 1〜100 文字      | ケーキ名の部分一致検索（大文字小文字を無視。`ILIKE`）                          |
+| パラメータ  | 型      | 既定   | 制約 / 例        | 説明                                                                                          |
+| ----------- | ------- | ------ | ---------------- | --------------------------------------------------------------------------------------------- |
+| `sort`      | string  | `name` | `-price,name`    | 並び順。`-` 接頭辞で降順、カンマ区切りで複数指定。許可: `name`/`price`/`stock`                |
+| `available` | boolean | —      | `true` / `false` | 在庫の有無で絞る（`true`=在庫あり`stock>0` / `false`=在庫切れ`stock=0`）                      |
+| `min_price` | integer | —      | 1〜1,000,000     | 価格の下限（この値を含む）                                                                    |
+| `max_price` | integer | —      | 1〜1,000,000     | 価格の上限（この値を含む）                                                                    |
+| `q`         | string  | —      | 1〜100 文字      | ケーキ名のあいまい検索（Step 3 で `ILIKE` → **PGroonga 全文検索**に置換。下記 Step 3 節参照） |
 
 例: `GET /v1/cakes?sort=-price,name&available=true&min_price=500&q=いちご`
 
@@ -853,8 +853,32 @@ Step 1 のカーソルページネーションに、**ソート**（並び替え
 - **カーソルに「発行時の sort」を埋め込む**。並び順が変わるとキーセットの「続き」の意味も変わるため、`after` を渡すときの `sort` がカーソル発行時と違えば `400`（「sort を変えるなら先頭ページから取り直せ」）。これでページ途中の並び替えによる不整合を防ぐ。
 - **フィルタはカーソルに埋め込まない**（主流 API と同じ）。フィルタはソート済みストリームを絞るだけでキーセットの整合は壊れない。ただしページ途中でフィルタを変えると見え方が変わる点はクライアント責務として割り切る。
 - `min_price > max_price` は controller で `400 VALIDATION_ERROR`。
-- `q` の `%` / `_` は `ILIKE` のワイルドカードとして作用する（= 利用者が任意の前方/後方一致を指定できる簡易仕様）。値は `supabase-js` が URL エンコードするためフィルタ構文自体は壊れない。
+- `q` は Step 2 時点では `ILIKE` 部分一致だったが、Step 3 で **PGroonga 全文検索**に置き換えた（理由・使い分けは下記 Step 3 節）。
 - 多カラム + 方向混在のキーセットは `(c1 OP1 v1) OR (c1=v1 AND c2 OP2 v2) OR …` を `infrastructure` 層で `or(...)` 展開する（`OP` は昇順 `gt` / 降順 `lt`）。in-memory 実装も同じ全順序を再現してユニットで検証。
+
+### `GET /v1/cakes` のあいまい検索仕様（Phase 10 Step 3）
+
+`q` パラメータを **PGroonga 全文検索**に置き換えた（Step 2 までは `ILIKE` 部分一致）。日本語のケーキ名を、2 文字クエリやひらがな部分一致でも拾えるようにするのが目的。Step 1/2 のソート・キーセットページネーションはそのまま維持する（あいまい検索＋キーセット、関連度ランキングはしない）。
+
+**全文検索の選択肢と使い分け**:
+
+| 方式             | 仕組み                                  | 日本語     | 強み                                                | 弱み                                                                                                                                                        |
+| ---------------- | --------------------------------------- | ---------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LIKE`/`ILIKE`   | 単純部分一致（前方一致以外は索引不可）  | △ 文字単位 | 実装が最小・依存ゼロ                                | `%foo%` は索引が効かず全件スキャン。表記ゆれ非対応                                                                                                          |
+| **pg_trgm**      | 3 文字トライグラム類似度（GIN 索引）    | △ 文字単位 | `ILIKE` を索引で高速化・タイポ許容（`similarity`）  | ① **1〜2 文字クエリは索引に乗らない**（3 文字未満）② 短語 vs 長名の類似度が低く `word_similarity` が要る ③ 苺/いちご/イチゴ は別トライグラム ④ スコアが粗い |
+| tsvector（標準） | 形態素 → lexeme・ステミング・ランキング | ✕ **不可** | 英語等の本格 FTS・ランキング                        | **標準パーサは日本語をトークン分割できない**（単語境界が無い）→ 日本語名には使えない                                                                        |
+| **PGroonga** ✅  | Groonga ベース FTS（N-gram + 形態素）   | ◎ 得意     | 2 文字・ひらがな部分一致 OK・全角半角を正規化・高速 | 索引サイズが pg_trgm より大きい・拡張のインストールが要る（Supabase ローカル/ホスト両対応）                                                                 |
+
+→ **学習リポジトリだが「日本語検索の実運用での現実解」を体験する**ため PGroonga を採用。`苺`↔`いちご`↔`イチゴ` の異表記吸収はノーマライザだけでは賄えない（シノニム辞書が要る）点は割り切り、N-gram 部分一致までを範囲とする。
+
+**アーキテクチャ（なぜ RPC か）**:
+
+- PostgREST のクエリビルダ（`supabase-js`）は `eq`/`gt`/`ilike`/`fts` 等は表現できるが、**PGroonga 演算子 `&@`（全文一致）を直接呼べない**。そこで `place_order` と同じく Postgres Function に閉じ込め、`.rpc('search_cakes', {...})` で呼ぶ。
+- `search_cakes(p_q, p_available, p_min_price, p_max_price, p_sort, p_after, p_limit)` は **検索 + フィルタ + 多段ソート + キーセット**をすべて関数側の動的 SQL で処理する（`supabase/migrations/0005_cakes_pgroonga_search.sql`）。並び替えフィールドは関数内でホワイトリスト検証してから `%I`（識別子）、値は `%L`（リテラル）で `format()` し、識別子と値を分離して SQL インジェクションを構造的に防ぐ。`security invoker`（`cakes` は RLS で全員 SELECT 可なので権限昇格は不要）。
+- repository は `nameSearch` の有無で経路を分岐: **あり → `search_cakes` RPC / なし → 従来の PostgREST**。`limit+1` 取得で「次ページ有無」を判定するのは両経路共通。
+- in-memory 実装（ユニットテスト）は PGroonga の N-gram 一致を JS で再現できないため**部分一致で近似**する。実 DB の検索挙動は `workers` プール（`infrastructure`/`integration`）の実 Supabase テストで担保する（2 文字「抹茶」・ひらがな「いちご」部分一致を検証）。
+
+例: `GET /v1/cakes?q=いちご&sort=-price&available=true`
 
 ### `GET /v1/orders` のページネーション仕様（Phase 10 Step 1.5）
 
@@ -1132,7 +1156,7 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
   - [x] Step 1（2026-05-20 完了）: **ページネーション（`/v1/cakes`）** — cursor-based（keyset）を採用。`?limit=20&after=<opaque-cursor>` 形式で、`Link` ヘッダ（RFC 5988, `rel="next"`）とレスポンスボディ `next_cursor` / `has_more` を両論併記。カーソルは `(name, id)` 複合キー（`name` 非一意のため境界またぎ耐性が要る）を base64url で包んだ不透明トークンにし、`TextEncoder`/`TextDecoder` で UTF-8 安全化（`btoa`/`atob` の Latin1 制約と Workers の `Buffer` 不在を回避）。改竄カーソルは Zod 検証で `400 VALIDATION_ERROR`。汎用コーデックを `app/shared/http/cursor.ts` に切り出し。詳細仕様は「[`GET /v1/cakes` のページネーション仕様](#get-v1cakes-のページネーション仕様phase-10-step-1)」参照
   - [x] Step 1.5（2026-05-20 完了）: **ページネーション（`/v1/orders`）** — orders は一覧エンドポイントが未実装だったため、RLS 保護付き `GET /v1/orders`（本人の注文のみ）を新設し、Step 1 の cursor codec（`app/shared/http/cursor.ts`）を再利用。カーソルは `(placed_at, id)` 複合キー（同時刻の注文がありうる非一意キーのため id を tiebreaker に複合化）で、新しい順（`placed_at DESC, id DESC`）に並べる。本人フィルタは **多重防御**（RLS の `orders_select_self` + repository の明示 `customer_id` 絞り込み）で、`service_role` 経路でも漏れない設計。`PostgREST` の `.or('placed_at.lt."X",and(placed_at.eq."X",id.lt."Y")')` でキーセット前進。詳細仕様は「[`GET /v1/orders` のページネーション仕様](#get-v1orders-のページネーション仕様phase-10-step-15)」参照
   - [x] Step 2（2026-05-21 完了）: **ソート・フィルタ（`/v1/cakes`）** — `?sort=-price,name` 書式（`-` 降順・カンマ区切り多段、許可: name/price/stock、既定 name 昇順）を汎用パーサ `app/shared/http/sort.ts` に切り出し（`cursor.ts` と同じ「shared/http の純粋ユーティリティ」方針）。フィルタは `available`（在庫有無）/ `min_price` / `max_price`（閉区間・`min>max` は `400`）/ `q`（name 部分一致 ILIKE）。**キーセットを多段ソートに一般化**（`(sortField1..N, id)` 複合キー、`id` を常に最終 tiebreaker にして全順序を保証）し、PostgREST `.or()` の OR 展開（`(c1 OP v1) OR (c1=v1 AND c2 OP v2) OR …`）でページ前進。**カーソルに正規化 sort 文字列を埋め込み**、次ページ取得時に sort が一致しなければ `400`（フィルタは不透明トークンに含めず、絞り込みの責務はクライアント側）。詳細仕様は「[`GET /v1/cakes` のソート・フィルタ仕様](#get-v1cakes-のソートフィルタ仕様phase-10-step-2)」参照
-  - [ ] Step 3: **検索** — Postgres `pg_trgm` / `tsvector` の使い分けを言語化しつつ実装
+  - [x] Step 3（2026-05-21 完了）: **検索（`/v1/cakes`）** — `q` を `ILIKE` 部分一致から **PGroonga 全文検索**に置換。日本語のケーキ名を 2 文字クエリ・ひらがな部分一致でも拾えるようにし、Step 1/2 のソート・キーセットページネーションは維持（あいまい検索＋キーセット、関連度ランキングはしない）。`pg_trgm`（3 文字トライグラム最小・苺/いちご別扱い）/ 標準 `tsvector`（日本語をトークン分割できない）の弱点を言語化したうえで PGroonga を採用。PostgREST は PGroonga 演算子 `&@` を直接呼べないため `place_order` と同じく RPC（`search_cakes` 関数 = `supabase/migrations/0005_cakes_pgroonga_search.sql`）に閉じ込め、検索 + フィルタ + 多段ソート + キーセットを動的 SQL（`%I` 識別子ホワイトリスト + `%L` 値で injection 防止）で処理。repository は `nameSearch` 有無で RPC / 従来 PostgREST を分岐。in-memory は部分一致で近似し、実 DB 挙動（2 文字「抹茶」・ひらがな「いちご」）は workers プールの実 Supabase テストで担保。詳細仕様は「[`GET /v1/cakes` のあいまい検索仕様](#get-v1cakes-のあいまい検索仕様phase-10-step-3)」参照
   - [ ] Step 4: **楽観ロック** — `ETag` + `If-Match` で更新競合検知。Cake の在庫更新（追加発注）に導入。`409 CONFLICT`
   - [ ] Step 5: **Rate Limit** — Cloudflare Workers Rate Limiting API（or Hono `rateLimiter`）。IP / userId 別。429 + `Retry-After`
   - [ ] Step 6: **Idempotency-Key** — `POST /v1/orders` で重複作成防止。`Idempotency-Key` ヘッダ + KV/DB キャッシュで同レスポンス返却（Stripe API スタイル）

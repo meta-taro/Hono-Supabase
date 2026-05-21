@@ -14,12 +14,15 @@ export const DEFAULT_CAKE_SORT: readonly CakeSortKey[] = [{ field: 'name', direc
 // 絞り込み条件。未指定（undefined）のキーは「条件なし」を意味する。
 //   available … true: 在庫あり(stock > 0) / false: 在庫切れ(stock = 0)
 //   minPrice / maxPrice … 価格の下限・上限（両端含む）
-//   nameContains … ケーキ名の部分一致（大文字小文字を無視）
+//   nameSearch … ケーキ名のあいまい検索（全文検索）。infrastructure 実装側で
+//                PGroonga（`search_cakes` RPC）に委譲する。in-memory 実装は
+//                部分一致で近似する（PGroonga の挙動は JS では再現できないため、
+//                厳密な日本語 N-gram 一致は workers/integration プールで担保する）。
 export interface CakeFilter {
   available?: boolean;
   minPrice?: number;
   maxPrice?: number;
-  nameContains?: string;
+  nameSearch?: string;
 }
 
 // カーソルベース（キーセット）ページネーションの位置情報。

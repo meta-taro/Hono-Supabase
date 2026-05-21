@@ -38,7 +38,7 @@ const PRICE_MAX = 1_000_000;
 //               許可フィールドの検証は controller の parseSortParam が担う（400 を投げる）。
 //   available … 在庫の有無で絞る（'true'=在庫あり / 'false'=在庫切れ）。
 //   min_price / max_price … 価格帯で絞る（両端含む）。
-//   q         … ケーキ名の部分一致検索。
+//   q         … ケーキ名のあいまい検索（PGroonga 全文検索。日本語 N-gram 一致）。
 //   クエリ文字列は常に string で届くため、数値・真偽は coerce / enum で変換する。
 // ---------------------------------------------------------------------------
 export const ListCakesQuerySchema = z.object({
@@ -81,7 +81,11 @@ export const ListCakesQuerySchema = z.object({
     .min(1, { message: 'q は 1 文字以上である必要があります' })
     .max(100, { message: 'q は 100 文字以内である必要があります' })
     .optional()
-    .openapi({ example: 'いちご', description: 'ケーキ名の部分一致検索（大文字小文字を無視）' }),
+    .openapi({
+      example: 'いちご',
+      description:
+        'ケーキ名のあいまい検索（PGroonga 全文検索。日本語の N-gram 一致で 2 文字や ひらがな部分一致も拾う）',
+    }),
 });
 
 export type ListCakesQuery = z.infer<typeof ListCakesQuerySchema>;

@@ -258,7 +258,7 @@ describe('GET /v1/cakes（認証不要）', () => {
       expect(body.cakes.map((c) => c.price).sort()).toEqual([480, 500]);
     });
 
-    it('q でケーキ名を部分一致検索する', async () => {
+    it('q でケーキ名を検索する（本番は PGroonga 全文検索 / テストは in-memory 近似）', async () => {
       const { app, cakesRepo } = buildTestApp();
       await seedVaried(cakesRepo);
 

@@ -61,9 +61,13 @@ const matchesFilter = (cake: Cake, filter: CakeFilter): boolean => {
   if (filter.available === false && cake.stock !== 0) return false;
   if (filter.minPrice !== undefined && cake.price.value < filter.minPrice) return false;
   if (filter.maxPrice !== undefined && cake.price.value > filter.maxPrice) return false;
+  // nameSearch は本番では PGroonga 全文検索（search_cakes RPC）。
+  // in-memory では部分一致で近似する（N-gram の厳密な日本語一致は再現できないが、
+  // UseCase の「検索語でフィルタされる」挙動の検証には十分。実 DB 挙動は
+  // infrastructure/integration プールで担保する）。
   if (
-    filter.nameContains !== undefined &&
-    !cake.name.toLowerCase().includes(filter.nameContains.toLowerCase())
+    filter.nameSearch !== undefined &&
+    !cake.name.toLowerCase().includes(filter.nameSearch.toLowerCase())
   ) {
     return false;
   }

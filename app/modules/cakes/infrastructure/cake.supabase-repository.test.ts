@@ -199,13 +199,42 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
       ]);
     });
 
-    it('nameContains で部分一致検索できる', async () => {
+    it('nameSearch で全文検索できる（PGroonga search_cakes RPC 経由）', async () => {
       await seedFilterFixtures();
       const page = await repo.list(
-        listParams({ limit: LARGE_LIMIT, filter: { nameContains: 'pricey' } }),
+        listParams({ limit: LARGE_LIMIT, filter: { nameSearch: 'pricey' } }),
       );
       const testCakes = page.cakes.filter((c) => c.name.startsWith(`${TEST_NAME_PREFIX}f-`));
       expect(testCakes.map((c) => c.name)).toEqual([`${TEST_NAME_PREFIX}f-pricey`]);
+    });
+
+    it('nameSearch は日本語の N-gram 部分一致を拾う（pg_trgm では難しい 2 文字も）', async () => {
+      await repo.save(
+        Cake.create({ name: `${TEST_NAME_PREFIX}いちごのショートケーキ`, price: 480, stock: 5 }),
+      );
+      await repo.save(
+        Cake.create({ name: `${TEST_NAME_PREFIX}抹茶ロールケーキ`, price: 520, stock: 5 }),
+      );
+      await repo.save(
+        Cake.create({ name: `${TEST_NAME_PREFIX}チョコレートケーキ`, price: 600, stock: 5 }),
+      );
+
+      // ひらがな部分一致: 「いちご」が名前の途中にあっても拾える
+      const ichigo = await repo.list(
+        listParams({ limit: LARGE_LIMIT, filter: { nameSearch: 'いちご' } }),
+      );
+      expect(ichigo.cakes.map((c) => c.name)).toContain(
+        `${TEST_NAME_PREFIX}いちごのショートケーキ`,
+      );
+
+      // 2 文字クエリ「抹茶」も N-gram 索引で拾える（pg_trgm のトライグラム最小 3 文字制約が無い）
+      const matcha = await repo.list(
+        listParams({ limit: LARGE_LIMIT, filter: { nameSearch: '抹茶' } }),
+      );
+      const matchaNames = matcha.cakes
+        .filter((c) => c.name.startsWith(TEST_NAME_PREFIX))
+        .map((c) => c.name);
+      expect(matchaNames).toEqual([`${TEST_NAME_PREFIX}抹茶ロールケーキ`]);
     });
   });
 

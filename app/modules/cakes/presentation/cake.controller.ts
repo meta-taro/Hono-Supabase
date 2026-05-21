@@ -41,7 +41,7 @@ const buildFilter = (query: ListCakesQuery): CakeFilter => {
   if (query.available !== undefined) filter.available = query.available === 'true';
   if (query.min_price !== undefined) filter.minPrice = query.min_price;
   if (query.max_price !== undefined) filter.maxPrice = query.max_price;
-  if (query.q !== undefined) filter.nameContains = query.q;
+  if (query.q !== undefined) filter.nameSearch = query.q;
   return filter;
 };
 

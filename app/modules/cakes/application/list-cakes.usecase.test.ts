@@ -175,9 +175,9 @@ describe('listCakesUseCase', () => {
       expect(result.cakes.map((c) => c.price.value).sort()).toEqual([480, 500]);
     });
 
-    it('nameContains は大文字小文字を無視した部分一致', async () => {
+    it('nameSearch は検索語でフィルタする（in-memory は部分一致で近似）', async () => {
       const listCakes = createListCakesUseCase(await buildRepo());
-      const result = await listCakes(params({ filter: { nameContains: 'いちご' } }));
+      const result = await listCakes(params({ filter: { nameSearch: 'いちご' } }));
       expect(result.cakes.map((c) => c.name).sort()).toEqual(['いちごショート', 'いちごタルト']);
     });
 
