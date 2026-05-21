@@ -549,6 +549,7 @@ console.log('order created');
 - [ ] Phase 10: **API のリッチ化** — ページネーション / ソート・フィルタ / 検索 / 楽観ロック / Rate Limit / Idempotency-Key / Webhook 配信
   - [x] Step 1 (2026-05-20): **カーソルページネーション（`/v1/cakes`）** — keyset 方式。`(name, id)` 複合カーソルを base64url の不透明トークン化（UTF-8 は `TextEncoder`/`TextDecoder` 経由で Workers 互換）。`limit`（1〜100, 既定 20）+ `after` クエリ、`next_cursor`/`has_more` ボディ + RFC 5988 `Link` ヘッダ。改竄カーソルは `400 VALIDATION_ERROR`。汎用コーデックは `app/shared/http/cursor.ts`。詳細は README「`GET /v1/cakes` のページネーション仕様」
   - [x] Step 1.5 (2026-05-20): **カーソルページネーション（`/v1/orders`）** — RLS 保護付き `GET /v1/orders`（本人の注文のみ）を新設し Step 1 の cursor codec を再利用。`(placed_at, id)` 複合カーソルで新しい順（`placed_at DESC, id DESC`）。本人フィルタは多重防御（RLS `orders_select_self` + repository の明示 `customer_id` 絞り込み）で service_role 経路でも漏れない。`authUserId → customerId` は controller の `resolveCustomerId` ポート経由（未解決は `404`）。詳細は README「`GET /v1/orders` のページネーション仕様」
+  - [x] Step 2 (2026-05-21): **ソート・フィルタ（`/v1/cakes`）** — `?sort=-price,name` 書式（`-` 降順・カンマ区切り多段、許可 name/price/stock、既定 name 昇順）を汎用パーサ `app/shared/http/sort.ts` に切り出し。フィルタは `available` / `min_price` / `max_price`（閉区間・`min>max` は `400`）/ `q`（name 部分一致 ILIKE）。キーセットを多段ソートに一般化（`(sortField1..N, id)` 複合キー、`id` を最終 tiebreaker）し PostgREST `.or()` の OR 展開でページ前進。**カーソルに正規化 sort 文字列を埋め込み**、次ページで sort 不一致なら `400`（フィルタは不透明トークンに含めない）。詳細は README「`GET /v1/cakes` のソート・フィルタ仕様」
 
 ---
 

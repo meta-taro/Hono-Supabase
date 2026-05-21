@@ -24,10 +24,13 @@ const listCakesRoute = createRoute({
   method: 'get',
   path: '/',
   tags: ['cakes'],
-  summary: 'ケーキ一覧を取得する（カーソルページネーション）',
+  summary: 'ケーキ一覧を取得する（カーソルページネーション + ソート/フィルタ）',
   description:
-    'ケーキを名前昇順で返す。認証不要。limit（既定 20・最大 100）で 1 ページ件数を指定し、' +
-    'レスポンスの next_cursor を after に渡して次ページを取得する（next_cursor が null なら最終ページ）。',
+    'ケーキ一覧を返す（認証不要）。limit（既定 20・最大 100）で 1 ページ件数を指定し、' +
+    'next_cursor を after に渡して次ページを取得する（null なら最終ページ）。' +
+    "sort で並び替え（'-' 降順・カンマ区切り、許可: name/price/stock、既定 name 昇順）、" +
+    'available / min_price / max_price / q で絞り込みができる。' +
+    'after を付けて取得する際は、カーソル発行時と同じ sort でなければ 400 になる。',
   request: {
     query: ListCakesQuerySchema,
   },

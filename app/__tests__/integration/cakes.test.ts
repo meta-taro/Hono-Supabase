@@ -211,6 +211,104 @@ describe('GET /v1/cakes（認証不要）', () => {
       expect(body.error.code).toBe('VALIDATION_ERROR');
     });
   });
+
+  describe('ソート・フィルタ（Phase 10 Step 2）', () => {
+    const seedVaried = async (repo: InMemoryCakeRepository): Promise<void> => {
+      await repo.save(Cake.create({ name: 'いちごタルト', price: 500, stock: 0 }));
+      await repo.save(Cake.create({ name: 'ガトーショコラ', price: 900, stock: 3 }));
+      await repo.save(Cake.create({ name: 'いちごショート', price: 480, stock: 10 }));
+    };
+
+    it('sort=-price で価格降順に並ぶ', async () => {
+      const { app, cakesRepo } = buildTestApp();
+      await seedVaried(cakesRepo);
+
+      const res = await app.request('/v1/cakes?sort=-price');
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ListCakesBody;
+      expect(body.cakes.map((c) => c.price)).toEqual([900, 500, 480]);
+    });
+
+    it('許可されていない sort フィールドは 400 + VALIDATION_ERROR', async () => {
+      const { app } = buildTestApp();
+      const res = await app.request('/v1/cakes?sort=created_at');
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('available=true は在庫ありだけ返す', async () => {
+      const { app, cakesRepo } = buildTestApp();
+      await seedVaried(cakesRepo);
+
+      const res = await app.request('/v1/cakes?available=true');
+
+      const body = (await res.json()) as ListCakesBody;
+      expect(body.cakes.map((c) => c.name).sort()).toEqual(['いちごショート', 'ガトーショコラ']);
+    });
+
+    it('min_price / max_price で価格帯を絞る', async () => {
+      const { app, cakesRepo } = buildTestApp();
+      await seedVaried(cakesRepo);
+
+      const res = await app.request('/v1/cakes?min_price=480&max_price=500');
+
+      const body = (await res.json()) as ListCakesBody;
+      expect(body.cakes.map((c) => c.price).sort()).toEqual([480, 500]);
+    });
+
+    it('q でケーキ名を部分一致検索する', async () => {
+      const { app, cakesRepo } = buildTestApp();
+      await seedVaried(cakesRepo);
+
+      const res = await app.request(`/v1/cakes?q=${encodeURIComponent('いちご')}`);
+
+      const body = (await res.json()) as ListCakesBody;
+      expect(body.cakes.map((c) => c.name).sort()).toEqual(['いちごショート', 'いちごタルト']);
+    });
+
+    it('min_price > max_price のとき 400 + VALIDATION_ERROR', async () => {
+      const { app } = buildTestApp();
+      const res = await app.request('/v1/cakes?min_price=900&max_price=100');
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('sort を変えてカーソルを使い回すと 400（カーソルとソート不一致）', async () => {
+      const { app, cakesRepo } = buildTestApp();
+      await seedVaried(cakesRepo);
+
+      // sort=-price で 1 ページ目を取り next_cursor を得る
+      const first = (await (
+        await app.request('/v1/cakes?limit=1&sort=-price')
+      ).json()) as ListCakesBody;
+      const after = encodeURIComponent(first.next_cursor ?? '');
+
+      // 同じカーソルを sort=name で使い回す → keyset の整合が崩れるため 400
+      const res = await app.request(`/v1/cakes?limit=1&sort=name&after=${after}`);
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('sort=-price のカーソルを同じ sort で渡せば次ページが取れる', async () => {
+      const { app, cakesRepo } = buildTestApp();
+      await seedVaried(cakesRepo);
+
+      const first = (await (
+        await app.request('/v1/cakes?limit=1&sort=-price')
+      ).json()) as ListCakesBody;
+      expect(first.cakes.map((c) => c.price)).toEqual([900]);
+      const after = encodeURIComponent(first.next_cursor ?? '');
+
+      const res = await app.request(`/v1/cakes?limit=1&sort=-price&after=${after}`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as ListCakesBody;
+      expect(body.cakes.map((c) => c.price)).toEqual([500]);
+    });
+  });
 });
 
 describe('POST /v1/cakes（admin 専用）', () => {

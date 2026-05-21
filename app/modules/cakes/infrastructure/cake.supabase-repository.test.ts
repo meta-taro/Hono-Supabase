@@ -3,6 +3,12 @@ import { env as workerEnv } from 'cloudflare:test';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { Cake } from '../domain/cake';
 import { ConflictError } from '@/shared/domain/errors';
+import {
+  DEFAULT_CAKE_SORT,
+  type CakeListCursor,
+  type CakeSortKey,
+  type ListCakesParams,
+} from '../domain/cake.repository';
 import { CakeSupabaseRepository } from './cake.supabase-repository';
 import { loadEnv, type RawEnv } from '@/shared/http/env';
 
@@ -17,16 +23,19 @@ import { loadEnv, type RawEnv } from '@/shared/http/env';
 const TEST_NAME_PREFIX = '__test_cake_';
 
 // service_role キーで RLS をバイパスして cakes に INSERT/DELETE する。
-// （本プロジェクトの cakes テーブルは現状 anon に SELECT しか許可していないため、
-//  テストで挿入・削除するには service_role が必要。Phase 6 で管理者ロール用ポリシーを追加する。）
 const env = loadEnv(workerEnv as unknown as RawEnv);
 const sbAdmin: SupabaseClient = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
-// テスト目印付きの行のみを削除する。
-// `like('name', '__test_cake_%')` は SQL の `where name like '__test_cake_%'` と同じ意味で、
-// このプレフィックスで始まる行のみを対象にする。
+// list() の定型パラメータ（sort / filter は必須）を埋める薄いヘルパ。
+const listParams = (over: Partial<ListCakesParams> = {}): ListCakesParams => ({
+  limit: 20,
+  sort: [...DEFAULT_CAKE_SORT],
+  filter: {},
+  ...over,
+});
+
 const cleanupTestRows = async (): Promise<void> => {
   const { error } = await sbAdmin.from('cakes').delete().like('name', `${TEST_NAME_PREFIX}%`);
   if (error) {
@@ -35,11 +44,7 @@ const cleanupTestRows = async (): Promise<void> => {
 };
 
 describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () => {
-  // 各テスト前に過去の残骸を消す。afterEach ではなく beforeEach にしているのは、
-  // テスト失敗時に Studio で DB の状態を覗いてデバッグできるようにするため。
   beforeEach(cleanupTestRows);
-  // 全テスト後にも念のため掃除しておく（次回 `pnpm test` 実行時に冪等性を保つのは
-  // beforeEach の役割だが、開発体験として「テスト後に DB を綺麗な状態で残す」方が望ましい）。
   afterAll(cleanupTestRows);
 
   const repo = new CakeSupabaseRepository(sbAdmin);
@@ -54,8 +59,6 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
 
       await repo.save(cake);
 
-      // DB に行が入ったかを直接確認する（Repository の list() ではなく素の SELECT）。
-      // ここで select() を使うのは、save() のテストが list() の正しさに依存しないようにするため。
       const { data, error } = await sbAdmin
         .from('cakes')
         .select('id, name, price, stock')
@@ -72,8 +75,6 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
     });
 
     it('同一 ID で 2 回保存すると ConflictError を投げる', async () => {
-      // 同じ Cake インスタンスを 2 回 save() すると、2 回目で primary key 衝突が起きる。
-      // CakeSupabaseRepository は Postgres の 23505（unique_violation）を ConflictError に変換する。
       const cake = Cake.create({
         name: `${TEST_NAME_PREFIX}重複テスト`,
         price: 500,
@@ -104,11 +105,10 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
       await repo.save(cakeA);
       await repo.save(cakeB);
 
-      const page = await repo.list({ limit: LARGE_LIMIT });
+      const page = await repo.list(listParams({ limit: LARGE_LIMIT }));
       const testCakes = page.cakes.filter((c) => c.name.startsWith(TEST_NAME_PREFIX));
 
       expect(testCakes).toHaveLength(2);
-      // CakeSupabaseRepository.list() は name 昇順で返すので a → b の順
       expect(testCakes.map((c) => c.name)).toEqual([
         `${TEST_NAME_PREFIX}a-モンブラン`,
         `${TEST_NAME_PREFIX}b-ティラミス`,
@@ -116,13 +116,11 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
     });
 
     it('name 昇順でソートされる', async () => {
-      // 投入順と期待ソート順が異なるよう、c → a → b の順で登録する。
-      // list() が DB 側の `order by name` を使っていれば、結果は a → b → c になる。
       await repo.save(Cake.create({ name: `${TEST_NAME_PREFIX}c`, price: 500, stock: 1 }));
       await repo.save(Cake.create({ name: `${TEST_NAME_PREFIX}a`, price: 500, stock: 1 }));
       await repo.save(Cake.create({ name: `${TEST_NAME_PREFIX}b`, price: 500, stock: 1 }));
 
-      const page = await repo.list({ limit: LARGE_LIMIT });
+      const page = await repo.list(listParams({ limit: LARGE_LIMIT }));
       const testNames = page.cakes.map((c) => c.name).filter((n) => n.startsWith(TEST_NAME_PREFIX));
 
       expect(testNames).toEqual([
@@ -133,9 +131,6 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
     });
 
     it('Repository が返す Cake は domain の不変条件を満たす（reconstruct() 経由）', async () => {
-      // DB 由来データであっても、Cake.reconstruct() を必ず通すことで
-      // VO（CakeId / Price）の検証が走る。これにより壊れたデータが domain 層に
-      // 流れ込むのを fail-fast で防ぐ。
       const cake = Cake.create({
         name: `${TEST_NAME_PREFIX}復元確認`,
         price: 1234,
@@ -143,20 +138,78 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
       });
       await repo.save(cake);
 
-      const page = await repo.list({ limit: LARGE_LIMIT });
+      const page = await repo.list(listParams({ limit: LARGE_LIMIT }));
       const reconstructed = page.cakes.find((c) => c.id.value === cake.id.value);
 
       expect(reconstructed).toBeDefined();
-      // VO 経由で値が取り出せる = 検証を通過している証拠
       expect(reconstructed?.id.value).toBe(cake.id.value);
       expect(reconstructed?.price.value).toBe(1234);
       expect(reconstructed?.stock).toBe(7);
     });
   });
 
+  describe('list() のソート（Phase 10 Step 2）', () => {
+    const LARGE_LIMIT = 1000;
+
+    it('price 降順でソートできる', async () => {
+      await repo.save(Cake.create({ name: `${TEST_NAME_PREFIX}s-low`, price: 300, stock: 1 }));
+      await repo.save(Cake.create({ name: `${TEST_NAME_PREFIX}s-high`, price: 900, stock: 1 }));
+      await repo.save(Cake.create({ name: `${TEST_NAME_PREFIX}s-mid`, price: 600, stock: 1 }));
+
+      const page = await repo.list(
+        listParams({ limit: LARGE_LIMIT, sort: [{ field: 'price', direction: 'desc' }] }),
+      );
+      const testPrices = page.cakes
+        .filter((c) => c.name.startsWith(`${TEST_NAME_PREFIX}s-`))
+        .map((c) => c.price.value);
+
+      // 全データ横断だが、テスト行だけ抜き出した相対順序は降順になっているはず
+      expect(testPrices).toEqual([900, 600, 300]);
+    });
+  });
+
+  describe('list() のフィルタ（Phase 10 Step 2）', () => {
+    const LARGE_LIMIT = 1000;
+
+    const seedFilterFixtures = async (): Promise<void> => {
+      await repo.save(Cake.create({ name: `${TEST_NAME_PREFIX}f-soldout`, price: 500, stock: 0 }));
+      await repo.save(Cake.create({ name: `${TEST_NAME_PREFIX}f-cheap`, price: 300, stock: 5 }));
+      await repo.save(Cake.create({ name: `${TEST_NAME_PREFIX}f-pricey`, price: 1200, stock: 2 }));
+    };
+
+    it('available=true は在庫ありだけ返す', async () => {
+      await seedFilterFixtures();
+      const page = await repo.list(listParams({ limit: LARGE_LIMIT, filter: { available: true } }));
+      const names = page.cakes
+        .filter((c) => c.name.startsWith(`${TEST_NAME_PREFIX}f-`))
+        .map((c) => c.name);
+      expect(names.sort()).toEqual([`${TEST_NAME_PREFIX}f-cheap`, `${TEST_NAME_PREFIX}f-pricey`]);
+    });
+
+    it('minPrice / maxPrice で価格帯を絞る（在庫の有無は無関係）', async () => {
+      await seedFilterFixtures();
+      const page = await repo.list(
+        listParams({ limit: LARGE_LIMIT, filter: { minPrice: 300, maxPrice: 600 } }),
+      );
+      const testCakes = page.cakes.filter((c) => c.name.startsWith(`${TEST_NAME_PREFIX}f-`));
+      // f-cheap(300) と f-soldout(500) が範囲内（f-pricey=1200 は範囲外）
+      expect(testCakes.map((c) => c.name).sort()).toEqual([
+        `${TEST_NAME_PREFIX}f-cheap`,
+        `${TEST_NAME_PREFIX}f-soldout`,
+      ]);
+    });
+
+    it('nameContains で部分一致検索できる', async () => {
+      await seedFilterFixtures();
+      const page = await repo.list(
+        listParams({ limit: LARGE_LIMIT, filter: { nameContains: 'pricey' } }),
+      );
+      const testCakes = page.cakes.filter((c) => c.name.startsWith(`${TEST_NAME_PREFIX}f-`));
+      expect(testCakes.map((c) => c.name)).toEqual([`${TEST_NAME_PREFIX}f-pricey`]);
+    });
+  });
+
   describe('list() のページネーション（キーセット法）', () => {
-    // 名前を辞書順で固定し、prefix で他データから隔離しつつ複数ページを検証する。
-    // 名前の数字を 2 桁ゼロ詰めにして name 昇順が投入順と一致するようにする。
     const seedSequentialCakes = async (count: number): Promise<string[]> => {
       const ids: string[] = [];
       for (let i = 0; i < count; i += 1) {
@@ -174,9 +227,7 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
     it('limit 件ちょうど返し、続きがあれば nextCursor を発行する', async () => {
       await seedSequentialCakes(3);
 
-      const page = await repo.list({ limit: 2 });
-      // 他データが混じり得るので「テスト行が想定順で含まれるか」をスコープして確認する。
-      // ただし limit=2 は全データ横断なので、ここでは nextCursor が出ることだけを保証する。
+      const page = await repo.list(listParams({ limit: 2 }));
       expect(page.cakes).toHaveLength(2);
       expect(page.nextCursor).not.toBeNull();
     });
@@ -186,10 +237,9 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
       const wanted = new Set(ids);
 
       const collected: string[] = [];
-      let after = undefined as { name: string; id: string } | undefined;
-      // 2 件ずつ。seed/他データ込みなので十分な回数ループして全ページを舐める。
+      let after: CakeListCursor | undefined = undefined;
       for (let guard = 0; guard < 1000; guard += 1) {
-        const page = await repo.list({ limit: 2, after });
+        const page = await repo.list(listParams({ limit: 2, after }));
         for (const cake of page.cakes) {
           if (wanted.has(cake.id.value)) collected.push(cake.id.value);
         }
@@ -197,13 +247,11 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
         after = page.nextCursor;
       }
 
-      // 5 件すべてが重複なく 1 回ずつ取得できている（同名 prefix の境界またぎ耐性）
       expect(new Set(collected).size).toBe(5);
       expect(collected).toHaveLength(5);
     });
 
     it('同名ケーキが複数あっても (name,id) 複合キーで取りこぼさない', async () => {
-      // name を完全に同一にして 4 件投入。name だけのカーソルだと境界で重複/欠落する。
       const sameName = `${TEST_NAME_PREFIX}same`;
       const ids: string[] = [];
       for (let i = 0; i < 4; i += 1) {
@@ -214,9 +262,9 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
       const wanted = new Set(ids);
 
       const collected: string[] = [];
-      let after = undefined as { name: string; id: string } | undefined;
+      let after: CakeListCursor | undefined = undefined;
       for (let guard = 0; guard < 1000; guard += 1) {
-        const page = await repo.list({ limit: 1, after });
+        const page = await repo.list(listParams({ limit: 1, after }));
         for (const cake of page.cakes) {
           if (wanted.has(cake.id.value)) collected.push(cake.id.value);
         }
@@ -226,6 +274,36 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
 
       expect(new Set(collected).size).toBe(4);
       expect(collected).toHaveLength(4);
+    });
+
+    it('price 降順のカーソルでも全ページを重複なく辿れる（非デフォルトソート）', async () => {
+      // price をばらけさせて投入し、price 降順 + id tiebreaker のキーセットを検証する。
+      const sort: CakeSortKey[] = [{ field: 'price', direction: 'desc' }];
+      const ids: string[] = [];
+      for (let i = 0; i < 5; i += 1) {
+        const cake = Cake.create({
+          name: `${TEST_NAME_PREFIX}ks${String(i).padStart(2, '0')}`,
+          price: 1000 - i * 10,
+          stock: 1,
+        });
+        await repo.save(cake);
+        ids.push(cake.id.value);
+      }
+      const wanted = new Set(ids);
+
+      const collected: string[] = [];
+      let after: CakeListCursor | undefined = undefined;
+      for (let guard = 0; guard < 1000; guard += 1) {
+        const page = await repo.list(listParams({ limit: 2, sort, after }));
+        for (const cake of page.cakes) {
+          if (wanted.has(cake.id.value)) collected.push(cake.id.value);
+        }
+        if (!page.nextCursor) break;
+        after = page.nextCursor;
+      }
+
+      expect(new Set(collected).size).toBe(5);
+      expect(collected).toHaveLength(5);
     });
   });
 });

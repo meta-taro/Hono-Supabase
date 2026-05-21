@@ -830,6 +830,32 @@ interface CakeRow {
 - 改竄・壊れた `after` は Zod 検証で弾いて `400 VALIDATION_ERROR` に倒す（500 にしない＝クライアント起因の入力だから）。
 - コーデックは `app/shared/http/cursor.ts` に汎用化（`encodeCursor`/`decodeCursor`）。`/v1/orders` 一覧（Step 1.5）でも再利用する。
 
+### `GET /v1/cakes` のソート・フィルタ仕様（Phase 10 Step 2）
+
+Step 1 のカーソルページネーションに、**ソート**（並び替え）と**フィルタ**（絞り込み）を追加した。
+
+**追加クエリパラメータ**:
+
+| パラメータ  | 型      | 既定   | 制約 / 例        | 説明                                                                           |
+| ----------- | ------- | ------ | ---------------- | ------------------------------------------------------------------------------ |
+| `sort`      | string  | `name` | `-price,name`    | 並び順。`-` 接頭辞で降順、カンマ区切りで複数指定。許可: `name`/`price`/`stock` |
+| `available` | boolean | —      | `true` / `false` | 在庫の有無で絞る（`true`=在庫あり`stock>0` / `false`=在庫切れ`stock=0`）       |
+| `min_price` | integer | —      | 1〜1,000,000     | 価格の下限（この値を含む）                                                     |
+| `max_price` | integer | —      | 1〜1,000,000     | 価格の上限（この値を含む）                                                     |
+| `q`         | string  | —      | 1〜100 文字      | ケーキ名の部分一致検索（大文字小文字を無視。`ILIKE`）                          |
+
+例: `GET /v1/cakes?sort=-price,name&available=true&min_price=500&q=いちご`
+
+**設計判断のメモ**:
+
+- **ソート構文 `-price,name`** は Stripe / GitHub などの主流に倣う。`-` 接頭辞で降順、無印（または `+`）で昇順、カンマ区切りで複数フィールド。許可外フィールド・重複フィールドは `400 VALIDATION_ERROR`。パーサは `app/shared/http/sort.ts`（`parseSortParam` / `canonicalizeSort`）に汎用化。
+- **末尾に必ず `id` 昇順を tiebreaker として付与**する。`price` や `stock` は一意でないため、これが無いとキーセットの全順序が確定せずページ境界で重複・取りこぼしが起きる。
+- **カーソルに「発行時の sort」を埋め込む**。並び順が変わるとキーセットの「続き」の意味も変わるため、`after` を渡すときの `sort` がカーソル発行時と違えば `400`（「sort を変えるなら先頭ページから取り直せ」）。これでページ途中の並び替えによる不整合を防ぐ。
+- **フィルタはカーソルに埋め込まない**（主流 API と同じ）。フィルタはソート済みストリームを絞るだけでキーセットの整合は壊れない。ただしページ途中でフィルタを変えると見え方が変わる点はクライアント責務として割り切る。
+- `min_price > max_price` は controller で `400 VALIDATION_ERROR`。
+- `q` の `%` / `_` は `ILIKE` のワイルドカードとして作用する（= 利用者が任意の前方/後方一致を指定できる簡易仕様）。値は `supabase-js` が URL エンコードするためフィルタ構文自体は壊れない。
+- 多カラム + 方向混在のキーセットは `(c1 OP1 v1) OR (c1=v1 AND c2 OP2 v2) OR …` を `infrastructure` 層で `or(...)` 展開する（`OP` は昇順 `gt` / 降順 `lt`）。in-memory 実装も同じ全順序を再現してユニットで検証。
+
 ### `GET /v1/orders` のページネーション仕様（Phase 10 Step 1.5）
 
 注文一覧は **認証ユーザー本人の注文のみ**を、**カーソルベース（キーセット）ページネーション**で新しい順に返す。Step 1（cakes）のコーデックをそのまま再利用し、カーソルのキーだけ `(placed_at, id)` に差し替えた構成。
@@ -1105,7 +1131,7 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
   - 動機: 現状の cakes/customers/orders は MVP 規模。実運用なら必須レベルの「ページネーション / ソート / 検索 / 楽観ロック / Rate Limit / Idempotency-Key / Webhook」を**設計判断の練習場**として一周する。それぞれ単独機能というより「設計上のトレードオフを言語化する素材」として扱う
   - [x] Step 1（2026-05-20 完了）: **ページネーション（`/v1/cakes`）** — cursor-based（keyset）を採用。`?limit=20&after=<opaque-cursor>` 形式で、`Link` ヘッダ（RFC 5988, `rel="next"`）とレスポンスボディ `next_cursor` / `has_more` を両論併記。カーソルは `(name, id)` 複合キー（`name` 非一意のため境界またぎ耐性が要る）を base64url で包んだ不透明トークンにし、`TextEncoder`/`TextDecoder` で UTF-8 安全化（`btoa`/`atob` の Latin1 制約と Workers の `Buffer` 不在を回避）。改竄カーソルは Zod 検証で `400 VALIDATION_ERROR`。汎用コーデックを `app/shared/http/cursor.ts` に切り出し。詳細仕様は「[`GET /v1/cakes` のページネーション仕様](#get-v1cakes-のページネーション仕様phase-10-step-1)」参照
   - [x] Step 1.5（2026-05-20 完了）: **ページネーション（`/v1/orders`）** — orders は一覧エンドポイントが未実装だったため、RLS 保護付き `GET /v1/orders`（本人の注文のみ）を新設し、Step 1 の cursor codec（`app/shared/http/cursor.ts`）を再利用。カーソルは `(placed_at, id)` 複合キー（同時刻の注文がありうる非一意キーのため id を tiebreaker に複合化）で、新しい順（`placed_at DESC, id DESC`）に並べる。本人フィルタは **多重防御**（RLS の `orders_select_self` + repository の明示 `customer_id` 絞り込み）で、`service_role` 経路でも漏れない設計。`PostgREST` の `.or('placed_at.lt."X",and(placed_at.eq."X",id.lt."Y")')` でキーセット前進。詳細仕様は「[`GET /v1/orders` のページネーション仕様](#get-v1orders-のページネーション仕様phase-10-step-15)」参照
-  - [ ] Step 2: **ソート・フィルタ** — `?sort=-created_at,name` 書式 + Zod 検証。`?available=true` の単純フィルタ
+  - [x] Step 2（2026-05-21 完了）: **ソート・フィルタ（`/v1/cakes`）** — `?sort=-price,name` 書式（`-` 降順・カンマ区切り多段、許可: name/price/stock、既定 name 昇順）を汎用パーサ `app/shared/http/sort.ts` に切り出し（`cursor.ts` と同じ「shared/http の純粋ユーティリティ」方針）。フィルタは `available`（在庫有無）/ `min_price` / `max_price`（閉区間・`min>max` は `400`）/ `q`（name 部分一致 ILIKE）。**キーセットを多段ソートに一般化**（`(sortField1..N, id)` 複合キー、`id` を常に最終 tiebreaker にして全順序を保証）し、PostgREST `.or()` の OR 展開（`(c1 OP v1) OR (c1=v1 AND c2 OP v2) OR …`）でページ前進。**カーソルに正規化 sort 文字列を埋め込み**、次ページ取得時に sort が一致しなければ `400`（フィルタは不透明トークンに含めず、絞り込みの責務はクライアント側）。詳細仕様は「[`GET /v1/cakes` のソート・フィルタ仕様](#get-v1cakes-のソートフィルタ仕様phase-10-step-2)」参照
   - [ ] Step 3: **検索** — Postgres `pg_trgm` / `tsvector` の使い分けを言語化しつつ実装
   - [ ] Step 4: **楽観ロック** — `ETag` + `If-Match` で更新競合検知。Cake の在庫更新（追加発注）に導入。`409 CONFLICT`
   - [ ] Step 5: **Rate Limit** — Cloudflare Workers Rate Limiting API（or Hono `rateLimiter`）。IP / userId 別。429 + `Retry-After`

@@ -27,11 +27,19 @@ export type CakeResponse = z.infer<typeof CakeResponseSchema>;
 export const DEFAULT_LIMIT = 20;
 export const MAX_LIMIT = 100;
 
+// 価格フィルタの上限（CreateCakeRequestSchema の price 上限と揃える）。
+const PRICE_MAX = 1_000_000;
+
 // ---------------------------------------------------------------------------
 // Request: GET /v1/cakes のクエリパラメータ
-//   limit … 1 ページ件数（1〜MAX_LIMIT、未指定なら DEFAULT_LIMIT）。
-//           クエリ文字列は常に string で届くため coerce で数値化する。
-//   after … 前ページのレスポンスが返した next_cursor（不透明トークン）をそのまま渡す。
+//   limit     … 1 ページ件数（1〜MAX_LIMIT、未指定なら DEFAULT_LIMIT）。
+//   after     … 前ページのレスポンスが返した next_cursor（不透明トークン）。
+//   sort      … 並び順。'-' 接頭辞で降順、カンマ区切りで複数指定（例 '-price,name'）。
+//               許可フィールドの検証は controller の parseSortParam が担う（400 を投げる）。
+//   available … 在庫の有無で絞る（'true'=在庫あり / 'false'=在庫切れ）。
+//   min_price / max_price … 価格帯で絞る（両端含む）。
+//   q         … ケーキ名の部分一致検索。
+//   クエリ文字列は常に string で届くため、数値・真偽は coerce / enum で変換する。
 // ---------------------------------------------------------------------------
 export const ListCakesQuerySchema = z.object({
   limit: z.coerce
@@ -45,14 +53,51 @@ export const ListCakesQuerySchema = z.object({
     .string()
     .optional()
     .openapi({ description: '前ページの next_cursor。先頭ページでは省略する。' }),
+  sort: z.string().optional().openapi({
+    example: '-price,name',
+    description:
+      "並び順。'-' で降順、カンマ区切りで複数指定。許可: name, price, stock（既定: name 昇順）",
+  }),
+  available: z.enum(['true', 'false']).optional().openapi({
+    example: 'true',
+    description: '在庫の有無で絞る（true=在庫あり / false=在庫切れ）',
+  }),
+  min_price: z.coerce
+    .number()
+    .int({ message: 'min_price は整数である必要があります' })
+    .min(1, { message: 'min_price は 1 以上である必要があります' })
+    .max(PRICE_MAX, { message: `min_price は ${String(PRICE_MAX)} 以下である必要があります` })
+    .optional()
+    .openapi({ example: 300, description: '価格の下限（この値を含む）' }),
+  max_price: z.coerce
+    .number()
+    .int({ message: 'max_price は整数である必要があります' })
+    .min(1, { message: 'max_price は 1 以上である必要があります' })
+    .max(PRICE_MAX, { message: `max_price は ${String(PRICE_MAX)} 以下である必要があります` })
+    .optional()
+    .openapi({ example: 1000, description: '価格の上限（この値を含む）' }),
+  q: z
+    .string()
+    .min(1, { message: 'q は 1 文字以上である必要があります' })
+    .max(100, { message: 'q は 100 文字以内である必要があります' })
+    .optional()
+    .openapi({ example: 'いちご', description: 'ケーキ名の部分一致検索（大文字小文字を無視）' }),
 });
 
 export type ListCakesQuery = z.infer<typeof ListCakesQuerySchema>;
 
 // カーソルの中身（不透明トークンをデコードした後の形）。
 // controller が decodeCursor() で検証に使う。改竄されていれば 400 に倒す。
+//   sort   … カーソル発行時の並び順（正規形文字列）。次ページ要求の sort と一致必須。
+//   values … sort 各フィールドの最終行の値。フィールドにより string / number。
+//   id     … tiebreaker。
 export const CakeCursorSchema = z.object({
-  name: z.string(),
+  sort: z.string(),
+  values: z.object({
+    name: z.string().optional(),
+    price: z.number().int().optional(),
+    stock: z.number().int().optional(),
+  }),
   id: z.string().uuid(),
 });
 

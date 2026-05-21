@@ -1,17 +1,45 @@
+import type { SortKey } from '@/shared/http/sort';
 import type { Cake } from './cake';
 
+// ソート可能なフィールド（DB 列に対応）。presentation 層でも許可リストとして使う。
+export const CAKE_SORT_FIELDS = ['name', 'price', 'stock'] as const;
+export type CakeSortField = (typeof CAKE_SORT_FIELDS)[number];
+export type CakeSortKey = SortKey<CakeSortField>;
+
+// API の既定の並び順（クライアントが ?sort を省略したとき）。
+// 「既定値」は presentation の決定だが、repository 実装のフォールバックでも
+// 同じ並びを使うため domain 側に 1 か所だけ定義して両者で共有する。
+export const DEFAULT_CAKE_SORT: readonly CakeSortKey[] = [{ field: 'name', direction: 'asc' }];
+
+// 絞り込み条件。未指定（undefined）のキーは「条件なし」を意味する。
+//   available … true: 在庫あり(stock > 0) / false: 在庫切れ(stock = 0)
+//   minPrice / maxPrice … 価格の下限・上限（両端含む）
+//   nameContains … ケーキ名の部分一致（大文字小文字を無視）
+export interface CakeFilter {
+  available?: boolean;
+  minPrice?: number;
+  maxPrice?: number;
+  nameContains?: string;
+}
+
 // カーソルベース（キーセット）ページネーションの位置情報。
-// name は一意でないため、安定した順序を保つには (name, id) の複合キーが要る。
-// id まで含めることで「同名ケーキが境界をまたぐ」場合でも行の取りこぼし/重複が起きない。
+//   sort   … このカーソルを発行したときの並び順。次ページ要求の sort と一致しない
+//            限りキーセットの整合が崩れるため、presentation 層で突き合わせ検証する。
+//   values … sort 各フィールドにおける「最終行の値」。キーセット条件の比較対象。
+//   id     … 全フィールド同値時の最終 tiebreaker（id は一意なので全順序が確定する）。
 export interface CakeListCursor {
-  name: string;
+  sort: CakeSortKey[];
+  values: Partial<Record<CakeSortField, string | number>>;
   id: string;
 }
 
-// 一覧取得のパラメータ。after を起点に limit 件を name 昇順で返す。
-// after を省略すると先頭ページ。
+// 一覧取得のパラメータ。
+//   sort / filter は presentation が必ず組み立てて渡す（既定値の決定は presentation の責務）。
+//   after を起点に limit 件を sort 順で返す。after 省略時は先頭ページ。
 export interface ListCakesParams {
   limit: number;
+  sort: CakeSortKey[];
+  filter: CakeFilter;
   after?: CakeListCursor;
 }
 
