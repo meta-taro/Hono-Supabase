@@ -693,6 +693,8 @@ CI（`.github/workflows/checks.yml`）が回しているのと同じセットを
 
 PR と各環境への deploy ワークフローが必ず `checks.yml`（`workflow_call`）を呼び、Lint & Typecheck / Bundle check / Test を再実行する。`main` のブランチ保護でこれら 3 ジョブを必須 status checks に設定済なので、**CI が緑にならないと本番に出ない**。
 
+> **JS action のランタイムについて**: 各ワークフローの top-level env に `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true` を置き、`checkout` / `setup-node` / `pnpm` / `supabase` / `wrangler-action` などの JS action を **Node 24 ランタイムで起動**している（GitHub が 2026/6/2 に強制切替する前の公式 opt-in）。これは **action 本体の実行環境の話**で、プロジェクト自身が使う Node（`setup-node` の `node-version: 22`、ローカル開発と揃える LTS）とは別物。強制切替後はこの env は no-op になるので削除してよい。
+
 ### 緊急脱出（フックを一時的にバイパス）
 
 仕組み上 `git commit --no-verify` でスキップは可能ですが、**通常運用では絶対に使わない**。`--no-verify` した瞬間に CI が赤くなって結局直すことになるだけ。
