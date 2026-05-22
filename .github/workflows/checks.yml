@@ -10,6 +10,15 @@ name: Checks
 on:
   workflow_call:
 
+# JS action のランタイムを Node 24 で起動する（2026/6/2 に強制切替されるので先取り）。
+# checkout / setup-node / pnpm / supabase / wrangler-action のうち Node 24 対応の
+# メジャーが未リリースのものもまとめて Node 24 へ寄せる公式 opt-in。
+# 強制切替後は no-op になるので、その時点で削除してよい。
+# 注: これは action 本体のランタイムの話。プロジェクトの実行 Node は
+#     setup-node の node-version: 22（ローカル開発と揃える LTS）で別管理。
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   lint-and-types:
     name: Lint & Typecheck
