@@ -1,5 +1,6 @@
 import type { SortKey } from '@/shared/http/sort';
 import type { Cake } from './cake';
+import type { CakeId } from './cake-id.vo';
 
 // ソート可能なフィールド（DB 列に対応）。presentation 層でも許可リストとして使う。
 export const CAKE_SORT_FIELDS = ['name', 'price', 'stock'] as const;
@@ -58,4 +59,15 @@ export interface CakePage {
 export interface CakeRepository {
   list(params: ListCakesParams): Promise<CakePage>;
   save(cake: Cake): Promise<void>;
+
+  // 単一取得。存在しなければ null（例外にしないのは「無い」も正常な問い合わせ結果だから）。
+  findById(id: CakeId): Promise<Cake | null>;
+
+  // 楽観ロック付きの在庫更新。
+  //   expectedVersion と DB 上の現在 version が一致する行だけを更新し、
+  //   採番（version+1）後の Cake を返す。
+  //   一致する行が無い場合（版が進んでいた / 行が消えた）は null を返す
+  //   ＝ 呼び出し側（UseCase）が 404 / 412 に振り分ける。
+  //   「在庫値の検証」は domain（Cake.changeStock）で済ませた前提でここに渡す。
+  updateStock(id: CakeId, newStock: number, expectedVersion: number): Promise<Cake | null>;
 }

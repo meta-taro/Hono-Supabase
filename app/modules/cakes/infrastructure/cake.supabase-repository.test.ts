@@ -335,4 +335,67 @@ describe('CakeSupabaseRepository（実 Supabase ローカルに接続）', () =>
       expect(collected).toHaveLength(5);
     });
   });
+
+  describe('findById()（Phase 10 Step 4）', () => {
+    it('保存したケーキを id で取得でき、version は初期値 1', async () => {
+      const cake = Cake.create({ name: `${TEST_NAME_PREFIX}find`, price: 500, stock: 3 });
+      await repo.save(cake);
+
+      const found = await repo.findById(cake.id);
+
+      expect(found).not.toBeNull();
+      expect(found?.id.value).toBe(cake.id.value);
+      expect(found?.stock).toBe(3);
+      expect(found?.version).toBe(1);
+    });
+
+    it('存在しない id は null を返す', async () => {
+      const ghost = Cake.create({ name: `${TEST_NAME_PREFIX}ghost`, price: 500, stock: 1 });
+      // 保存せずに探す
+      const found = await repo.findById(ghost.id);
+      expect(found).toBeNull();
+    });
+  });
+
+  describe('updateStock()（楽観ロック・Phase 10 Step 4）', () => {
+    it('version 一致なら在庫を更新し、version はトリガで +1 される', async () => {
+      const cake = Cake.create({ name: `${TEST_NAME_PREFIX}upd`, price: 500, stock: 10 });
+      await repo.save(cake);
+
+      const updated = await repo.updateStock(cake.id, 99, 1);
+
+      expect(updated).not.toBeNull();
+      expect(updated?.stock).toBe(99);
+      expect(updated?.version).toBe(2);
+
+      // 永続化を読み戻して確認
+      const reread = await repo.findById(cake.id);
+      expect(reread?.stock).toBe(99);
+      expect(reread?.version).toBe(2);
+    });
+
+    it('version 不一致なら null を返し、在庫は変わらない（lost update 防止）', async () => {
+      const cake = Cake.create({ name: `${TEST_NAME_PREFIX}conflict`, price: 500, stock: 10 });
+      await repo.save(cake);
+
+      // 1 回目の更新で version は 2 になる
+      const first = await repo.updateStock(cake.id, 20, 1);
+      expect(first?.version).toBe(2);
+
+      // 古い version=1 で再更新を試みる → 競合で null
+      const stale = await repo.updateStock(cake.id, 999, 1);
+      expect(stale).toBeNull();
+
+      // 在庫は 1 回目の値のまま（999 で上書きされていない）
+      const reread = await repo.findById(cake.id);
+      expect(reread?.stock).toBe(20);
+      expect(reread?.version).toBe(2);
+    });
+
+    it('存在しない id への更新は null を返す', async () => {
+      const ghost = Cake.create({ name: `${TEST_NAME_PREFIX}noupd`, price: 500, stock: 1 });
+      const result = await repo.updateStock(ghost.id, 5, 1);
+      expect(result).toBeNull();
+    });
+  });
 });

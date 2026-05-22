@@ -21,7 +21,7 @@ const params = (over: Partial<ListCakesParams>): ListCakesParams => ({
 
 // 固定 id でケーキを復元する（多カラムソート・id tiebreaker の決定的検証用）。
 const seed = (id: string, name: string, price: number, stock: number): Cake =>
-  Cake.reconstruct({ id, name, price, stock });
+  Cake.reconstruct({ id, name, price, stock, version: 1 });
 
 const oid = (suffix: string): string => `${suffix}-0000-4000-8000-000000000000`;
 

@@ -7,6 +7,8 @@ import { createAdminClient } from '@/shared/infrastructure/supabase';
 import { CakeSupabaseRepository } from '@/modules/cakes/infrastructure/cake.supabase-repository';
 import { createListCakesUseCase } from '@/modules/cakes/application/list-cakes.usecase';
 import { createCreateCakeUseCase } from '@/modules/cakes/application/create-cake.usecase';
+import { createGetCakeUseCase } from '@/modules/cakes/application/get-cake.usecase';
+import { createUpdateCakeStockUseCase } from '@/modules/cakes/application/update-cake-stock.usecase';
 import { createCakeController } from '@/modules/cakes/presentation/cake.controller';
 import { CustomerSupabaseRepository } from '@/modules/customers/infrastructure/customer.supabase-repository';
 import { SupabaseCustomerAuthAdapter } from '@/modules/customers/infrastructure/supabase-customer-auth.adapter';
@@ -46,6 +48,8 @@ export const buildRequestModules = (sb: SupabaseClient, deps: ModuleDeps): Reque
   const cakes = createCakeController({
     listCakes: createListCakesUseCase(cakeRepo),
     createCake: createCreateCakeUseCase(cakeRepo, deps.logger),
+    getCake: createGetCakeUseCase(cakeRepo),
+    updateCakeStock: createUpdateCakeStockUseCase(cakeRepo, deps.logger),
   });
 
   // customers

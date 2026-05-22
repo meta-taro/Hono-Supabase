@@ -6,6 +6,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { createApp } from '@/app';
 import { createListCakesUseCase } from '@/modules/cakes/application/list-cakes.usecase';
 import { createCreateCakeUseCase } from '@/modules/cakes/application/create-cake.usecase';
+import { createGetCakeUseCase } from '@/modules/cakes/application/get-cake.usecase';
+import { createUpdateCakeStockUseCase } from '@/modules/cakes/application/update-cake-stock.usecase';
 import { createCakeController } from '@/modules/cakes/presentation/cake.controller';
 import { InMemoryCakeRepository } from '@/modules/cakes/application/__test-helpers__/in-memory-cake.repository';
 import { createListCustomersUseCase } from '@/modules/customers/application/list-customers.usecase';
@@ -67,6 +69,8 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
   const cakesController = createCakeController({
     listCakes: createListCakesUseCase(cakesRepo),
     createCake: createCreateCakeUseCase(cakesRepo, silentLogger),
+    getCake: createGetCakeUseCase(cakesRepo),
+    updateCakeStock: createUpdateCakeStockUseCase(cakesRepo, silentLogger),
   });
 
   const ordersRepo = new InMemoryOrderRepository();

@@ -1,6 +1,8 @@
 import type { Cake } from '../domain/cake';
 import type { ListCakesUseCase } from '../application/list-cakes.usecase';
 import type { CreateCakeUseCase, CreateCakeInput } from '../application/create-cake.usecase';
+import type { GetCakeUseCase } from '../application/get-cake.usecase';
+import type { UpdateCakeStockUseCase } from '../application/update-cake-stock.usecase';
 import {
   CAKE_SORT_FIELDS,
   DEFAULT_CAKE_SORT,
@@ -9,13 +11,23 @@ import {
 } from '../domain/cake.repository';
 import { decodeCursor, encodeCursor } from '@/shared/http/cursor';
 import { canonicalizeSort, parseSortParam } from '@/shared/http/sort';
-import { ValidationError } from '@/shared/domain/errors';
+import { formatETag, parseIfMatch } from '@/shared/http/etag';
+import { PreconditionRequiredError, ValidationError } from '@/shared/domain/errors';
 import {
   CakeCursorSchema,
   type CakeResponse,
   type ListCakesQuery,
   type ListCakesResponse,
+  type UpdateCakeStockRequest,
 } from './cake.dto';
+
+// ETag を伴う単一 Cake のレスポンス。
+//   body は外向きの JSON、etag は version を包んだ Weak ETag 文字列。
+//   ヘッダへの載せ替えは routes 層が行う（controller は HTTP に触れない）。
+export interface CakeResponseWithETag {
+  body: CakeResponse;
+  etag: string;
+}
 
 // Controller の責務:
 //   - UseCase を呼び出す（業務手順は知らない）
@@ -48,6 +60,8 @@ const buildFilter = (query: ListCakesQuery): CakeFilter => {
 export interface CakeControllerDeps {
   listCakes: ListCakesUseCase;
   createCake: CreateCakeUseCase;
+  getCake: GetCakeUseCase;
+  updateCakeStock: UpdateCakeStockUseCase;
 }
 
 export const createCakeController = (deps: CakeControllerDeps) => ({
@@ -109,6 +123,35 @@ export const createCakeController = (deps: CakeControllerDeps) => ({
   create: async (input: CreateCakeInput): Promise<CakeResponse> => {
     const cake = await deps.createCake(input);
     return toCakeResponse(cake);
+  },
+
+  // GET /v1/cakes/:id
+  //   単一取得（認証不要）。version を Weak ETag として一緒に返し、
+  //   クライアントはこの ETag を PATCH の If-Match に使う（楽観ロック）。
+  getById: async (id: string): Promise<CakeResponseWithETag> => {
+    const cake = await deps.getCake({ cakeId: id });
+    return { body: toCakeResponse(cake), etag: formatETag(cake.version) };
+  },
+
+  // PATCH /v1/cakes/:id（在庫更新・管理者専用）
+  //   If-Match 必須。
+  //     - ヘッダ欠落      → 428 PRECONDITION_REQUIRED（無条件上書きを許さない）
+  //     - 形式不正        → 400 VALIDATION_ERROR（parseIfMatch が投げる）
+  //     - 版不一致        → 412（UseCase が CakeVersionConflictError を投げる）
+  //   成功時は採番後の version を新しい ETag として返す。
+  updateStock: async (
+    id: string,
+    ifMatch: string | undefined,
+    input: UpdateCakeStockRequest,
+  ): Promise<CakeResponseWithETag> => {
+    if (ifMatch === undefined || ifMatch.trim() === '') {
+      throw new PreconditionRequiredError(
+        '在庫更新には If-Match ヘッダ（GET で取得した ETag）が必要です',
+      );
+    }
+    const expectedVersion = parseIfMatch(ifMatch);
+    const cake = await deps.updateCakeStock({ cakeId: id, stock: input.stock, expectedVersion });
+    return { body: toCakeResponse(cake), etag: formatETag(cake.version) };
   },
 });
 

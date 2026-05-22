@@ -5,6 +5,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { createApp } from '@/app';
 import { createListCakesUseCase } from '@/modules/cakes/application/list-cakes.usecase';
 import { createCreateCakeUseCase } from '@/modules/cakes/application/create-cake.usecase';
+import { createGetCakeUseCase } from '@/modules/cakes/application/get-cake.usecase';
+import { createUpdateCakeStockUseCase } from '@/modules/cakes/application/update-cake-stock.usecase';
 import { createCakeController } from '@/modules/cakes/presentation/cake.controller';
 import { InMemoryCakeRepository } from '@/modules/cakes/application/__test-helpers__/in-memory-cake.repository';
 import { Cake } from '@/modules/cakes/domain/cake';
@@ -59,6 +61,8 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
   const cakesController = createCakeController({
     listCakes: createListCakesUseCase(cakesRepo),
     createCake: createCreateCakeUseCase(cakesRepo, silentLogger),
+    getCake: createGetCakeUseCase(cakesRepo),
+    updateCakeStock: createUpdateCakeStockUseCase(cakesRepo, silentLogger),
   });
 
   const customersRepo = new InMemoryCustomerRepository();
@@ -453,6 +457,178 @@ describe('POST /v1/cakes（admin 専用）', () => {
         error: { details?: Array<{ field: string }> };
       };
       expect(body.error.details?.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+});
+
+interface CakeBody {
+  id: string;
+  name: string;
+  price: number;
+  stock: number;
+}
+
+// テスト用に 1 件だけ保存して id を返すヘルパ。
+const seedOne = async (
+  repo: InMemoryCakeRepository,
+  props: { name: string; price: number; stock: number },
+): Promise<string> => {
+  const cake = Cake.create(props);
+  await repo.save(cake);
+  return cake.id.value;
+};
+
+describe('GET /v1/cakes/:id（認証不要・ETag 付き）', () => {
+  it('存在する id で 200 + ケーキ + ETag(W/"1") を返す', async () => {
+    const { app, cakesRepo } = buildTestApp();
+    const id = await seedOne(cakesRepo, { name: 'ショートケーキ', price: 480, stock: 20 });
+
+    const res = await app.request(`/v1/cakes/${id}`);
+
+    expect(res.status).toBe(200);
+    // 作成直後の version は 1 → Weak ETag は W/"1"
+    expect(res.headers.get('ETag')).toBe('W/"1"');
+    const body = (await res.json()) as CakeBody;
+    expect(body).toMatchObject({ id, name: 'ショートケーキ', price: 480, stock: 20 });
+  });
+
+  it('認証なしでもアクセスできる（public）', async () => {
+    const { app, cakesRepo } = buildTestApp({ user: null });
+    const id = await seedOne(cakesRepo, { name: 'プリン', price: 300, stock: 5 });
+
+    const res = await app.request(`/v1/cakes/${id}`);
+    expect(res.status).toBe(200);
+  });
+
+  it('存在しない id で 404 + NOT_FOUND を返す', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request('/v1/cakes/22222222-2222-4222-8222-222222222222');
+
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('id が UUID 形式でないとき 400 + VALIDATION_ERROR を返す', async () => {
+    const { app } = buildTestApp();
+    const res = await app.request('/v1/cakes/not-a-uuid');
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+});
+
+describe('PATCH /v1/cakes/:id（admin 専用・楽観ロック）', () => {
+  const patch = async (
+    app: ReturnType<typeof createApp>,
+    id: string,
+    body: unknown,
+    headers: Record<string, string> = {},
+  ): Promise<Response> =>
+    app.request(`/v1/cakes/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+
+  it('admin + 正しい If-Match で 200・在庫更新・新 ETag(W/"2") を返す', async () => {
+    const { app, cakesRepo } = buildTestApp({ user: ADMIN_USER });
+    const id = await seedOne(cakesRepo, { name: 'モンブラン', price: 600, stock: 10 });
+
+    const res = await patch(app, id, { stock: 50 }, { 'If-Match': 'W/"1"' });
+
+    expect(res.status).toBe(200);
+    // version が 1 → 2 に進み、ETag も更新される
+    expect(res.headers.get('ETag')).toBe('W/"2"');
+    const body = (await res.json()) as CakeBody;
+    expect(body).toMatchObject({ id, stock: 50 });
+  });
+
+  it('If-Match が無いと 428 + PRECONDITION_REQUIRED を返す', async () => {
+    const { app, cakesRepo } = buildTestApp({ user: ADMIN_USER });
+    const id = await seedOne(cakesRepo, { name: 'モンブラン', price: 600, stock: 10 });
+
+    const res = await patch(app, id, { stock: 50 });
+
+    expect(res.status).toBe(428);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('PRECONDITION_REQUIRED');
+  });
+
+  it('If-Match の版が古いと 412 + PRECONDITION_FAILED を返す（競合）', async () => {
+    const { app, cakesRepo } = buildTestApp({ user: ADMIN_USER });
+    const id = await seedOne(cakesRepo, { name: 'モンブラン', price: 600, stock: 10 });
+
+    // 1 回目の更新で version は 2 になる
+    const first = await patch(app, id, { stock: 30 }, { 'If-Match': 'W/"1"' });
+    expect(first.status).toBe(200);
+
+    // 古い版 W/"1" を再提示 → 競合
+    const second = await patch(app, id, { stock: 99 }, { 'If-Match': 'W/"1"' });
+    expect(second.status).toBe(412);
+    const body = (await second.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('PRECONDITION_FAILED');
+  });
+
+  it('If-Match の形式が不正だと 400 + VALIDATION_ERROR を返す', async () => {
+    const { app, cakesRepo } = buildTestApp({ user: ADMIN_USER });
+    const id = await seedOne(cakesRepo, { name: 'モンブラン', price: 600, stock: 10 });
+
+    const res = await patch(app, id, { stock: 50 }, { 'If-Match': 'garbage' });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('存在しない id で 404 + NOT_FOUND を返す', async () => {
+    const { app } = buildTestApp({ user: ADMIN_USER });
+
+    const res = await patch(
+      app,
+      '22222222-2222-4222-8222-222222222222',
+      { stock: 5 },
+      { 'If-Match': 'W/"1"' },
+    );
+
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('stock が負だと 400 + VALIDATION_ERROR を返す', async () => {
+    const { app, cakesRepo } = buildTestApp({ user: ADMIN_USER });
+    const id = await seedOne(cakesRepo, { name: 'モンブラン', price: 600, stock: 10 });
+
+    const res = await patch(app, id, { stock: -1 }, { 'If-Match': 'W/"1"' });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  describe('admin ガード', () => {
+    it('未認証だと 401 + UNAUTHORIZED を返す', async () => {
+      const { app, cakesRepo } = buildTestApp({ user: null });
+      const id = await seedOne(cakesRepo, { name: 'モンブラン', price: 600, stock: 10 });
+
+      const res = await patch(app, id, { stock: 50 }, { 'If-Match': 'W/"1"' });
+
+      expect(res.status).toBe(401);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('UNAUTHORIZED');
+    });
+
+    it('一般ユーザだと 403 + FORBIDDEN を返す', async () => {
+      const { app, cakesRepo } = buildTestApp({ user: REGULAR_USER });
+      const id = await seedOne(cakesRepo, { name: 'モンブラン', price: 600, stock: 10 });
+
+      const res = await patch(app, id, { stock: 50 }, { 'If-Match': 'W/"1"' });
+
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('FORBIDDEN');
     });
   });
 });

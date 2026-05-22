@@ -1,14 +1,16 @@
 import type { OpenAPIHono } from '@hono/zod-openapi';
-import { createRoute } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
 import type { MiddlewareHandler } from 'hono';
 import { createOpenAPIHono } from '@/shared/http/openapi-hono';
 import type { AppEnv } from '@/shared/http/request-context';
 import {
+  CakeIdParamSchema,
   CakeResponseSchema,
   CreateCakeRequestSchema,
   ErrorResponseSchema,
   ListCakesQuerySchema,
   ListCakesResponseSchema,
+  UpdateCakeStockRequestSchema,
 } from './cake.dto';
 
 // ---------------------------------------------------------------------------
@@ -84,8 +86,99 @@ const createCakeRoute = createRoute({
   },
 });
 
+// ETag を返すレスポンスヘッダの OpenAPI 定義（GET 単一 / PATCH で共用）。
+const etagResponseHeader = {
+  ETag: {
+    description: 'リソースの版を表す Weak ETag（例: W/"7"）。PATCH の If-Match にそのまま使う。',
+    schema: { type: 'string' as const, example: 'W/"7"' },
+  },
+};
+
+const getCakeByIdRoute = createRoute({
+  method: 'get',
+  path: '/{id}',
+  tags: ['cakes'],
+  summary: 'ケーキ 1 件を取得する（ETag 付き）',
+  description:
+    'id に対応するケーキを返す（認証不要）。レスポンスの ETag ヘッダに現在の版が載るので、' +
+    '在庫更新（PATCH）時はこの ETag を If-Match に指定して楽観ロックを効かせる。',
+  request: {
+    params: CakeIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: 'ケーキ 1 件',
+      headers: etagResponseHeader,
+      content: { 'application/json': { schema: CakeResponseSchema } },
+    },
+    400: {
+      description: 'id が UUID でない',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+    404: {
+      description: 'ケーキが見つからない',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+const updateCakeStockRoute = createRoute({
+  method: 'patch',
+  path: '/{id}',
+  tags: ['cakes'],
+  summary: 'ケーキの在庫を更新する（管理者専用・楽観ロック）',
+  description:
+    '在庫数（絶対値）を更新する。admin ロール必須。更新競合を防ぐため If-Match ヘッダ必須' +
+    '（GET /v1/cakes/{id} で得た ETag を指定する）。版が一致しなければ 412、未指定なら 428 を返す。',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: CakeIdParamSchema,
+    headers: z.object({
+      'if-match': z.string().optional().openapi({
+        example: 'W/"7"',
+        description: '更新対象の現在の版（GET で取得した ETag）。必須。',
+      }),
+    }),
+    body: {
+      required: true,
+      content: { 'application/json': { schema: UpdateCakeStockRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: '更新後のケーキ（ETag は採番後の新しい版）',
+      headers: etagResponseHeader,
+      content: { 'application/json': { schema: CakeResponseSchema } },
+    },
+    400: {
+      description: 'リクエストパラメータまたは If-Match の形式が不正',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+    401: {
+      description: '未認証',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+    403: {
+      description: '管理者権限なし',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+    404: {
+      description: 'ケーキが見つからない',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+    412: {
+      description: 'If-Match の版が現在の版と一致しない（競合）',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+    428: {
+      description: 'If-Match ヘッダが未指定',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
 export interface CakeRouterDeps {
-  // POST /v1/cakes の前に挟むミドルウェア配列（認証 + admin 強制）。
+  // POST /v1/cakes・PATCH /v1/cakes/{id} の前に挟むミドルウェア配列（認証 + admin 強制）。
   adminGuard: MiddlewareHandler<AppEnv>[];
 }
 
@@ -109,12 +202,34 @@ export const createCakeRouter = (deps: CakeRouterDeps): OpenAPIHono<AppEnv> => {
     return c.json(body, 200);
   });
 
+  // GET /{id} は認証不要。adminGuard を貼る前に登録することで public のまま保つ
+  //（Hono は .use() の登録順でミドルウェア適用範囲が決まるため、順序が重要）。
+  router.openapi(getCakeByIdRoute, async (c) => {
+    const controller = c.get('modules').cakes;
+    const { id } = c.req.valid('param');
+    const { body, etag } = await controller.getById(id);
+    c.header('ETag', etag);
+    return c.json(body, 200);
+  });
+
   router.use(createCakeRoute.getRoutingPath(), ...deps.adminGuard);
   router.openapi(createCakeRoute, async (c) => {
     const controller = c.get('modules').cakes;
     const input = c.req.valid('json');
     const body = await controller.create(input);
     return c.json(body, 201);
+  });
+
+  // PATCH /{id}（在庫更新）は管理者専用。adminGuard を /{id} パスにも貼ってから登録する。
+  // If-Match は OpenAPI では検証任意（欠落時の 428 は controller で能動的に投げる）。
+  router.use(updateCakeStockRoute.getRoutingPath(), ...deps.adminGuard);
+  router.openapi(updateCakeStockRoute, async (c) => {
+    const controller = c.get('modules').cakes;
+    const { id } = c.req.valid('param');
+    const input = c.req.valid('json');
+    const { body, etag } = await controller.updateStock(id, c.req.header('If-Match'), input);
+    c.header('ETag', etag);
+    return c.json(body, 200);
   });
 
   return router;

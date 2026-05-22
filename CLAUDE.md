@@ -144,7 +144,9 @@ export const buildCakesModule = (sb: SupabaseClient) => {
 GET  /health                # ヘルスチェック（非バージョン・認証不要）
 
 GET  /v1/cakes              # ケーキ一覧（認証不要）
+GET  /v1/cakes/:id          # ケーキ詳細（認証不要・ETag 付き）
 POST /v1/cakes              # ケーキ登録（要認証・管理者ロール）
+PATCH /v1/cakes/:id         # 在庫更新（要認証・管理者ロール・楽観ロック / If-Match 必須）
 
 GET  /v1/customers          # 顧客一覧（要認証・管理者ロール）
 POST /v1/customers          # 顧客登録（認証不要・サインアップ相当）
@@ -168,14 +170,16 @@ GET  /v1/orders/:id         # 注文詳細（要認証・本人のみ）
 }
 ```
 
-| HTTP Status | Error Code              | 意味                         |
-| ----------- | ----------------------- | ---------------------------- |
-| 400         | `VALIDATION_ERROR`      | Zod バリデーション失敗       |
-| 401         | `UNAUTHORIZED`          | 認証トークン不正または未提供 |
-| 403         | `FORBIDDEN`             | 権限なし（RLS ポリシー違反） |
-| 404         | `NOT_FOUND`             | 指定リソースが存在しない     |
-| 409         | `CONFLICT`              | 一意制約違反（メール重複等） |
-| 500         | `INTERNAL_SERVER_ERROR` | 予期しないサーバーエラー     |
+| HTTP Status | Error Code              | 意味                                    |
+| ----------- | ----------------------- | --------------------------------------- |
+| 400         | `VALIDATION_ERROR`      | Zod バリデーション失敗                  |
+| 401         | `UNAUTHORIZED`          | 認証トークン不正または未提供            |
+| 403         | `FORBIDDEN`             | 権限なし（RLS ポリシー違反）            |
+| 404         | `NOT_FOUND`             | 指定リソースが存在しない                |
+| 409         | `CONFLICT`              | 一意制約違反（メール重複等）            |
+| 412         | `PRECONDITION_FAILED`   | If-Match の版が不一致（楽観ロック競合） |
+| 428         | `PRECONDITION_REQUIRED` | If-Match 未指定（条件付き更新が必須）   |
+| 500         | `INTERNAL_SERVER_ERROR` | 予期しないサーバーエラー                |
 
 ---
 
@@ -551,6 +555,7 @@ console.log('order created');
   - [x] Step 1.5 (2026-05-20): **カーソルページネーション（`/v1/orders`）** — RLS 保護付き `GET /v1/orders`（本人の注文のみ）を新設し Step 1 の cursor codec を再利用。`(placed_at, id)` 複合カーソルで新しい順（`placed_at DESC, id DESC`）。本人フィルタは多重防御（RLS `orders_select_self` + repository の明示 `customer_id` 絞り込み）で service_role 経路でも漏れない。`authUserId → customerId` は controller の `resolveCustomerId` ポート経由（未解決は `404`）。詳細は README「`GET /v1/orders` のページネーション仕様」
   - [x] Step 2 (2026-05-21): **ソート・フィルタ（`/v1/cakes`）** — `?sort=-price,name` 書式（`-` 降順・カンマ区切り多段、許可 name/price/stock、既定 name 昇順）を汎用パーサ `app/shared/http/sort.ts` に切り出し。フィルタは `available` / `min_price` / `max_price`（閉区間・`min>max` は `400`）/ `q`（name 部分一致 ILIKE）。キーセットを多段ソートに一般化（`(sortField1..N, id)` 複合キー、`id` を最終 tiebreaker）し PostgREST `.or()` の OR 展開でページ前進。**カーソルに正規化 sort 文字列を埋め込み**、次ページで sort 不一致なら `400`（フィルタは不透明トークンに含めない）。詳細は README「`GET /v1/cakes` のソート・フィルタ仕様」
   - [x] Step 3 (2026-05-21): **検索（`/v1/cakes`）** — `q` を `ILIKE` 部分一致から **PGroonga 全文検索**に置換（日本語の 2 文字・ひらがな部分一致を拾う）。`pg_trgm`（3 文字トライグラム最小・異表記別扱い）/ 標準 `tsvector`（日本語トークン分割不可）の弱点を言語化したうえで PGroonga 採用。PostgREST は演算子 `&@` を直接呼べないため `place_order` と同じく RPC（`search_cakes` 関数 = `supabase/migrations/0005_cakes_pgroonga_search.sql`、`security invoker`）に閉じ込め、検索 + フィルタ + 多段ソート + キーセットを動的 SQL（`%I` 識別子ホワイトリスト + `%L` 値で injection 防止）で処理。repository は `CakeFilter.nameSearch`（旧 `nameContains`）有無で RPC / 従来 PostgREST を分岐。in-memory は部分一致で近似し、実 DB 挙動は workers プールの実 Supabase テストで担保。Step 1/2 のキーセット維持・関連度ランキングなし。詳細は README「`GET /v1/cakes` のあいまい検索仕様」
+  - [x] Step 4 (2026-05-22): **楽観ロック（`/v1/cakes/:id`）** — 在庫更新の lost update を `ETag` + 条件付きリクエストで防ぐ。`GET /v1/cakes/:id`（認証不要・`ETag: W/"<version>"` を返す）を新設、`PATCH /v1/cakes/:id`（管理者・stock 絶対値で冪等）に `If-Match` 必須。版は `cakes.version` 整数カラム + `BEFORE UPDATE` トリガ `bump_version()`（migration `0006_cakes_optimistic_lock.sql`）で単調増加し、`UPDATE … WHERE id=? AND version=?` の原子的更新で競合を検知。当初案 `409` ではなく **RFC 準拠の 412 PRECONDITION_FAILED（版不一致）/ 428 PRECONDITION_REQUIRED（If-Match 欠落）** を採用。Weak ETag コーデックは `app/shared/http/etag.ts`、`UpdateCakeStockUseCase` は findById（404 切り分け）→ updateStock（412）の二段。`GET /:id` は adminGuard 前に登録して public 維持。in-memory は version+1 でトリガを模し実 DB 競合は workers プールで担保。409 テスト全緑。詳細は README「`GET /v1/cakes/:id` + `PATCH /v1/cakes/:id` の楽観ロック仕様」
 
 ---
 

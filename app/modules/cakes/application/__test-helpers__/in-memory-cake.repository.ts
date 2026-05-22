@@ -1,4 +1,5 @@
-import type { Cake } from '../../domain/cake';
+import { Cake } from '../../domain/cake';
+import type { CakeId } from '../../domain/cake-id.vo';
 import type {
   CakeFilter,
   CakeListCursor,
@@ -108,6 +109,30 @@ export class InMemoryCakeRepository implements CakeRepository {
 
   async save(cake: Cake): Promise<void> {
     this.store.set(cake.id.value, cake);
+  }
+
+  async findById(id: CakeId): Promise<Cake | null> {
+    return this.store.get(id.value) ?? null;
+  }
+
+  // 楽観ロック: 現在 version が expectedVersion と一致するときだけ更新し、
+  // version を +1 した新しい Cake を返す（DB トリガによる採番を模す）。
+  // 行が無い / version 不一致なら null（UseCase が 404 / 412 に振り分ける）。
+  async updateStock(id: CakeId, newStock: number, expectedVersion: number): Promise<Cake | null> {
+    const current = this.store.get(id.value);
+    if (!current || current.version !== expectedVersion) {
+      return null;
+    }
+    // changeStock は version 据え置きなので、ここで採番後の version に作り直す。
+    const updated = Cake.reconstruct({
+      id: current.id.value,
+      name: current.name,
+      price: current.price.value,
+      stock: newStock,
+      version: current.version + 1,
+    });
+    this.store.set(id.value, updated);
+    return updated;
   }
 
   // テストアサーション用のヘルパ（インターフェース外。テストからのみ呼ぶ）

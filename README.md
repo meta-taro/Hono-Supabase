@@ -790,7 +790,9 @@ interface CakeRow {
 | ------ | ---------------- | ------ | ------------------------------------------ |
 | GET    | `/health`        | 不要   | ヘルスチェック                             |
 | GET    | `/v1/cakes`      | 不要   | ケーキ一覧（カーソルページネーション）     |
+| GET    | `/v1/cakes/:id`  | 不要   | ケーキ 1 件（ETag 付き）                   |
 | POST   | `/v1/cakes`      | 管理者 | ケーキ登録                                 |
+| PATCH  | `/v1/cakes/:id`  | 管理者 | 在庫更新（楽観ロック・If-Match 必須）      |
 | POST   | `/v1/customers`  | 不要   | 顧客サインアップ                           |
 | GET    | `/v1/customers`  | 管理者 | 顧客一覧                                   |
 | POST   | `/v1/orders`     | 必須   | 注文作成                                   |
@@ -879,6 +881,34 @@ Step 1 のカーソルページネーションに、**ソート**（並び替え
 - in-memory 実装（ユニットテスト）は PGroonga の N-gram 一致を JS で再現できないため**部分一致で近似**する。実 DB の検索挙動は `workers` プール（`infrastructure`/`integration`）の実 Supabase テストで担保する（2 文字「抹茶」・ひらがな「いちご」部分一致を検証）。
 
 例: `GET /v1/cakes?q=いちご&sort=-price&available=true`
+
+### `GET /v1/cakes/:id` + `PATCH /v1/cakes/:id` の楽観ロック仕様（Phase 10 Step 4）
+
+在庫更新（追加発注・棚卸し）で「他の管理者が先に更新していたのに気付かず上書きする」**lost update** を防ぐため、`ETag` + 条件付きリクエストによる**楽観ロック**を導入した。
+
+**フロー（read-modify-write）**:
+
+1. `GET /v1/cakes/:id`（**認証不要**）でケーキ 1 件を取得。レスポンスヘッダ `ETag: W/"<version>"` に現在の版が載る。
+2. `PATCH /v1/cakes/:id`（**管理者専用**）で `If-Match: W/"<version>"` を付けて `{ "stock": <新在庫> }` を送る。
+3. サーバは `UPDATE cakes SET stock = ? WHERE id = ? AND version = ?` を実行。版が一致した行だけ更新され、`version` は DB トリガで +1 採番される。レスポンスは更新後の `ETag`（新しい版）を返す。
+
+**設計判断**:
+
+- **version 整数カラム + DB トリガ採番**: 楽観ロックの版は `cakes.version`（`supabase/migrations/0006_cakes_optimistic_lock.sql`）。`bump_version()` を `BEFORE UPDATE` トリガにすることで、SQL を直接叩く経路や別サービスからの更新でも必ず版が単調増加する（不変条件を DB に一元化）。`ETag` はキャッシュ検証だけでなく**並行更新の競合検知にも使える**（HTTP の条件付きリクエストの本来の用途の一つ）。
+- **Weak ETag（`W/"7"`）**: 表現のバイト単位一致ではなく「意味的に同じ版か」を見るため weak validator を採用。コーデックは `app/shared/http/etag.ts`（`formatETag` / `parseIfMatch`）。`*` ワイルドカードは「版の一致」が目的にそぐわないため `400` で拒否。
+- **PATCH で stock 絶対値（冪等）**: 在庫の**差分**ではなく**絶対値**を送る。同じリクエストを再送しても結果が変わらない冪等な部分更新になり、リトライが安全。
+- **412 / 428（RFC 準拠）**: 版不一致は `412 PRECONDITION_FAILED`（RFC 7232）、`If-Match` 欠落は `428 PRECONDITION_REQUIRED`（RFC 6585）。428 で「無条件上書き」を構造的に禁止する（クライアントに必ず版の提示を強制）。
+- **404 と 412 の切り分け**: UseCase はまず `findById` で存在を確認（無ければ 404）し、その後 version 付き `updateStock` を実行。競合の最終判定は DB の `WHERE version = ?`（原子的）に委ねるので、`findById`〜`updateStock` 間に割り込まれても lost update は起きない。
+- **ルーティング順**: `GET /:id`（public）は `adminGuard` を貼る前に登録して認証不要を保ち、`PATCH /:id`（admin）は `adminGuard` を `/:id` に貼ってから登録する（Hono は `.use()` の登録順でミドルウェア適用範囲が決まる。`POST /` と同じパターン）。
+
+例:
+
+```
+GET   /v1/cakes/<id>                       → 200, ETag: W/"1"
+PATCH /v1/cakes/<id>  If-Match: W/"1"       → 200, ETag: W/"2"（成功・版前進）
+PATCH /v1/cakes/<id>  If-Match: W/"1"（再） → 412 PRECONDITION_FAILED（競合）
+PATCH /v1/cakes/<id>  （If-Match なし）     → 428 PRECONDITION_REQUIRED
+```
 
 ### `GET /v1/orders` のページネーション仕様（Phase 10 Step 1.5）
 
@@ -987,14 +1017,16 @@ Step 1 のカーソルページネーションに、**ソート**（並び替え
 }
 ```
 
-| HTTP | Code                    | 意味                 |
-| ---- | ----------------------- | -------------------- |
-| 400  | `VALIDATION_ERROR`      | Zod 検証失敗         |
-| 401  | `UNAUTHORIZED`          | 認証情報なし／不正   |
-| 403  | `FORBIDDEN`             | 権限なし（RLS 違反） |
-| 404  | `NOT_FOUND`             | リソースなし         |
-| 409  | `CONFLICT`              | 一意制約違反         |
-| 500  | `INTERNAL_SERVER_ERROR` | 想定外エラー         |
+| HTTP | Code                    | 意味                                    |
+| ---- | ----------------------- | --------------------------------------- |
+| 400  | `VALIDATION_ERROR`      | Zod 検証失敗                            |
+| 401  | `UNAUTHORIZED`          | 認証情報なし／不正                      |
+| 403  | `FORBIDDEN`             | 権限なし（RLS 違反）                    |
+| 404  | `NOT_FOUND`             | リソースなし                            |
+| 409  | `CONFLICT`              | 一意制約違反                            |
+| 412  | `PRECONDITION_FAILED`   | If-Match の版が不一致（楽観ロック競合） |
+| 428  | `PRECONDITION_REQUIRED` | If-Match 未指定（条件付き更新が必須）   |
+| 500  | `INTERNAL_SERVER_ERROR` | 想定外エラー                            |
 
 ---
 
@@ -1157,7 +1189,7 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
   - [x] Step 1.5（2026-05-20 完了）: **ページネーション（`/v1/orders`）** — orders は一覧エンドポイントが未実装だったため、RLS 保護付き `GET /v1/orders`（本人の注文のみ）を新設し、Step 1 の cursor codec（`app/shared/http/cursor.ts`）を再利用。カーソルは `(placed_at, id)` 複合キー（同時刻の注文がありうる非一意キーのため id を tiebreaker に複合化）で、新しい順（`placed_at DESC, id DESC`）に並べる。本人フィルタは **多重防御**（RLS の `orders_select_self` + repository の明示 `customer_id` 絞り込み）で、`service_role` 経路でも漏れない設計。`PostgREST` の `.or('placed_at.lt."X",and(placed_at.eq."X",id.lt."Y")')` でキーセット前進。詳細仕様は「[`GET /v1/orders` のページネーション仕様](#get-v1orders-のページネーション仕様phase-10-step-15)」参照
   - [x] Step 2（2026-05-21 完了）: **ソート・フィルタ（`/v1/cakes`）** — `?sort=-price,name` 書式（`-` 降順・カンマ区切り多段、許可: name/price/stock、既定 name 昇順）を汎用パーサ `app/shared/http/sort.ts` に切り出し（`cursor.ts` と同じ「shared/http の純粋ユーティリティ」方針）。フィルタは `available`（在庫有無）/ `min_price` / `max_price`（閉区間・`min>max` は `400`）/ `q`（name 部分一致 ILIKE）。**キーセットを多段ソートに一般化**（`(sortField1..N, id)` 複合キー、`id` を常に最終 tiebreaker にして全順序を保証）し、PostgREST `.or()` の OR 展開（`(c1 OP v1) OR (c1=v1 AND c2 OP v2) OR …`）でページ前進。**カーソルに正規化 sort 文字列を埋め込み**、次ページ取得時に sort が一致しなければ `400`（フィルタは不透明トークンに含めず、絞り込みの責務はクライアント側）。詳細仕様は「[`GET /v1/cakes` のソート・フィルタ仕様](#get-v1cakes-のソートフィルタ仕様phase-10-step-2)」参照
   - [x] Step 3（2026-05-21 完了）: **検索（`/v1/cakes`）** — `q` を `ILIKE` 部分一致から **PGroonga 全文検索**に置換。日本語のケーキ名を 2 文字クエリ・ひらがな部分一致でも拾えるようにし、Step 1/2 のソート・キーセットページネーションは維持（あいまい検索＋キーセット、関連度ランキングはしない）。`pg_trgm`（3 文字トライグラム最小・苺/いちご別扱い）/ 標準 `tsvector`（日本語をトークン分割できない）の弱点を言語化したうえで PGroonga を採用。PostgREST は PGroonga 演算子 `&@` を直接呼べないため `place_order` と同じく RPC（`search_cakes` 関数 = `supabase/migrations/0005_cakes_pgroonga_search.sql`）に閉じ込め、検索 + フィルタ + 多段ソート + キーセットを動的 SQL（`%I` 識別子ホワイトリスト + `%L` 値で injection 防止）で処理。repository は `nameSearch` 有無で RPC / 従来 PostgREST を分岐。in-memory は部分一致で近似し、実 DB 挙動（2 文字「抹茶」・ひらがな「いちご」）は workers プールの実 Supabase テストで担保。詳細仕様は「[`GET /v1/cakes` のあいまい検索仕様](#get-v1cakes-のあいまい検索仕様phase-10-step-3)」参照
-  - [ ] Step 4: **楽観ロック** — `ETag` + `If-Match` で更新競合検知。Cake の在庫更新（追加発注）に導入。`409 CONFLICT`
+  - [x] Step 4（2026-05-22 完了）: **楽観ロック** — `ETag` + `If-Match` で更新競合検知。Cake の在庫更新（`PATCH /v1/cakes/:id`・stock 絶対値で冪等）に導入し、`GET /v1/cakes/:id`（ETag 取得用・認証不要）を新設。版は `cakes.version` 整数カラム + `BEFORE UPDATE` トリガ採番（`supabase/migrations/0006_cakes_optimistic_lock.sql`）で、`UPDATE … WHERE id=? AND version=?` の原子的更新により lost update を防ぐ。当初案の `409 CONFLICT` ではなく **RFC 準拠の 412 PRECONDITION_FAILED（版不一致）/ 428 PRECONDITION_REQUIRED（If-Match 欠落）** を採用（428 で無条件上書きを構造的に禁止）。Weak ETag（`W/"<version>"`）コーデックは `app/shared/http/etag.ts`。in-memory は version+1 でトリガを模し、実 DB の競合挙動は workers プールの実 Supabase テストで担保（409 テスト全緑）。詳細仕様は「[`GET /v1/cakes/:id` + `PATCH /v1/cakes/:id` の楽観ロック仕様](#get-v1cakesid--patch-v1cakesid-の楽観ロック仕様phase-10-step-4)」参照
   - [ ] Step 5: **Rate Limit** — Cloudflare Workers Rate Limiting API（or Hono `rateLimiter`）。IP / userId 別。429 + `Retry-After`
   - [ ] Step 6: **Idempotency-Key** — `POST /v1/orders` で重複作成防止。`Idempotency-Key` ヘッダ + KV/DB キャッシュで同レスポンス返却（Stripe API スタイル）
   - [ ] Step 7: **Webhook 配信** — 「注文確定」ドメインイベントを外部 URL に POST。HMAC 署名 + retry-with-backoff + DLQ 設計

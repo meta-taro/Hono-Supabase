@@ -156,6 +156,39 @@ export const CreateCakeRequestSchema = z
 export type CreateCakeRequest = z.infer<typeof CreateCakeRequestSchema>;
 
 // ---------------------------------------------------------------------------
+// Request: GET /v1/cakes/{id} / PATCH /v1/cakes/{id} のパスパラメータ
+//   id … ケーキ UUID。UUID 形式違反は routes の Zod 検証で 400（domain に届く前に弾く）。
+// ---------------------------------------------------------------------------
+export const CakeIdParamSchema = z.object({
+  id: z
+    .string()
+    .uuid({ message: 'id は UUID 形式である必要があります' })
+    .openapi({
+      param: { name: 'id', in: 'path' },
+      example: '11111111-1111-4111-8111-111111111111',
+    }),
+});
+
+export type CakeIdParam = z.infer<typeof CakeIdParamSchema>;
+
+// ---------------------------------------------------------------------------
+// Request: PATCH /v1/cakes/{id}（在庫更新 = 追加発注 / 棚卸し）
+//   stock の絶対値を送る冪等な部分更新。競合検知は If-Match ヘッダ（version）で行う。
+//   stock の制約は domain（Cake.changeStock）と一致させる（多重防御）。
+// ---------------------------------------------------------------------------
+export const UpdateCakeStockRequestSchema = z
+  .object({
+    stock: z
+      .number()
+      .int({ message: '在庫数は整数である必要があります' })
+      .min(0, { message: '在庫数は 0 以上である必要があります' })
+      .openapi({ example: 50, description: '更新後の在庫数（絶対値・0 以上の整数）' }),
+  })
+  .openapi('UpdateCakeStockRequest');
+
+export type UpdateCakeStockRequest = z.infer<typeof UpdateCakeStockRequestSchema>;
+
+// ---------------------------------------------------------------------------
 // 共通: エラーレスポンス（CLAUDE.md の統一形式に対応）
 //   400 / 409 など複数のステータスで共通利用する。
 //   error-handler が AppError から自動でこの形に整形する。

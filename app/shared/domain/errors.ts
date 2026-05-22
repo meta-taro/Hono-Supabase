@@ -9,6 +9,8 @@ export type ErrorCode =
   | 'FORBIDDEN'
   | 'NOT_FOUND'
   | 'CONFLICT'
+  | 'PRECONDITION_FAILED'
+  | 'PRECONDITION_REQUIRED'
   | 'INTERNAL_SERVER_ERROR';
 
 export interface ErrorDetail {
@@ -69,5 +71,24 @@ export class ConflictError extends AppError {
   constructor(message: string) {
     super('CONFLICT', message, 409);
     this.name = 'ConflictError';
+  }
+}
+
+// 楽観ロック（If-Match）の前提条件が崩れたときに使う。
+//   - PreconditionFailedError(412): If-Match で提示された版が現在の版と一致しない
+//     （= 別の更新が割り込んだ。RFC 7232 §3.1）。クライアントは再取得してやり直す。
+//   - PreconditionRequiredError(428): 更新系で If-Match が必須なのに付いていない
+//     （RFC 6585 §3）。lost update を構造的に防ぐため、無条件上書きを拒否する。
+export class PreconditionFailedError extends AppError {
+  constructor(message = 'リソースが他の更新により変更されています') {
+    super('PRECONDITION_FAILED', message, 412);
+    this.name = 'PreconditionFailedError';
+  }
+}
+
+export class PreconditionRequiredError extends AppError {
+  constructor(message = 'If-Match ヘッダが必要です') {
+    super('PRECONDITION_REQUIRED', message, 428);
+    this.name = 'PreconditionRequiredError';
   }
 }

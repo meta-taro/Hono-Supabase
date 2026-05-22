@@ -1,5 +1,6 @@
 import type { PostgrestError, SupabaseClient } from '@supabase/supabase-js';
 import { Cake } from '@/modules/cakes/domain/cake';
+import type { CakeId } from '@/modules/cakes/domain/cake-id.vo';
 import type {
   CakePage,
   CakeRepository,
@@ -10,15 +11,19 @@ import { ConflictError } from '@/shared/domain/errors';
 
 // DB 行の型。domain の Cake と独立させる（DB の都合 — snake_case や
 // timestamptz の文字列表現 — が domain 層に漏れないようにするため）。
-// select で取得するのは domain が必要とする 4 列のみ。
+// select で取得するのは domain が必要とする 5 列（version 含む）のみ。
 interface CakeRow {
   id: string;
   name: string;
   price: number;
   stock: number;
+  version: number;
 }
 
 const TABLE_NAME = 'cakes';
+
+// select する列。version は楽観ロックの版（ETag の素）。domain の Cake が必須とする。
+const CAKE_COLUMNS = 'id, name, price, stock, version';
 
 // Postgres エラーコード（PostgREST はこのコードを error.code に転載する）。
 // 23505 = unique_violation。詳細: https://www.postgresql.org/docs/current/errcodes-appendix.html
@@ -105,7 +110,7 @@ export class CakeSupabaseRepository implements CakeRepository {
 
   // PostgREST 経路（検索語なし）。フィルタ + キーセット + 並び順をクエリビルダで組む。
   private async fetchViaQuery(params: ListCakesParams): Promise<CakeRow[]> {
-    let query = this.sb.from(TABLE_NAME).select('id, name, price, stock');
+    let query = this.sb.from(TABLE_NAME).select(CAKE_COLUMNS);
 
     // --- フィルタ（各条件は AND で結合される）---
     const { available, minPrice, maxPrice } = params.filter;
@@ -186,5 +191,39 @@ export class CakeSupabaseRepository implements CakeRepository {
     }
 
     throw new Error(`Cake の保存に失敗しました: ${error.message}`);
+  }
+
+  async findById(id: CakeId): Promise<Cake | null> {
+    // maybeSingle: 0 件なら data=null（エラーにしない）、1 件なら行、2 件以上ならエラー。
+    const { data, error } = await this.sb
+      .from(TABLE_NAME)
+      .select(CAKE_COLUMNS)
+      .eq('id', id.value)
+      .maybeSingle<CakeRow>();
+
+    if (error) {
+      throw new Error(`Cake の取得に失敗しました: ${error.message}`);
+    }
+    return data ? Cake.reconstruct(data) : null;
+  }
+
+  async updateStock(id: CakeId, newStock: number, expectedVersion: number): Promise<Cake | null> {
+    // 楽観ロックの核心: WHERE id = ? AND version = ? の複合条件で更新する。
+    //   - 版が一致した行だけが更新対象になる（誰かが先に更新して版が進んでいたら 0 件）。
+    //   - version の採番（+1）は DB トリガ（cakes_bump_version）が担うため、ここでは触らない。
+    //   - .select() で更新後の行（採番済みの新 version 含む）を返してもらう。
+    //   - 0 件更新は maybeSingle で data=null となり、UseCase 側が 412 に倒す（競合 or 行消失）。
+    const { data, error } = await this.sb
+      .from(TABLE_NAME)
+      .update({ stock: newStock })
+      .eq('id', id.value)
+      .eq('version', expectedVersion)
+      .select(CAKE_COLUMNS)
+      .maybeSingle<CakeRow>();
+
+    if (error) {
+      throw new Error(`Cake 在庫の更新に失敗しました: ${error.message}`);
+    }
+    return data ? Cake.reconstruct(data) : null;
   }
 }
