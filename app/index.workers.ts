@@ -53,6 +53,15 @@ interface WorkersBindings {
   // `wrangler dev` では undefined になりうる（Analytics Engine は本物の Workers に
   // デプロイされてから初めて writeDataPoint が実書き込みされる）ので optional。
   API_REQUESTS?: AnalyticsEngineDataset;
+  // wrangler.toml の [[ratelimits]] バインディング（Phase 10 Step 5）。
+  // shape は { limit({ key }): Promise<{ success }> }（@cloudflare/workers-types の
+  // RateLimit 型）。binding ごとに simple.{limit, period} が焼き込まれているので、
+  // middleware は紐づく period を別途知って Retry-After に反映する責務を負う。
+  // 未宣言環境（旧デプロイ / 最小テスト）で undefined になりうるため optional + bootstrap
+  // 側で no-op フォールバック。
+  LIMITER_PUBLIC_READ?: RateLimit;
+  LIMITER_PUBLIC_WRITE?: RateLimit;
+  LIMITER_AUTH_WRITE?: RateLimit;
 }
 
 type Handler = (request: Request, ctx: ExecutionContext) => Promise<Response>;
@@ -60,10 +69,17 @@ type Handler = (request: Request, ctx: ExecutionContext) => Promise<Response>;
 let cachedHandler: Handler | null = null;
 
 const buildHandler = (bindings: WorkersBindings): Handler => {
-  // CF_VERSION_METADATA / API_REQUESTS はオブジェクト型のバインディングなので、
+  // CF_VERSION_METADATA / API_REQUESTS / LIMITER_* はオブジェクト型のバインディングなので、
   // 文字列だけを期待する loadEnv（RawEnv = string の Record）には渡さない。
   // 残りの文字列キーだけスプレッドする。
-  const { CF_VERSION_METADATA, API_REQUESTS, ...envBindings } = bindings;
+  const {
+    CF_VERSION_METADATA,
+    API_REQUESTS,
+    LIMITER_PUBLIC_READ,
+    LIMITER_PUBLIC_WRITE,
+    LIMITER_AUTH_WRITE,
+    ...envBindings
+  } = bindings;
   // WorkersBindings は固定キーの interface のため RawEnv（任意キー Record）に
   // 直接キャストできない。スプレッドで「普通の Record」を作って渡す。
   const env = loadEnv({ ...envBindings });
@@ -96,7 +112,23 @@ const buildHandler = (bindings: WorkersBindings): Handler => {
     ? createAnalyticsEngineRecorder(API_REQUESTS)
     : createNoopMetricsRecorder();
 
-  const app = bootstrap({ env, logger, jwksFetcherProvider, appVersion, metricsRecorder });
+  // Phase 10 Step 5: Rate Limit binding は Workers shape をそのまま RateLimiter port に
+  // 流し込めるので wrapper は要らない（構造的に等価）。`wrangler dev` や旧デプロイで
+  // 未注入のケースは undefined のまま渡し、bootstrap 側で no-op middleware に倒す。
+  const rateLimiters = {
+    publicRead: LIMITER_PUBLIC_READ,
+    publicWrite: LIMITER_PUBLIC_WRITE,
+    authWrite: LIMITER_AUTH_WRITE,
+  };
+
+  const app = bootstrap({
+    env,
+    logger,
+    jwksFetcherProvider,
+    appVersion,
+    metricsRecorder,
+    rateLimiters,
+  });
   return async (request, ctx) => app.fetch(request, bindings, ctx);
 };
 

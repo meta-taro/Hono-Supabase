@@ -22,6 +22,14 @@ import { createOrderController } from '@/modules/orders/presentation/order.contr
 import { InMemoryOrderRepository } from '@/modules/orders/application/__test-helpers__/in-memory-order.repository';
 import { createFakeAuthMiddleware, requireAuth, requireAdmin } from '@/shared/http/auth.middleware';
 import type { AppEnv, AuthUser, RequestModules } from '@/shared/http/request-context';
+import { InMemoryRateLimiter } from '@/shared/http/rate-limiter';
+import {
+  createRateLimitMiddleware,
+  ipKey,
+  noopRateLimitMiddleware,
+  userOrIpKey,
+} from '@/shared/http/rate-limit.middleware';
+import type { RateLimitMiddlewares } from '@/app';
 
 // ---------------------------------------------------------------------------
 // この統合テストの目的:
@@ -56,7 +64,9 @@ const REGULAR_USER: AuthUser = {
   role: 'authenticated',
 };
 
-const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
+const buildTestApp = (
+  params: { user?: AuthUser | null; rateLimits?: RateLimitMiddlewares } = {},
+): TestApp => {
   const cakesRepo = new InMemoryCakeRepository();
   const cakesController = createCakeController({
     listCakes: createListCakesUseCase(cakesRepo),
@@ -104,6 +114,7 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
       adminGuard: [requireAuth(), requireAdmin()],
       authGuard: [requireAuth()],
     },
+    rateLimitMiddlewares: params.rateLimits,
   });
 
   return { app, cakesRepo };
@@ -630,5 +641,85 @@ describe('PATCH /v1/cakes/:id（admin 専用・楽観ロック）', () => {
       const body = (await res.json()) as { error: { code: string } };
       expect(body.error.code).toBe('FORBIDDEN');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 10 Step 5: Rate Limit を routes 層に貼った配線が壊れていないかの統合テスト。
+//
+// 確認したいこと:
+//   1. GET /v1/cakes に publicRead が効き、上限超過で 429 + Retry-After + 統一エラー本文
+//   2. POST /v1/cakes には publicRead が「乗らない」ことを method 分離（restrictToMethods）
+//      経由で担保（POST は別 limiter = authWrite に乗っている設計）
+//
+// 単体テスト（rate-limit.middleware.test.ts）は既に middleware + error-handler の
+// 一気通貫を検証しているので、ここでは「app.ts → bootstrap 経路で routes に行き渡るか」
+// の配線回帰だけを最小コストで担保する。
+// ---------------------------------------------------------------------------
+describe('Rate Limit（Phase 10 Step 5 配線確認）', () => {
+  // 各テスト独立に limiter を建て直すヘルパ（窓共有を防ぐ）。
+  const buildRateLimits = (params: {
+    publicReadLimit: number;
+    authWriteLimit: number;
+  }): RateLimitMiddlewares => ({
+    publicRead: createRateLimitMiddleware({
+      limiter: new InMemoryRateLimiter({
+        limit: params.publicReadLimit,
+        periodSec: 10,
+        now: () => 1000,
+      }),
+      retryAfterSec: 10,
+      resolveKey: ipKey,
+    }),
+    publicWrite: noopRateLimitMiddleware,
+    authWrite: createRateLimitMiddleware({
+      limiter: new InMemoryRateLimiter({
+        limit: params.authWriteLimit,
+        periodSec: 10,
+        now: () => 1000,
+      }),
+      retryAfterSec: 10,
+      resolveKey: userOrIpKey,
+    }),
+  });
+
+  it('GET /v1/cakes は publicRead の上限を超えると 429 + Retry-After を返す', async () => {
+    const rateLimits = buildRateLimits({ publicReadLimit: 1, authWriteLimit: 100 });
+    const { app } = buildTestApp({ rateLimits });
+
+    const headers = { 'cf-connecting-ip': '203.0.113.1' };
+
+    const ok = await app.request('/v1/cakes', { headers });
+    expect(ok.status).toBe(200);
+
+    const limited = await app.request('/v1/cakes', { headers });
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('Retry-After')).toBe('10');
+    const body = (await limited.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('RATE_LIMITED');
+  });
+
+  it('POST /v1/cakes は publicRead に乗らない（restrictToMethods による method 分離）', async () => {
+    // publicReadLimit=1（1 リクエストで枯渇）でも、POST /v1/cakes は publicRead 側で
+    // カウントされないことを確認する。authWrite は十分大きく取り、admin POST は通る。
+    const rateLimits = buildRateLimits({ publicReadLimit: 1, authWriteLimit: 100 });
+    const { app } = buildTestApp({ user: ADMIN_USER, rateLimits });
+
+    const headers = {
+      'cf-connecting-ip': '203.0.113.1',
+      'Content-Type': 'application/json',
+    };
+
+    // publicRead を枯渇させる（同じ IP の GET を 1 回叩いて quota 使い切り）。
+    const exhaust = await app.request('/v1/cakes', { headers });
+    expect(exhaust.status).toBe(200);
+
+    // POST は publicRead に乗らないので 429 にならず、201 で作成できる。
+    const created = await app.request('/v1/cakes', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ name: 'シフォン', price: 500, stock: 5 }),
+    });
+    expect(created.status).toBe(201);
   });
 });

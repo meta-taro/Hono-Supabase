@@ -3,6 +3,7 @@ import { createRoute } from '@hono/zod-openapi';
 import type { MiddlewareHandler } from 'hono';
 import { createOpenAPIHono } from '@/shared/http/openapi-hono';
 import type { AppEnv } from '@/shared/http/request-context';
+import type { RateLimitMiddlewares } from '@/app';
 import { UnauthorizedError } from '@/shared/domain/errors';
 import {
   CreateOrderRequestSchema,
@@ -127,6 +128,8 @@ const getOrderRoute = createRoute({
 export interface OrderRouterDeps {
   // 全エンドポイントに通す認証ガード（fakeAuth 経路も同じ shape）。
   authGuard: MiddlewareHandler<AppEnv>[];
+  // Phase 10 Step 5: Rate Limit middleware。未指定なら何も適用しない（テスト最小経路）。
+  rateLimits?: RateLimitMiddlewares;
 }
 
 export const createOrderRouter = (deps: OrderRouterDeps): OpenAPIHono<AppEnv> => {
@@ -134,6 +137,13 @@ export const createOrderRouter = (deps: OrderRouterDeps): OpenAPIHono<AppEnv> =>
 
   // ルーターレベルで全パスに guard を適用する（POST / と GET /:id 両方）。
   router.use('*', ...deps.authGuard);
+
+  // Phase 10 Step 5: orders は全エンドポイントが認証必須で、user 単位 quota が望ましいので
+  //   authWrite を全パスに一律で乗せる（GET 系も含む）。authGuard 直後に貼ることで
+  //   user が確定した状態で limit({ key: 'user:<id>' }) が呼ばれる。
+  //   注意: authWrite は「user キーで limit する authenticated 系」を意味し、GET も含む。
+  //   bindings 名（LIMITER_AUTH_WRITE）の "write" は wrangler.toml 都合の名残。
+  if (deps.rateLimits) router.use('*', deps.rateLimits.authWrite);
 
   router.openapi(placeOrderRoute, async (c) => {
     const user = c.get('user');

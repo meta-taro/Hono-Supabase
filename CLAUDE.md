@@ -170,16 +170,17 @@ GET  /v1/orders/:id         # 注文詳細（要認証・本人のみ）
 }
 ```
 
-| HTTP Status | Error Code              | 意味                                    |
-| ----------- | ----------------------- | --------------------------------------- |
-| 400         | `VALIDATION_ERROR`      | Zod バリデーション失敗                  |
-| 401         | `UNAUTHORIZED`          | 認証トークン不正または未提供            |
-| 403         | `FORBIDDEN`             | 権限なし（RLS ポリシー違反）            |
-| 404         | `NOT_FOUND`             | 指定リソースが存在しない                |
-| 409         | `CONFLICT`              | 一意制約違反（メール重複等）            |
-| 412         | `PRECONDITION_FAILED`   | If-Match の版が不一致（楽観ロック競合） |
-| 428         | `PRECONDITION_REQUIRED` | If-Match 未指定（条件付き更新が必須）   |
-| 500         | `INTERNAL_SERVER_ERROR` | 予期しないサーバーエラー                |
+| HTTP Status | Error Code              | 意味                                                 |
+| ----------- | ----------------------- | ---------------------------------------------------- |
+| 400         | `VALIDATION_ERROR`      | Zod バリデーション失敗                               |
+| 401         | `UNAUTHORIZED`          | 認証トークン不正または未提供                         |
+| 403         | `FORBIDDEN`             | 権限なし（RLS ポリシー違反）                         |
+| 404         | `NOT_FOUND`             | 指定リソースが存在しない                             |
+| 409         | `CONFLICT`              | 一意制約違反（メール重複等）                         |
+| 412         | `PRECONDITION_FAILED`   | If-Match の版が不一致（楽観ロック競合）              |
+| 428         | `PRECONDITION_REQUIRED` | If-Match 未指定（条件付き更新が必須）                |
+| 429         | `RATE_LIMITED`          | リクエスト数が上限を超えた（`Retry-After` ヘッダ付） |
+| 500         | `INTERNAL_SERVER_ERROR` | 予期しないサーバーエラー                             |
 
 ---
 
@@ -556,6 +557,7 @@ console.log('order created');
   - [x] Step 2 (2026-05-21): **ソート・フィルタ（`/v1/cakes`）** — `?sort=-price,name` 書式（`-` 降順・カンマ区切り多段、許可 name/price/stock、既定 name 昇順）を汎用パーサ `app/shared/http/sort.ts` に切り出し。フィルタは `available` / `min_price` / `max_price`（閉区間・`min>max` は `400`）/ `q`（name 部分一致 ILIKE）。キーセットを多段ソートに一般化（`(sortField1..N, id)` 複合キー、`id` を最終 tiebreaker）し PostgREST `.or()` の OR 展開でページ前進。**カーソルに正規化 sort 文字列を埋め込み**、次ページで sort 不一致なら `400`（フィルタは不透明トークンに含めない）。詳細は README「`GET /v1/cakes` のソート・フィルタ仕様」
   - [x] Step 3 (2026-05-21): **検索（`/v1/cakes`）** — `q` を `ILIKE` 部分一致から **PGroonga 全文検索**に置換（日本語の 2 文字・ひらがな部分一致を拾う）。`pg_trgm`（3 文字トライグラム最小・異表記別扱い）/ 標準 `tsvector`（日本語トークン分割不可）の弱点を言語化したうえで PGroonga 採用。PostgREST は演算子 `&@` を直接呼べないため `place_order` と同じく RPC（`search_cakes` 関数 = `supabase/migrations/0005_cakes_pgroonga_search.sql`、`security invoker`）に閉じ込め、検索 + フィルタ + 多段ソート + キーセットを動的 SQL（`%I` 識別子ホワイトリスト + `%L` 値で injection 防止）で処理。repository は `CakeFilter.nameSearch`（旧 `nameContains`）有無で RPC / 従来 PostgREST を分岐。in-memory は部分一致で近似し、実 DB 挙動は workers プールの実 Supabase テストで担保。Step 1/2 のキーセット維持・関連度ランキングなし。詳細は README「`GET /v1/cakes` のあいまい検索仕様」
   - [x] Step 4 (2026-05-22): **楽観ロック（`/v1/cakes/:id`）** — 在庫更新の lost update を `ETag` + 条件付きリクエストで防ぐ。`GET /v1/cakes/:id`（認証不要・`ETag: W/"<version>"` を返す）を新設、`PATCH /v1/cakes/:id`（管理者・stock 絶対値で冪等）に `If-Match` 必須。版は `cakes.version` 整数カラム + `BEFORE UPDATE` トリガ `bump_version()`（migration `0006_cakes_optimistic_lock.sql`）で単調増加し、`UPDATE … WHERE id=? AND version=?` の原子的更新で競合を検知。当初案 `409` ではなく **RFC 準拠の 412 PRECONDITION_FAILED（版不一致）/ 428 PRECONDITION_REQUIRED（If-Match 欠落）** を採用。Weak ETag コーデックは `app/shared/http/etag.ts`、`UpdateCakeStockUseCase` は findById（404 切り分け）→ updateStock（412）の二段。`GET /:id` は adminGuard 前に登録して public 維持。in-memory は version+1 でトリガを模し実 DB 競合は workers プールで担保。409 テスト全緑。詳細は README「`GET /v1/cakes/:id` + `PATCH /v1/cakes/:id` の楽観ロック仕様」
+  - [x] Step 5 (2026-05-24): **Rate Limit（`/v1/*`）** — Cloudflare Workers の `[[ratelimits]]` binding を **3 本**（`LIMITER_PUBLIC_READ` 100/10s `ip` キー・`LIMITER_PUBLIC_WRITE` 5/60s `ip` キー・`LIMITER_AUTH_WRITE` 10/10s `user` キー）。binding の `limit()` は `{ success }` しか返さないため middleware factory（`buildRateLimitMiddlewares` in `bootstrap.ts`）が wrangler.toml の period から `Retry-After` を焼き込む。Hono の `router.use(path, mw)` はメソッドを区別しないので、`/` を共有する `GET /v1/cakes` / `POST /v1/cakes` のような衝突は **`restrictToMethods` ヘルパ**（`app/shared/http/rate-limit.middleware.ts`）でメソッド配列ゲートし、外側のメソッドは limiter を呼ばずに `next()` で素通し（カウンタ非消費）。`orders` は全パス authWrite を `router.use('*', ...)` 一発で適用。超過は **429 `RATE_LIMITED` + `Retry-After`**（統一エラー本文の `details[0].field='Retry-After'` にも同値）。binding 未注入時は `noopRateLimitMiddleware` で完全に外れる（Node ローカル / テスト最小経路に影響なし）。テストは node-unit プールで `InMemoryRateLimiter`（固定ウィンドウ + `now()` 差し替え）の middleware 単体 + 統合で「公開 GET が枯れても POST は影響しない」を検証（`pnpm verify` 緑 / 426 テスト）。**Workers binding 制約**: `period` は **`10s` / `60s` のみ**（長窓は Durable Object 等）。**テスト警告**: `@cloudflare/vitest-pool-workers@0.8.x` の bundled wrangler が古く `Unexpected fields found in top-level field: "ratelimits"` を吐くが、実デプロイは最新 wrangler が解釈するので無視可。詳細は README「`/v1/*` の Rate Limit 仕様」
 
 ---
 

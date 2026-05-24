@@ -912,6 +912,61 @@ PATCH /v1/cakes/<id>  If-Match: W/"1"（再） → 412 PRECONDITION_FAILED（競
 PATCH /v1/cakes/<id>  （If-Match なし）     → 428 PRECONDITION_REQUIRED
 ```
 
+### `/v1/*` の Rate Limit 仕様（Phase 10 Step 5）
+
+突発的な大量リクエスト（ログイン総当たり・スクレイピング暴走・無料枠の費用爆発）を**エッジで即時に弾く**ため、Cloudflare Workers の Rate Limiting binding を採用した。binding は呼び出し時点で同期判定（`success: boolean`）を返し、上流のアプリ・DB に負荷が伝播しないのが利点。`hono/rate-limiter` のようなアプリ内カウンタでは isolate 跨ぎの正確性が出ない（Workers は各リージョンで isolate が乱立し、メモリ共有もしない）ため、Cloudflare 側に窓を任せる方針を採った。
+
+**3 つの binding と閾値**（`wrangler.toml` の `[[ratelimits]]` で宣言）:
+
+| binding                | period | limit | キー戦略                         | 適用先                                                    | 狙い                                                                                                |
+| ---------------------- | ------ | ----- | -------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `LIMITER_PUBLIC_READ`  | 10s    | 100   | `ip:<cf-connecting-ip>`          | `GET /v1/cakes` / `GET /v1/cakes/:id`                     | 公開読み取り。スクレイパ抑制。正常ユーザの 100 リク / 10 秒は事実上の天井で UX を阻害しない         |
+| `LIMITER_PUBLIC_WRITE` | 60s    | 5     | `ip:<cf-connecting-ip>`          | `POST /v1/customers`（サインアップ）                      | **認証前**のため IP キー。Resend / Supabase Auth が送る確認メールの大量発信＝費用攻撃を 60 秒に絞る |
+| `LIMITER_AUTH_WRITE`   | 10s    | 10    | `user:<jwt.sub>` (未認証なら IP) | `POST /v1/cakes` / `PATCH /v1/cakes/:id` / `/v1/orders/*` | 認証済みユーザ単位。誤連打・自作スクリプトの暴走を 1 秒 1 回程度に収める                            |
+
+> **Workers binding の制約**: `period` は **`10s` または `60s` のみ**。`1h` 単位の長窓は別途 Durable Object 等が要る。学習段階では 2 値で十分とした。
+
+**429 レスポンス**:
+
+```json
+{
+  "error": {
+    "code": "RATE_LIMITED",
+    "message": "リクエスト数が上限を超えました",
+    "details": [{ "field": "Retry-After", "message": "10" }]
+  }
+}
+```
+
+- `Retry-After: 10`（または 60）を必ず付ける。Cloudflare の `limit()` は `{ success }` しか返さないため、**`retryAfterSec` は middleware factory が wrangler.toml の period から焼き込む**（period と Retry-After を 1 箇所で揃える）。
+- 統一エラー本文の `details[0].field = 'Retry-After'` にも同値を載せ、JSON だけ読むクライアントでも待機秒を取れるようにする。
+
+**実装メモ**:
+
+- **`RateLimiter` ポート**: `app/shared/http/rate-limiter.ts` に `limit({ key }) → Promise<{ success }>` の最小 interface を定義。Cloudflare の `RateLimit` 型と**構造的に互換**なのでラッパは不要。テスト用に `InMemoryRateLimiter`（固定ウィンドウ + `now()` 差し替え）を併設し、node-unit プールで middleware 単体テストを高速に回す。
+- **`restrictToMethods` ヘルパ**: Hono の `router.use(path, mw)` は**メソッドを区別しない**ため、`GET /v1/cakes`（public）と `POST /v1/cakes`（admin）のように同一パス（`/`）に**メソッド別の異なる limiter** を割り当てたいケースで困る。`restrictToMethods(['GET'], publicRead)` のようにメソッド配列でゲートする薄いラッパを置き、メソッド外のリクエストは limiter を呼ばずに `next()` で素通しする（カウンタも消費しない）。
+- **DI**: `bootstrap.ts` の `buildRateLimitMiddlewares()` が 3 binding を 3 つの `MiddlewareHandler` に組み立てる。binding 未注入なら `noopRateLimitMiddleware` を返すので、Node ローカル / テスト最小経路では rate-limit を完全に外せる（`createApp({ rateLimitMiddlewares })` を省略するだけ）。
+- **キー戦略**: `cf-connecting-ip` は Cloudflare がエッジで注入する**改竄不能**ヘッダ（クライアントが任意に詰めても上書きされる）。`X-Forwarded-For` は信頼しない。`userOrIpKey` は `c.get('user')?.id` を優先し、未認証フォールバックで IP を使う。
+- **`orders` は全パス authWrite**: 一覧 / 詳細 / 注文作成すべて認証必須なので、router の `*` に一発で乗せる。binding 名 `LIMITER_AUTH_WRITE` の "write" は wrangler.toml 都合の名残で、実態は「user キーで limit する authenticated 系」。
+
+**staging で見る方法**:
+
+```bash
+# 1) staging に向ける
+BASE=https://cake-shop-api-staging.<account-subdomain>.workers.dev
+
+# 2) わざと閾値を超える（公開 GET を 110 回叩く）
+for i in $(seq 1 110); do curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/cakes" ; done | sort | uniq -c
+# 期待: 200 が 100 件、429 が 10 件
+
+# 3) Retry-After を確認
+curl -i "$BASE/v1/cakes" | grep -iE '^(HTTP|retry-after)'
+```
+
+`pnpm wrangler:tail:staging` を別ターミナルで開いておくと、429 になった requestId / path / status を構造化ログから検索できる（Phase 9 Step 1/2 で仕込んだ req スコープロガーの恩恵）。
+
+> **メモ（テスト時の `wrangler.toml` 警告）**: `@cloudflare/vitest-pool-workers@0.8.x` が同梱する wrangler は古めで、workers プール起動時に `Unexpected fields found in top-level field: "ratelimits"` という warning を吐く。これは vitest プール側の bundled wrangler が `[[ratelimits]]` を未認知なだけで、**実デプロイ（`pnpm wrangler:deploy:*`）は最新の `wrangler` が解釈するため問題ない**。pool 側が追随したら自動で消える（vitest 4.x + pool 0.15.x 移行待ち）。
+
 ### `GET /v1/orders` のページネーション仕様（Phase 10 Step 1.5）
 
 注文一覧は **認証ユーザー本人の注文のみ**を、**カーソルベース（キーセット）ページネーション**で新しい順に返す。Step 1（cakes）のコーデックをそのまま再利用し、カーソルのキーだけ `(placed_at, id)` に差し替えた構成。
@@ -1019,16 +1074,17 @@ PATCH /v1/cakes/<id>  （If-Match なし）     → 428 PRECONDITION_REQUIRED
 }
 ```
 
-| HTTP | Code                    | 意味                                    |
-| ---- | ----------------------- | --------------------------------------- |
-| 400  | `VALIDATION_ERROR`      | Zod 検証失敗                            |
-| 401  | `UNAUTHORIZED`          | 認証情報なし／不正                      |
-| 403  | `FORBIDDEN`             | 権限なし（RLS 違反）                    |
-| 404  | `NOT_FOUND`             | リソースなし                            |
-| 409  | `CONFLICT`              | 一意制約違反                            |
-| 412  | `PRECONDITION_FAILED`   | If-Match の版が不一致（楽観ロック競合） |
-| 428  | `PRECONDITION_REQUIRED` | If-Match 未指定（条件付き更新が必須）   |
-| 500  | `INTERNAL_SERVER_ERROR` | 想定外エラー                            |
+| HTTP | Code                    | 意味                                      |
+| ---- | ----------------------- | ----------------------------------------- |
+| 400  | `VALIDATION_ERROR`      | Zod 検証失敗                              |
+| 401  | `UNAUTHORIZED`          | 認証情報なし／不正                        |
+| 403  | `FORBIDDEN`             | 権限なし（RLS 違反）                      |
+| 404  | `NOT_FOUND`             | リソースなし                              |
+| 409  | `CONFLICT`              | 一意制約違反                              |
+| 412  | `PRECONDITION_FAILED`   | If-Match の版が不一致（楽観ロック競合）   |
+| 428  | `PRECONDITION_REQUIRED` | If-Match 未指定（条件付き更新が必須）     |
+| 429  | `RATE_LIMITED`          | Rate Limit 超過（`Retry-After` ヘッダ付） |
+| 500  | `INTERNAL_SERVER_ERROR` | 想定外エラー                              |
 
 ---
 
@@ -1192,7 +1248,7 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
   - [x] Step 2（2026-05-21 完了）: **ソート・フィルタ（`/v1/cakes`）** — `?sort=-price,name` 書式（`-` 降順・カンマ区切り多段、許可: name/price/stock、既定 name 昇順）を汎用パーサ `app/shared/http/sort.ts` に切り出し（`cursor.ts` と同じ「shared/http の純粋ユーティリティ」方針）。フィルタは `available`（在庫有無）/ `min_price` / `max_price`（閉区間・`min>max` は `400`）/ `q`（name 部分一致 ILIKE）。**キーセットを多段ソートに一般化**（`(sortField1..N, id)` 複合キー、`id` を常に最終 tiebreaker にして全順序を保証）し、PostgREST `.or()` の OR 展開（`(c1 OP v1) OR (c1=v1 AND c2 OP v2) OR …`）でページ前進。**カーソルに正規化 sort 文字列を埋め込み**、次ページ取得時に sort が一致しなければ `400`（フィルタは不透明トークンに含めず、絞り込みの責務はクライアント側）。詳細仕様は「[`GET /v1/cakes` のソート・フィルタ仕様](#get-v1cakes-のソートフィルタ仕様phase-10-step-2)」参照
   - [x] Step 3（2026-05-21 完了）: **検索（`/v1/cakes`）** — `q` を `ILIKE` 部分一致から **PGroonga 全文検索**に置換。日本語のケーキ名を 2 文字クエリ・ひらがな部分一致でも拾えるようにし、Step 1/2 のソート・キーセットページネーションは維持（あいまい検索＋キーセット、関連度ランキングはしない）。`pg_trgm`（3 文字トライグラム最小・苺/いちご別扱い）/ 標準 `tsvector`（日本語をトークン分割できない）の弱点を言語化したうえで PGroonga を採用。PostgREST は PGroonga 演算子 `&@` を直接呼べないため `place_order` と同じく RPC（`search_cakes` 関数 = `supabase/migrations/0005_cakes_pgroonga_search.sql`）に閉じ込め、検索 + フィルタ + 多段ソート + キーセットを動的 SQL（`%I` 識別子ホワイトリスト + `%L` 値で injection 防止）で処理。repository は `nameSearch` 有無で RPC / 従来 PostgREST を分岐。in-memory は部分一致で近似し、実 DB 挙動（2 文字「抹茶」・ひらがな「いちご」）は workers プールの実 Supabase テストで担保。詳細仕様は「[`GET /v1/cakes` のあいまい検索仕様](#get-v1cakes-のあいまい検索仕様phase-10-step-3)」参照
   - [x] Step 4（2026-05-22 完了）: **楽観ロック** — `ETag` + `If-Match` で更新競合検知。Cake の在庫更新（`PATCH /v1/cakes/:id`・stock 絶対値で冪等）に導入し、`GET /v1/cakes/:id`（ETag 取得用・認証不要）を新設。版は `cakes.version` 整数カラム + `BEFORE UPDATE` トリガ採番（`supabase/migrations/0006_cakes_optimistic_lock.sql`）で、`UPDATE … WHERE id=? AND version=?` の原子的更新により lost update を防ぐ。当初案の `409 CONFLICT` ではなく **RFC 準拠の 412 PRECONDITION_FAILED（版不一致）/ 428 PRECONDITION_REQUIRED（If-Match 欠落）** を採用（428 で無条件上書きを構造的に禁止）。Weak ETag（`W/"<version>"`）コーデックは `app/shared/http/etag.ts`。in-memory は version+1 でトリガを模し、実 DB の競合挙動は workers プールの実 Supabase テストで担保（409 テスト全緑）。詳細仕様は「[`GET /v1/cakes/:id` + `PATCH /v1/cakes/:id` の楽観ロック仕様](#get-v1cakesid--patch-v1cakesid-の楽観ロック仕様phase-10-step-4)」参照
-  - [ ] Step 5: **Rate Limit** — Cloudflare Workers Rate Limiting API（or Hono `rateLimiter`）。IP / userId 別。429 + `Retry-After`
+  - [x] Step 5（2026-05-24 完了）: **Rate Limit** — Cloudflare Workers の `[[ratelimits]]` binding を 3 本（`LIMITER_PUBLIC_READ` 100/10s・`LIMITER_PUBLIC_WRITE` 5/60s・`LIMITER_AUTH_WRITE` 10/10s）に分割し、IP キー（公開系）/ user キー（認証系）で使い分け。binding の `limit()` は `{ success }` しか返さないので middleware factory が wrangler.toml の period から `Retry-After` を焼き込む。Hono の `router.use(path, mw)` がメソッドを区別しない弱点は `restrictToMethods` ヘルパで補い、`GET /` / `POST /` で `/` を共有する `cakes` / `customers` でもメソッド別 limiter を割り当てた。超過は **429 RATE_LIMITED + Retry-After ヘッダ** を返し、`details[0].field='Retry-After'` にも同値を載せる（JSON だけ読むクライアントでも秒数が取れる）。テストは node-unit プールで `InMemoryRateLimiter`（固定ウィンドウ + `now()` 差し替え）による middleware 単体 + 統合テストで「公開 GET が枯れても POST には影響しない」（`restrictToMethods` の効果）を検証、`pnpm verify` 緑（426 テスト）。詳細仕様は「[`/v1/*` の Rate Limit 仕様](#v1-の-rate-limit-仕様phase-10-step-5)」参照
   - [ ] Step 6: **Idempotency-Key** — `POST /v1/orders` で重複作成防止。`Idempotency-Key` ヘッダ + KV/DB キャッシュで同レスポンス返却（Stripe API スタイル）
   - [ ] Step 7: **Webhook 配信** — 「注文確定」ドメインイベントを外部 URL に POST。HMAC 署名 + retry-with-backoff + DLQ 設計
 

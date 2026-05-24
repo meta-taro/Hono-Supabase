@@ -11,6 +11,7 @@ export type ErrorCode =
   | 'CONFLICT'
   | 'PRECONDITION_FAILED'
   | 'PRECONDITION_REQUIRED'
+  | 'RATE_LIMITED'
   | 'INTERNAL_SERVER_ERROR';
 
 export interface ErrorDetail {
@@ -90,5 +91,20 @@ export class PreconditionRequiredError extends AppError {
   constructor(message = 'If-Match ヘッダが必要です') {
     super('PRECONDITION_REQUIRED', message, 428);
     this.name = 'PreconditionRequiredError';
+  }
+}
+
+// Rate Limit に引っかかったときに使う（429 / RFC 6585 §4）。
+//   retryAfterSec は Hono の error-handler が Retry-After ヘッダに転写する責務を負う。
+//   Cloudflare Workers Rate Limiting binding の limit() 戻り値は { success } のみで
+//   サーバ側に残り時間が返らないため、middleware が「適用した period（10 or 60）」を
+//   そのまま retryAfterSec として渡す（=「最悪この秒数待てば必ず通る」上限値）。
+export class RateLimitedError extends AppError {
+  public readonly retryAfterSec: number;
+
+  constructor(retryAfterSec: number, message = 'リクエスト数が上限を超えました') {
+    super('RATE_LIMITED', message, 429, [{ field: 'Retry-After', message: String(retryAfterSec) }]);
+    this.name = 'RateLimitedError';
+    this.retryAfterSec = retryAfterSec;
   }
 }

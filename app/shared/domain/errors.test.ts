@@ -4,6 +4,7 @@ import {
   ConflictError,
   ForbiddenError,
   NotFoundError,
+  RateLimitedError,
   UnauthorizedError,
   ValidationError,
 } from './errors';
@@ -29,6 +30,7 @@ describe('AppError サブクラスの code/status マッピング', () => {
     [new ForbiddenError(), 'FORBIDDEN', 403],
     [new NotFoundError(), 'NOT_FOUND', 404],
     [new ConflictError('duplicated'), 'CONFLICT', 409],
+    [new RateLimitedError(10), 'RATE_LIMITED', 429],
   ] as const)('%s は code=%s status=%d', (err, code, status) => {
     expect(err).toBeInstanceOf(AppError);
     expect(err.code).toBe(code);
@@ -40,5 +42,11 @@ describe('AppError サブクラスの code/status マッピング', () => {
       { field: 'email', message: 'メール形式が不正です' },
     ]);
     expect(err.details).toHaveLength(1);
+  });
+
+  it('RateLimitedError は retryAfterSec を保持し details に Retry-After を載せる', () => {
+    const err = new RateLimitedError(60);
+    expect(err.retryAfterSec).toBe(60);
+    expect(err.details).toEqual([{ field: 'Retry-After', message: '60' }]);
   });
 });

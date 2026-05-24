@@ -1,11 +1,13 @@
 import type { OpenAPIHono } from '@hono/zod-openapi';
+import type { MiddlewareHandler } from 'hono';
 import { createClient } from '@supabase/supabase-js';
-import { createApp, type HealthDbProbe } from '@/app';
+import { createApp, type HealthDbProbe, type RateLimitMiddlewares } from '@/app';
 import type { AppEnv } from '@/shared/http/request-context';
 import type { Env } from '@/shared/http/env';
 import type { AppLogger } from '@/shared/infrastructure/logger';
 import type { JwksFetcherProvider } from '@/shared/infrastructure/jwks-fetcher';
 import type { MetricsRecorder } from '@/shared/infrastructure/metrics';
+import type { RateLimiter } from '@/shared/http/rate-limiter';
 import { createModulesMiddleware } from '@/shared/composition-root';
 import {
   createOptionalAuthMiddleware,
@@ -18,6 +20,12 @@ import {
   createAccessLogMiddleware,
   type AccessLogMetricsBinding,
 } from '@/shared/http/access-log.middleware';
+import {
+  createRateLimitMiddleware,
+  ipKey,
+  noopRateLimitMiddleware,
+  userOrIpKey,
+} from '@/shared/http/rate-limit.middleware';
 
 // Phase 9 Step 3a: /health の DB プローブ実装。
 //   - anon キーで cakes を 1 行 select するだけ（RLS で public read 可能）
@@ -79,10 +87,60 @@ export interface BootstrapDeps {
   // Workers エントリ側で bindings.API_REQUESTS から
   // createAnalyticsEngineRecorder で組み立てて渡す。
   metricsRecorder?: MetricsRecorder;
+  // Phase 10 Step 5: Workers Rate Limiting binding。
+  //   Node / `wrangler dev` / 旧デプロイなどで未注入のキーは undefined を渡せばよい
+  //   （bootstrap が noop に倒す）。binding ごとの period（10/60）は wrangler.toml で
+  //   焼き込まれており、ここでは「どの period に対応する binding か」を bootstrap が
+  //   知って Retry-After に反映する責務を担う。
+  rateLimiters?: {
+    publicRead?: RateLimiter;
+    publicWrite?: RateLimiter;
+    authWrite?: RateLimiter;
+  };
 }
 
+// Phase 10 Step 5: Rate Limit middleware を 3 種類組み立てる。
+//
+//   binding が無ければ noop（=「pass-through」）に倒し、route 側の use() は常に
+//   middleware を受け取れる形で統一する。route 側に optional 分岐を持ち込まない方が
+//   テスト・読みやすさの両面で素直。
+//
+//   retryAfterSec は wrangler.toml の simple.period と必ず一致させる:
+//     LIMITER_PUBLIC_READ:  period=10  → 10
+//     LIMITER_PUBLIC_WRITE: period=60  → 60
+//     LIMITER_AUTH_WRITE:   period=10  → 10
+const buildRateLimitMiddlewares = (
+  rateLimiters: BootstrapDeps['rateLimiters'],
+): RateLimitMiddlewares => {
+  const publicRead: MiddlewareHandler<AppEnv> = rateLimiters?.publicRead
+    ? createRateLimitMiddleware({
+        limiter: rateLimiters.publicRead,
+        retryAfterSec: 10,
+        resolveKey: ipKey,
+      })
+    : noopRateLimitMiddleware;
+
+  const publicWrite: MiddlewareHandler<AppEnv> = rateLimiters?.publicWrite
+    ? createRateLimitMiddleware({
+        limiter: rateLimiters.publicWrite,
+        retryAfterSec: 60,
+        resolveKey: ipKey,
+      })
+    : noopRateLimitMiddleware;
+
+  const authWrite: MiddlewareHandler<AppEnv> = rateLimiters?.authWrite
+    ? createRateLimitMiddleware({
+        limiter: rateLimiters.authWrite,
+        retryAfterSec: 10,
+        resolveKey: userOrIpKey,
+      })
+    : noopRateLimitMiddleware;
+
+  return { publicRead, publicWrite, authWrite };
+};
+
 export const bootstrap = (deps: BootstrapDeps): OpenAPIHono<AppEnv> => {
-  const { env, logger, jwksFetcherProvider, appVersion, metricsRecorder } = deps;
+  const { env, logger, jwksFetcherProvider, appVersion, metricsRecorder, rateLimiters } = deps;
 
   // accessLog に渡す metrics binding を組み立てる。recorder 未注入時は undefined
   // のまま渡して middleware 側でも no-op に倒す（書き込み経路を一切走らせない）。
@@ -93,6 +151,8 @@ export const bootstrap = (deps: BootstrapDeps): OpenAPIHono<AppEnv> => {
         app_version: appVersion ?? 'local',
       }
     : undefined;
+
+  const rateLimitMiddlewares = buildRateLimitMiddlewares(rateLimiters);
 
   return createApp({
     // Phase 9 Step 1/2/4: 全パス（/health 含む）に通すグローバルミドルウェア。
@@ -114,6 +174,7 @@ export const bootstrap = (deps: BootstrapDeps): OpenAPIHono<AppEnv> => {
       adminGuard: [requireAuth(), requireAdmin()],
       authGuard: [requireAuth()],
     },
+    rateLimitMiddlewares,
     logger,
     appVersion,
     healthDbProbe: createHealthDbProbe(env),

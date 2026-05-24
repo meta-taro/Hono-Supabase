@@ -54,9 +54,27 @@ export interface AppGuards {
   authGuard: MiddlewareHandler<AppEnv>[];
 }
 
+// Phase 10 Step 5: 各 router に流し込む Rate Limit ミドルウェアの束。
+//   publicRead   GET 系・認証不要         IP キー    (LIMITER_PUBLIC_READ:  100/10s)
+//   publicWrite  POST 系・認証不要         IP キー    (LIMITER_PUBLIC_WRITE: 5/60s)
+//   authWrite    認証必須（read/write 双方） user キー (LIMITER_AUTH_WRITE:   10/10s)
+//
+// 命名は wrangler.toml 側の binding 名と一致させて運用混乱を避ける。authWrite は名前に
+// "write" を含むが、Step 5 ではユーザ単位 quota を要する authenticated 全般（自分の注文
+// 一覧の GET 系を含む）をここに乗せている — 増やすときは bindings を追加する。
+export interface RateLimitMiddlewares {
+  publicRead: MiddlewareHandler<AppEnv>;
+  publicWrite: MiddlewareHandler<AppEnv>;
+  authWrite: MiddlewareHandler<AppEnv>;
+}
+
 export interface AppOptions {
   rootMiddlewares: MiddlewareHandler<AppEnv>[];
   guards: AppGuards;
+  // Phase 10 Step 5: 各 router に流し込む Rate Limit middleware の束（optional）。
+  //   未指定 → 何も適用しない（最小 health.test.ts 用の build path / fakeAuth 経路）。
+  //   bootstrap 経由の本番組み立てでは buildRateLimitMiddlewares() の結果が常に入る。
+  rateLimitMiddlewares?: RateLimitMiddlewares;
   // Phase 9 Step 1: /health 含む全パスに通すミドルウェア。
   // requestContextMiddleware（requestId 採用 / 生成 + req スコープロガー）を載せる前提。
   globalMiddlewares?: MiddlewareHandler<AppEnv>[];
@@ -117,9 +135,19 @@ export const createApp = (options?: AppOptions): OpenAPIHono<AppEnv> => {
       app.use('/v1/*', mw);
     }
 
-    app.route('/v1/cakes', createCakeRouter({ adminGuard: options.guards.adminGuard }));
-    app.route('/v1/customers', createCustomerRouter({ adminGuard: options.guards.adminGuard }));
-    app.route('/v1/orders', createOrderRouter({ authGuard: options.guards.authGuard }));
+    const rl = options.rateLimitMiddlewares;
+    app.route(
+      '/v1/cakes',
+      createCakeRouter({ adminGuard: options.guards.adminGuard, rateLimits: rl }),
+    );
+    app.route(
+      '/v1/customers',
+      createCustomerRouter({ adminGuard: options.guards.adminGuard, rateLimits: rl }),
+    );
+    app.route(
+      '/v1/orders',
+      createOrderRouter({ authGuard: options.guards.authGuard, rateLimits: rl }),
+    );
   }
 
   app.onError(createErrorHandler(options?.logger ?? createSilentLogger()));

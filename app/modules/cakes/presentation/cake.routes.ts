@@ -3,6 +3,8 @@ import { createRoute, z } from '@hono/zod-openapi';
 import type { MiddlewareHandler } from 'hono';
 import { createOpenAPIHono } from '@/shared/http/openapi-hono';
 import type { AppEnv } from '@/shared/http/request-context';
+import type { RateLimitMiddlewares } from '@/app';
+import { restrictToMethods } from '@/shared/http/rate-limit.middleware';
 import {
   CakeIdParamSchema,
   CakeResponseSchema,
@@ -180,11 +182,25 @@ const updateCakeStockRoute = createRoute({
 export interface CakeRouterDeps {
   // POST /v1/cakes・PATCH /v1/cakes/{id} の前に挟むミドルウェア配列（認証 + admin 強制）。
   adminGuard: MiddlewareHandler<AppEnv>[];
+  // Phase 10 Step 5: Rate Limit middleware。未指定なら何も適用しない（テスト最小経路）。
+  rateLimits?: RateLimitMiddlewares;
 }
 
 export const createCakeRouter = (deps: CakeRouterDeps): OpenAPIHono<AppEnv> => {
   const router = createOpenAPIHono();
+  const rl = deps.rateLimits;
 
+  // ----- Rate Limit の貼り方（cakes は GET / と POST / が同じパス '/' で衝突するため
+  //       restrictToMethods で method を絞る）-----
+  //   - GET /    → publicRead
+  //   - GET /{id} → publicRead
+  //   - POST /   → authWrite（管理者操作。adminGuard で認証済みのため user キーが解決済み）
+  //   - PATCH /{id} → authWrite（同上）
+  //   登録順は「mw を貼る → openapi で handler 登録」の繰り返し。Hono は use 登録時点
+  //   以降の handler にだけ mw を適用するため、GET / が先に登録されれば後続の POST / 用
+  //   adminGuard / authWrite が GET / に混入しない。
+
+  if (rl) router.use('/', restrictToMethods(['GET'], rl.publicRead));
   router.openapi(listCakesRoute, async (c) => {
     const controller = c.get('modules').cakes;
     const query = c.req.valid('query');
@@ -204,6 +220,7 @@ export const createCakeRouter = (deps: CakeRouterDeps): OpenAPIHono<AppEnv> => {
 
   // GET /{id} は認証不要。adminGuard を貼る前に登録することで public のまま保つ
   //（Hono は .use() の登録順でミドルウェア適用範囲が決まるため、順序が重要）。
+  if (rl) router.use('/{id}', restrictToMethods(['GET'], rl.publicRead));
   router.openapi(getCakeByIdRoute, async (c) => {
     const controller = c.get('modules').cakes;
     const { id } = c.req.valid('param');
@@ -213,6 +230,7 @@ export const createCakeRouter = (deps: CakeRouterDeps): OpenAPIHono<AppEnv> => {
   });
 
   router.use(createCakeRoute.getRoutingPath(), ...deps.adminGuard);
+  if (rl) router.use(createCakeRoute.getRoutingPath(), restrictToMethods(['POST'], rl.authWrite));
   router.openapi(createCakeRoute, async (c) => {
     const controller = c.get('modules').cakes;
     const input = c.req.valid('json');
@@ -223,6 +241,8 @@ export const createCakeRouter = (deps: CakeRouterDeps): OpenAPIHono<AppEnv> => {
   // PATCH /{id}（在庫更新）は管理者専用。adminGuard を /{id} パスにも貼ってから登録する。
   // If-Match は OpenAPI では検証任意（欠落時の 428 は controller で能動的に投げる）。
   router.use(updateCakeStockRoute.getRoutingPath(), ...deps.adminGuard);
+  if (rl)
+    router.use(updateCakeStockRoute.getRoutingPath(), restrictToMethods(['PATCH'], rl.authWrite));
   router.openapi(updateCakeStockRoute, async (c) => {
     const controller = c.get('modules').cakes;
     const { id } = c.req.valid('param');

@@ -1,5 +1,5 @@
 import type { ErrorHandler } from 'hono';
-import { AppError } from '@/shared/domain/errors';
+import { AppError, RateLimitedError } from '@/shared/domain/errors';
 import type { AppEnv } from '@/shared/http/request-context';
 import type { AppLogger } from '@/shared/infrastructure/logger';
 
@@ -28,6 +28,11 @@ export const createErrorHandler = (fallbackLogger: AppLogger): ErrorHandler<AppE
       // 業務エラーは warn レベル。req スコープロガーが乗っていれば requestId / method / path は
       // child binding 側で出るので、ここでは AppError 固有の code だけ追加で乗せる。
       logger.warn({ err, code: err.code }, 'Application error');
+      // Rate Limit だけ HTTP 標準の Retry-After ヘッダを別途付ける（RFC 6585 §4）。
+      // 統一エラー本文の details にも Retry-After は乗るが、ヘッダ経由でも読めるようにする。
+      if (err instanceof RateLimitedError) {
+        c.header('Retry-After', String(err.retryAfterSec));
+      }
       return c.json(
         {
           error: {
