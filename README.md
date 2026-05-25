@@ -163,6 +163,8 @@ Next.js が無くても、本 API 単体で以下のように利用可能:
 
 ## クイックスタート
 
+> **学習は基本的にローカル Supabase（`supabase start`）で行う前提です**。Cloud 側（staging / production）は Phase 完了時のスモークテストや OpenAPI・RLS・メール周りの実機検証用に置いてあるだけで、普段は Free Tier の auto-pause（7 日無アクティビティで停止）を受け入れて寝かせています。Dashboard の `Restore project` ボタンで数分・無料で復活するので、cloud 検証したくなったときに起こしてください。長期 paused から削除されたとしても、本リポジトリは migration + seed を持っているので新規プロジェクトを立て直して当てれば学習を継続できます。
+
 ### 前提
 
 - **Node.js 22 LTS**（[fnm](https://github.com/Schniz/fnm) 推奨。`.node-version` で自動切替）
@@ -336,6 +338,7 @@ watching https://cake-shop-api-staging.<account>.workers.dev/health  (interval 0
 - **鍵の置き場**: `SUPABASE_URL` / `SUPABASE_ANON_KEY`（新方式なら publishable key）/ `SUPABASE_SERVICE_ROLE_KEY`（新方式なら secret key）は **`pnpm wrangler:secret:<env> <NAME>` で Worker ごとに登録**。リポジトリにも GitHub Secrets にも置かない。新方式の secret key は生成直後の 1 回しか全文表示されないので即コピー。
 - **アクセス制御の境界は RLS**: `cakes` は SELECT 公開・書込は service_role のみ、`customers` は INSERT 匿名可・SELECT 本人のみ、`orders`/`order_items` は本人のみ。アプリはリクエストごとに anon クライアントを作り JWT を載せて呼ぶ（クライアントを信じない）。
 - **メール**: 本番は `enable_confirmations = ON`（＝正しい設定）。ローカルも `supabase/config.toml` で揃える（Phase 8 Step 1 完了）。確認メールのテンプレート・Custom SMTP・確認後リダイレクトの運用は **Phase 8** で引き続き扱う。
+- **auto-pause を受け入れる方針**: staging / production の Supabase は Free Tier のため、7 日間アクセスがないと自動 pause される。本プロジェクトは「学習はローカル Supabase 主体」の方針なので keep-alive 等の延命策は入れていない。pause された場合は Dashboard から `Restore project` で復活させる（数分・無料）。万一 90 日経過で削除されても、`supabase/migrations/*.sql` と `supabase/seed*.sql` から新規プロジェクトを立て直して当てれば復活する。「いつでも cloud が叩ける状態」が必要になったら Supabase Pro（$25/月）への昇格を検討する。
 
 ### このリポジトリ固有の名前 vs 差し替えるもの
 
@@ -967,6 +970,89 @@ curl -i "$BASE/v1/cakes" | grep -iE '^(HTTP|retry-after)'
 
 > **メモ（テスト時の `wrangler.toml` 警告）**: `@cloudflare/vitest-pool-workers@0.8.x` が同梱する wrangler は古めで、workers プール起動時に `Unexpected fields found in top-level field: "ratelimits"` という warning を吐く。これは vitest プール側の bundled wrangler が `[[ratelimits]]` を未認知なだけで、**実デプロイ（`pnpm wrangler:deploy:*`）は最新の `wrangler` が解釈するため問題ない**。pool 側が追随したら自動で消える（vitest 4.x + pool 0.15.x 移行待ち）。
 
+### `POST /v1/*` の Idempotency-Key 仕様（Phase 10 Step 6）
+
+ネットワーク再送や「送信ボタン連打」による二重作成（同じ注文が 2 件、同じ顧客が 2 件、同じケーキが 2 件）を防ぐため、全 POST エンドポイントで **Stripe スタイルの `Idempotency-Key` ヘッダを必須化**した。クライアントは「論理的に 1 回の操作」につき 1 つの key を生成（UUID v4 等）し、ネットワーク失敗時は **同じ key + 同じ body** で再送する。サーバは初回のレスポンスを 24h 永続化しておき、再送が来たら handler を再実行せずにそのまま返す。
+
+**契約**:
+
+| ケース                                    | 挙動                                                                     | レスポンス                                                     |
+| ----------------------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------- |
+| `Idempotency-Key` ヘッダ未指定 / 形式不正 | 即弾く（1〜255 文字・ASCII 印字可能のみ）                                | `400 IDEMPOTENCY_KEY_REQUIRED`                                 |
+| 初回（同じ key の予約なし）               | handler 実行 → レスポンスを `idempotency_keys` に保存                    | 通常のステータス（201 等）                                     |
+| 同じ key + 同じ body の再送               | handler を呼ばず保存済みレスポンスをそのまま返す                         | 初回と同じ status + body + `Idempotency-Replayed: true` ヘッダ |
+| 同じ key + 違う body                      | クライアントの key 使い回しミス                                          | `422 IDEMPOTENCY_KEY_REUSED`                                   |
+| 同じ key で 1 回目がまだ完了していない    | 並行リクエスト or 直前の処理が応答待ち。クライアントはバックオフして再送 | `409 IDEMPOTENCY_IN_PROGRESS`                                  |
+
+**adopted owner（隔離スコープ）**:
+
+| エンドポイント       | owner_type | owner_id ソース                 | 理由                                                                        |
+| -------------------- | ---------- | ------------------------------- | --------------------------------------------------------------------------- |
+| `POST /v1/orders`    | `user`     | JWT subject（`auth.users.id`）  | 認証必須。「ユーザ A の key=k1」と「ユーザ B の key=k1」は完全に独立        |
+| `POST /v1/cakes`     | `user`     | JWT subject（admin の user.id） | 管理者操作。adminGuard 後に動くので user 確定済み                           |
+| `POST /v1/customers` | `ip`       | `cf-connecting-ip` ヘッダ       | サインアップは**未認証**経路のため IP で隔離（Cloudflare が改竄不能で注入） |
+
+複合主キーは `(key, owner_type, owner_id, scope)` で、`scope = 'POST /v1/orders'` 等のエンドポイント固有文字列を加えることで「同じ key を `POST /v1/orders` と `POST /v1/customers` で誤って共有しても衝突しない」保証を作る。
+
+**永続化レイアウト**（migration `0007_idempotency_keys.sql`）:
+
+```sql
+create table public.idempotency_keys (
+  key             text          not null,
+  owner_type      text          not null check (owner_type in ('user','ip')),
+  owner_id        text          not null,
+  scope           text          not null,
+  request_hash    text          not null,
+  status          text          not null check (status in ('in_progress','completed')) default 'in_progress',
+  response_status int,
+  response_body   jsonb,
+  created_at      timestamptz   not null default now(),
+  completed_at    timestamptz,
+  expires_at      timestamptz   not null default now() + interval '24 hours',
+  primary key (key, owner_type, owner_id, scope)
+);
+alter table public.idempotency_keys enable row level security;
+-- 明示ポリシー無し → service_role 専用。anon / authenticated からは見えない
+create index on public.idempotency_keys (expires_at);
+```
+
+**実装の要点**:
+
+- **port + 2 実装**: `IdempotencyStore`（`app/shared/infrastructure/idempotency-store.ts`）は `tryReserve(record) → { kind: 'inserted'|'in_progress'|'mismatch'|'replay' }` + `complete(record, payload)` の 2 メソッド。`InMemoryIdempotencyStore` は node-unit プールの高速テスト用、`SupabaseIdempotencyStore`（`app/shared/infrastructure/supabase-idempotency-store.ts`）が本番経路。
+- **アトミック予約**: `SupabaseIdempotencyStore.tryReserve` は PostgREST の `.upsert(..., { ignoreDuplicates: true, onConflict: 'key,owner_type,owner_id,scope' })` で **`INSERT … ON CONFLICT DO NOTHING RETURNING *`** 相当を 1 リクエストで打つ。挿入できれば `inserted`、衝突なら既存行を SELECT して expired / replay / in_progress / mismatch を判定。「最初の completed が勝つ」semantics は `complete` 側で `WHERE status='in_progress'` を付けて担保。
+- **canonical JSON + SHA-256**: middleware（`app/shared/http/idempotency.middleware.ts`）は `await c.req.text()` で生 body を取り、JSON ならキーを再帰的に sort してから `JSON.stringify` → Web Crypto `crypto.subtle.digest('SHA-256', ...)` → hex で `request_hash` を作る。プロパティ順序が違うだけの「同じ意味の body」を別ハッシュにしない。`node:crypto` には依存しないので Workers でそのまま動く。
+- **replay レスポンス**: `c.newResponse(JSON.stringify(body), status, { 'Content-Type': 'application/json; charset=UTF-8' })` で組み立て、`Idempotency-Replayed: true` ヘッダを乗せる（観測性確保。クライアントは「実際に再実行された」のか「キャッシュから返った」のか区別できる）。
+- **挿入順**: `rate-limit → auth/admin guard → idempotency → handler` の順に貼る。未認証で 401 を返す経路は idempotency まで届かず store を消費しない。route 側は `restrictToMethods(['POST'], deps.idempotency)` で同パス共有の GET 経路に副作用を出さない（cakes の `GET /` と `POST /` は同じ Hono path）。
+- **DI**: `bootstrap.ts` の `buildIdempotencyMiddlewares()` が `IdempotencyStore` から 3 つの `MiddlewareHandler` を組み立てる。store 未注入時は `noopIdempotencyMiddleware` を返し、Node ローカル / テスト最小経路では完全に外せる。
+- **コミット時の Co-Authored-By**: 学習プロジェクト方針で付けない（global settings.json で disabled）。
+
+**curl での確認例**:
+
+```bash
+# 初回 → 201（Idempotency-Replayed なし）
+curl -i -X POST http://localhost:3010/v1/customers \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: 5e1b0c70-7c3f-4c0b-a4f4-1c1a1d1a1f01' \
+  -d '{"name":"Alice","email":"alice@example.com","password":"Strong@P4ss"}'
+# 同じ key + 同じ body → 201 + Idempotency-Replayed: true（DB は 1 件のまま）
+curl -i -X POST http://localhost:3010/v1/customers \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: 5e1b0c70-7c3f-4c0b-a4f4-1c1a1d1a1f01' \
+  -d '{"name":"Alice","email":"alice@example.com","password":"Strong@P4ss"}'
+# 同じ key + 違う body → 422 IDEMPOTENCY_KEY_REUSED
+curl -i -X POST http://localhost:3010/v1/customers \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: 5e1b0c70-7c3f-4c0b-a4f4-1c1a1d1a1f01' \
+  -d '{"name":"Mallory","email":"mallory@example.com","password":"Other@P4ss"}'
+```
+
+**未対応事項（学習段階の割り切り）**:
+
+- **expired 行の物理削除**: `expires_at < now()` の行は `tryReserve` 内で検出して上書きするが、`pg_cron` 等での定期 GC は入れていない。テーブルは増え続けるので、長期運用では cron + DELETE を追加する。
+- **冪等な GET / DELETE**: GET は元から副作用なし、DELETE は冪等な操作として扱える（RFC 7231）ので Idempotency-Key を強制していない。
+- **5xx の replay**: handler が 5xx を返した場合もそのまま保存して replay する素朴な実装。Stripe は 5xx だけは保存しない（クライアントが再試行できる）方針だが、本実装では「保存されたエラーは別 key で再試行」する運用にしている（学習段階の簡素化）。
+- **DB トランザクション**: `tryReserve` と handler 実行は別接続のため、handler が DB トランザクションを張る場合でも idempotency 行と業務行は別コミット。学習段階では許容（「同じ key の再送はサーバが捌くが、別 key で並行に来た同一意味の操作は handler 側で 409/重複検知する」前提）。
+
 ### `GET /v1/orders` のページネーション仕様（Phase 10 Step 1.5）
 
 注文一覧は **認証ユーザー本人の注文のみ**を、**カーソルベース（キーセット）ページネーション**で新しい順に返す。Step 1（cakes）のコーデックをそのまま再利用し、カーソルのキーだけ `(placed_at, id)` に差し替えた構成。
@@ -1249,7 +1335,7 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
   - [x] Step 3（2026-05-21 完了）: **検索（`/v1/cakes`）** — `q` を `ILIKE` 部分一致から **PGroonga 全文検索**に置換。日本語のケーキ名を 2 文字クエリ・ひらがな部分一致でも拾えるようにし、Step 1/2 のソート・キーセットページネーションは維持（あいまい検索＋キーセット、関連度ランキングはしない）。`pg_trgm`（3 文字トライグラム最小・苺/いちご別扱い）/ 標準 `tsvector`（日本語をトークン分割できない）の弱点を言語化したうえで PGroonga を採用。PostgREST は PGroonga 演算子 `&@` を直接呼べないため `place_order` と同じく RPC（`search_cakes` 関数 = `supabase/migrations/0005_cakes_pgroonga_search.sql`）に閉じ込め、検索 + フィルタ + 多段ソート + キーセットを動的 SQL（`%I` 識別子ホワイトリスト + `%L` 値で injection 防止）で処理。repository は `nameSearch` 有無で RPC / 従来 PostgREST を分岐。in-memory は部分一致で近似し、実 DB 挙動（2 文字「抹茶」・ひらがな「いちご」）は workers プールの実 Supabase テストで担保。詳細仕様は「[`GET /v1/cakes` のあいまい検索仕様](#get-v1cakes-のあいまい検索仕様phase-10-step-3)」参照
   - [x] Step 4（2026-05-22 完了）: **楽観ロック** — `ETag` + `If-Match` で更新競合検知。Cake の在庫更新（`PATCH /v1/cakes/:id`・stock 絶対値で冪等）に導入し、`GET /v1/cakes/:id`（ETag 取得用・認証不要）を新設。版は `cakes.version` 整数カラム + `BEFORE UPDATE` トリガ採番（`supabase/migrations/0006_cakes_optimistic_lock.sql`）で、`UPDATE … WHERE id=? AND version=?` の原子的更新により lost update を防ぐ。当初案の `409 CONFLICT` ではなく **RFC 準拠の 412 PRECONDITION_FAILED（版不一致）/ 428 PRECONDITION_REQUIRED（If-Match 欠落）** を採用（428 で無条件上書きを構造的に禁止）。Weak ETag（`W/"<version>"`）コーデックは `app/shared/http/etag.ts`。in-memory は version+1 でトリガを模し、実 DB の競合挙動は workers プールの実 Supabase テストで担保（409 テスト全緑）。詳細仕様は「[`GET /v1/cakes/:id` + `PATCH /v1/cakes/:id` の楽観ロック仕様](#get-v1cakesid--patch-v1cakesid-の楽観ロック仕様phase-10-step-4)」参照
   - [x] Step 5（2026-05-24 完了）: **Rate Limit** — Cloudflare Workers の `[[ratelimits]]` binding を 3 本（`LIMITER_PUBLIC_READ` 100/10s・`LIMITER_PUBLIC_WRITE` 5/60s・`LIMITER_AUTH_WRITE` 10/10s）に分割し、IP キー（公開系）/ user キー（認証系）で使い分け。binding の `limit()` は `{ success }` しか返さないので middleware factory が wrangler.toml の period から `Retry-After` を焼き込む。Hono の `router.use(path, mw)` がメソッドを区別しない弱点は `restrictToMethods` ヘルパで補い、`GET /` / `POST /` で `/` を共有する `cakes` / `customers` でもメソッド別 limiter を割り当てた。超過は **429 RATE_LIMITED + Retry-After ヘッダ** を返し、`details[0].field='Retry-After'` にも同値を載せる（JSON だけ読むクライアントでも秒数が取れる）。テストは node-unit プールで `InMemoryRateLimiter`（固定ウィンドウ + `now()` 差し替え）による middleware 単体 + 統合テストで「公開 GET が枯れても POST には影響しない」（`restrictToMethods` の効果）を検証、`pnpm verify` 緑（426 テスト）。詳細仕様は「[`/v1/*` の Rate Limit 仕様](#v1-の-rate-limit-仕様phase-10-step-5)」参照
-  - [ ] Step 6: **Idempotency-Key** — `POST /v1/orders` で重複作成防止。`Idempotency-Key` ヘッダ + KV/DB キャッシュで同レスポンス返却（Stripe API スタイル）
+  - [x] Step 6（2026-05-25 完了）: **Idempotency-Key** — 全 POST エンドポイント（`/v1/orders`・`/v1/cakes`・`/v1/customers`）で `Idempotency-Key` ヘッダ必須化（Stripe スタイル）、Postgres 永続化で再送による二重作成を防ぐ。新規テーブル `idempotency_keys`（migration `0007_idempotency_keys.sql`・複合主キー `(key, owner_type, owner_id, scope)` + `request_hash` + `status` + `response_status/body` + `expires_at(default now()+24h)`、RLS 明示ポリシー無し = service_role 専用）。`IdempotencyStore` ポート（`app/shared/infrastructure/idempotency-store.ts`）は 4 状態 union（`inserted`/`replay`/`in_progress`/`mismatch`）を返す `tryReserve` + `complete` の 2 メソッドで、Supabase 実装は PostgREST の `.upsert(..., { ignoreDuplicates: true, onConflict: 'key,owner_type,owner_id,scope' })` で `INSERT … ON CONFLICT DO NOTHING` 相当を達成。middleware（`app/shared/http/idempotency.middleware.ts`）は **canonical JSON**（キー sort）+ Web Crypto SHA-256 で body をハッシュ化し、replay 経路では `c.newResponse(JSON.stringify(body), status)` で再現 + `Idempotency-Replayed: true` ヘッダ。owner は orders/cakes が user.id・customers は cf-connecting-ip。挿入順は `rate-limit → auth/admin → idempotency` で、認証未通過は 401/403 が先に出て store を消費しない。失敗は **400 `IDEMPOTENCY_KEY_REQUIRED`（欠落 / 形式不正）/ 409 `IDEMPOTENCY_IN_PROGRESS`（処理中）/ 422 `IDEMPOTENCY_KEY_REUSED`（同 key・違う body）**。詳細仕様は「[`POST /v1/*` の Idempotency-Key 仕様](#post-v1-の-idempotency-key-仕様phase-10-step-6)」参照
   - [ ] Step 7: **Webhook 配信** — 「注文確定」ドメインイベントを外部 URL に POST。HMAC 署名 + retry-with-backoff + DLQ 設計
 
 ---

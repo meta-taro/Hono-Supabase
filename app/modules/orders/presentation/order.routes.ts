@@ -4,6 +4,7 @@ import type { MiddlewareHandler } from 'hono';
 import { createOpenAPIHono } from '@/shared/http/openapi-hono';
 import type { AppEnv } from '@/shared/http/request-context';
 import type { RateLimitMiddlewares } from '@/app';
+import { restrictToMethods } from '@/shared/http/rate-limit.middleware';
 import { UnauthorizedError } from '@/shared/domain/errors';
 import {
   CreateOrderRequestSchema,
@@ -130,6 +131,9 @@ export interface OrderRouterDeps {
   authGuard: MiddlewareHandler<AppEnv>[];
   // Phase 10 Step 5: Rate Limit middleware。未指定なら何も適用しない（テスト最小経路）。
   rateLimits?: RateLimitMiddlewares;
+  // Phase 10 Step 6: POST /v1/orders に貼る Idempotency middleware。
+  //   未指定なら適用しない（テスト最小経路 / Supabase 未接続）。
+  idempotency?: MiddlewareHandler<AppEnv>;
 }
 
 export const createOrderRouter = (deps: OrderRouterDeps): OpenAPIHono<AppEnv> => {
@@ -144,6 +148,12 @@ export const createOrderRouter = (deps: OrderRouterDeps): OpenAPIHono<AppEnv> =>
   //   注意: authWrite は「user キーで limit する authenticated 系」を意味し、GET も含む。
   //   bindings 名（LIMITER_AUTH_WRITE）の "write" は wrangler.toml 都合の名残。
   if (deps.rateLimits) router.use('*', deps.rateLimits.authWrite);
+
+  // Phase 10 Step 6: POST / にだけ Idempotency middleware を貼る（GET 系は対象外）。
+  //   順序は rate-limit → auth → idempotency。auth が先に通っているので user が確定済み、
+  //   idempotency store の owner キーに user.id をそのまま使える。
+  //   `/` パスは GET と POST で共有のため restrictToMethods で POST のみに絞る。
+  if (deps.idempotency) router.use('/', restrictToMethods(['POST'], deps.idempotency));
 
   router.openapi(placeOrderRoute, async (c) => {
     const user = c.get('user');

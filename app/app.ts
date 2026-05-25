@@ -68,6 +68,21 @@ export interface RateLimitMiddlewares {
   authWrite: MiddlewareHandler<AppEnv>;
 }
 
+// Phase 10 Step 6: 各 router に流し込む Idempotency-Key middleware の束。
+//   orders     POST /v1/orders      user スコープ（auth 後に動く前提）
+//   cakes      POST /v1/cakes       user スコープ（adminGuard 後に動く前提）
+//   customers  POST /v1/customers   ip スコープ（サインアップは認証前）
+//
+// scope 文字列（'POST /v1/orders' 等）は middleware factory 内で固定し、bootstrap が
+// 各 endpoint 用に組み立てる。route 側は受け取って use() に貼るだけ。
+//
+// 未指定 → 何も適用しない（テスト最小経路 / Supabase 未接続経路用）。
+export interface IdempotencyMiddlewares {
+  orders: MiddlewareHandler<AppEnv>;
+  cakes: MiddlewareHandler<AppEnv>;
+  customers: MiddlewareHandler<AppEnv>;
+}
+
 export interface AppOptions {
   rootMiddlewares: MiddlewareHandler<AppEnv>[];
   guards: AppGuards;
@@ -75,6 +90,10 @@ export interface AppOptions {
   //   未指定 → 何も適用しない（最小 health.test.ts 用の build path / fakeAuth 経路）。
   //   bootstrap 経由の本番組み立てでは buildRateLimitMiddlewares() の結果が常に入る。
   rateLimitMiddlewares?: RateLimitMiddlewares;
+  // Phase 10 Step 6: 各 router に流し込む Idempotency middleware の束（optional）。
+  //   未指定 → 何も適用しない（fakeAuth 経路・最小ビルド / store 未注入時）。
+  //   bootstrap 経由の本番組み立てでは buildIdempotencyMiddlewares() の結果が入る。
+  idempotencyMiddlewares?: IdempotencyMiddlewares;
   // Phase 9 Step 1: /health 含む全パスに通すミドルウェア。
   // requestContextMiddleware（requestId 採用 / 生成 + req スコープロガー）を載せる前提。
   globalMiddlewares?: MiddlewareHandler<AppEnv>[];
@@ -136,17 +155,30 @@ export const createApp = (options?: AppOptions): OpenAPIHono<AppEnv> => {
     }
 
     const rl = options.rateLimitMiddlewares;
+    const idem = options.idempotencyMiddlewares;
     app.route(
       '/v1/cakes',
-      createCakeRouter({ adminGuard: options.guards.adminGuard, rateLimits: rl }),
+      createCakeRouter({
+        adminGuard: options.guards.adminGuard,
+        rateLimits: rl,
+        idempotency: idem?.cakes,
+      }),
     );
     app.route(
       '/v1/customers',
-      createCustomerRouter({ adminGuard: options.guards.adminGuard, rateLimits: rl }),
+      createCustomerRouter({
+        adminGuard: options.guards.adminGuard,
+        rateLimits: rl,
+        idempotency: idem?.customers,
+      }),
     );
     app.route(
       '/v1/orders',
-      createOrderRouter({ authGuard: options.guards.authGuard, rateLimits: rl }),
+      createOrderRouter({
+        authGuard: options.guards.authGuard,
+        rateLimits: rl,
+        idempotency: idem?.orders,
+      }),
     );
   }
 

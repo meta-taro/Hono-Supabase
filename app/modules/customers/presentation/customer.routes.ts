@@ -78,6 +78,9 @@ export interface CustomerRouterDeps {
   adminGuard: MiddlewareHandler<AppEnv>[];
   // Phase 10 Step 5: Rate Limit middleware。未指定なら何も適用しない（テスト最小経路）。
   rateLimits?: RateLimitMiddlewares;
+  // Phase 10 Step 6: POST /v1/customers（サインアップ）に貼る Idempotency middleware。
+  //   未指定なら適用しない（テスト最小経路 / Supabase 未接続）。
+  idempotency?: MiddlewareHandler<AppEnv>;
 }
 
 export const createCustomerRouter = (deps: CustomerRouterDeps): OpenAPIHono<AppEnv> => {
@@ -93,6 +96,11 @@ export const createCustomerRouter = (deps: CustomerRouterDeps): OpenAPIHono<AppE
   //   - GET  / (admin)    → authWrite (10/10s per user) — adminGuard で認証済みのため user キー
   //   path が同じ '/' なので restrictToMethods で method を絞る。
   if (rl) router.use('/', restrictToMethods(['POST'], rl.publicWrite));
+  // Phase 10 Step 6: POST /（signUp）は未認証経路だが、再送によるアカウント二重作成を
+  //   防ぐため Idempotency-Key を必須化する。owner は IP（bootstrap 側で ipOwner を選択）。
+  //   path が GET / と共有のため restrictToMethods で POST に絞る。
+  //   rate-limit の後 / signUp handler の前 = 攻撃面の絞り込みを先に通す。
+  if (deps.idempotency) router.use('/', restrictToMethods(['POST'], deps.idempotency));
   router.openapi(signUpCustomerRoute, async (c) => {
     const controller = c.get('modules').customers;
     const input = c.req.valid('json');

@@ -1,13 +1,19 @@
 import type { OpenAPIHono } from '@hono/zod-openapi';
 import type { MiddlewareHandler } from 'hono';
 import { createClient } from '@supabase/supabase-js';
-import { createApp, type HealthDbProbe, type RateLimitMiddlewares } from '@/app';
+import {
+  createApp,
+  type HealthDbProbe,
+  type IdempotencyMiddlewares,
+  type RateLimitMiddlewares,
+} from '@/app';
 import type { AppEnv } from '@/shared/http/request-context';
 import type { Env } from '@/shared/http/env';
 import type { AppLogger } from '@/shared/infrastructure/logger';
 import type { JwksFetcherProvider } from '@/shared/infrastructure/jwks-fetcher';
 import type { MetricsRecorder } from '@/shared/infrastructure/metrics';
 import type { RateLimiter } from '@/shared/http/rate-limiter';
+import type { IdempotencyStore } from '@/shared/infrastructure/idempotency-store';
 import { createModulesMiddleware } from '@/shared/composition-root';
 import {
   createOptionalAuthMiddleware,
@@ -26,6 +32,12 @@ import {
   noopRateLimitMiddleware,
   userOrIpKey,
 } from '@/shared/http/rate-limit.middleware';
+import {
+  createIdempotencyMiddleware,
+  ipOwner,
+  noopIdempotencyMiddleware,
+  userOwner,
+} from '@/shared/http/idempotency.middleware';
 
 // Phase 9 Step 3a: /health の DB プローブ実装。
 //   - anon キーで cakes を 1 行 select するだけ（RLS で public read 可能）
@@ -97,6 +109,11 @@ export interface BootstrapDeps {
     publicWrite?: RateLimiter;
     authWrite?: RateLimiter;
   };
+  // Phase 10 Step 6: Idempotency-Key 永続化ストア。
+  //   未注入時は noop middleware に倒し、各 POST が「Idempotency-Key 不要」な
+  //   経路に戻る（テスト最小経路 / wrangler dev で binding 未準備のとき）。
+  //   本番（Workers）は admin SupabaseClient + SupabaseIdempotencyStore を渡す。
+  idempotencyStore?: IdempotencyStore;
 }
 
 // Phase 10 Step 5: Rate Limit middleware を 3 種類組み立てる。
@@ -139,8 +156,51 @@ const buildRateLimitMiddlewares = (
   return { publicRead, publicWrite, authWrite };
 };
 
+// Phase 10 Step 6: Idempotency middleware を 3 種類組み立てる。
+//
+//   scope はエンドポイントごとに固有名前空間を切るための文字列。'POST /v1/orders' のように
+//   HTTP method + path で命名し、運用ログ / DB 行を見たときに何のエンドポイントか即座に
+//   分かるようにする。owner は orders/cakes が認証必須なので userOwner、customers は
+//   サインアップ（未認証）のため ipOwner を割り当てる。
+//
+//   store 未注入時は全 endpoint で noop に倒す（route 側は常に middleware を受け取る前提を保つ）。
+const buildIdempotencyMiddlewares = (store?: IdempotencyStore): IdempotencyMiddlewares => {
+  if (!store) {
+    return {
+      orders: noopIdempotencyMiddleware,
+      cakes: noopIdempotencyMiddleware,
+      customers: noopIdempotencyMiddleware,
+    };
+  }
+  return {
+    orders: createIdempotencyMiddleware({
+      store,
+      scope: 'POST /v1/orders',
+      resolveOwner: userOwner,
+    }),
+    cakes: createIdempotencyMiddleware({
+      store,
+      scope: 'POST /v1/cakes',
+      resolveOwner: userOwner,
+    }),
+    customers: createIdempotencyMiddleware({
+      store,
+      scope: 'POST /v1/customers',
+      resolveOwner: ipOwner,
+    }),
+  };
+};
+
 export const bootstrap = (deps: BootstrapDeps): OpenAPIHono<AppEnv> => {
-  const { env, logger, jwksFetcherProvider, appVersion, metricsRecorder, rateLimiters } = deps;
+  const {
+    env,
+    logger,
+    jwksFetcherProvider,
+    appVersion,
+    metricsRecorder,
+    rateLimiters,
+    idempotencyStore,
+  } = deps;
 
   // accessLog に渡す metrics binding を組み立てる。recorder 未注入時は undefined
   // のまま渡して middleware 側でも no-op に倒す（書き込み経路を一切走らせない）。
@@ -153,6 +213,7 @@ export const bootstrap = (deps: BootstrapDeps): OpenAPIHono<AppEnv> => {
     : undefined;
 
   const rateLimitMiddlewares = buildRateLimitMiddlewares(rateLimiters);
+  const idempotencyMiddlewares = buildIdempotencyMiddlewares(idempotencyStore);
 
   return createApp({
     // Phase 9 Step 1/2/4: 全パス（/health 含む）に通すグローバルミドルウェア。
@@ -175,6 +236,7 @@ export const bootstrap = (deps: BootstrapDeps): OpenAPIHono<AppEnv> => {
       authGuard: [requireAuth()],
     },
     rateLimitMiddlewares,
+    idempotencyMiddlewares,
     logger,
     appVersion,
     healthDbProbe: createHealthDbProbe(env),

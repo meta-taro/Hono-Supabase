@@ -12,6 +12,9 @@ export type ErrorCode =
   | 'PRECONDITION_FAILED'
   | 'PRECONDITION_REQUIRED'
   | 'RATE_LIMITED'
+  | 'IDEMPOTENCY_KEY_REQUIRED'
+  | 'IDEMPOTENCY_IN_PROGRESS'
+  | 'IDEMPOTENCY_KEY_REUSED'
   | 'INTERNAL_SERVER_ERROR';
 
 export interface ErrorDetail {
@@ -91,6 +94,35 @@ export class PreconditionRequiredError extends AppError {
   constructor(message = 'If-Match ヘッダが必要です') {
     super('PRECONDITION_REQUIRED', message, 428);
     this.name = 'PreconditionRequiredError';
+  }
+}
+
+// Idempotency-Key middleware（Phase 10 Step 6）の 3 種類の失敗状態。
+//   - IdempotencyKeyRequiredError(400): ヘッダ欠落 / 空 / 長さ超過 / 非 ASCII 印字可能。
+//       クライアントは「適切な Idempotency-Key を付けて再送」できる。
+//   - IdempotencyInProgressError(409): 同じ key + owner + scope で in_progress の予約あり。
+//       1 回目がまだ完了していない → クライアントはバックオフして再送する。
+//   - IdempotencyKeyReusedError(422): 同じ key + owner + scope で完了済みだが body が異なる。
+//       クライアントが key の使い回し（新規操作なのに古い key を再利用）に失敗している。
+//       422 = リクエスト構文は正しいが意味的に処理不能（Stripe 流の選択）。
+export class IdempotencyKeyRequiredError extends AppError {
+  constructor(message: string) {
+    super('IDEMPOTENCY_KEY_REQUIRED', message, 400);
+    this.name = 'IdempotencyKeyRequiredError';
+  }
+}
+
+export class IdempotencyInProgressError extends AppError {
+  constructor(message = '同じ Idempotency-Key の処理が進行中です') {
+    super('IDEMPOTENCY_IN_PROGRESS', message, 409);
+    this.name = 'IdempotencyInProgressError';
+  }
+}
+
+export class IdempotencyKeyReusedError extends AppError {
+  constructor(message = '同じ Idempotency-Key で異なるリクエストボディが送られました') {
+    super('IDEMPOTENCY_KEY_REUSED', message, 422);
+    this.name = 'IdempotencyKeyReusedError';
   }
 }
 

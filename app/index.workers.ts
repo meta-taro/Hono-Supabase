@@ -13,6 +13,8 @@ import {
   createNoopMetricsRecorder,
   type MetricsRecorder,
 } from '@/shared/infrastructure/metrics';
+import { createAdminClient } from '@/shared/infrastructure/supabase';
+import { SupabaseIdempotencyStore } from '@/shared/infrastructure/supabase-idempotency-store';
 
 // ---------------------------------------------------------------------------
 // Cloudflare Workers エントリ（本番デプロイ先）。
@@ -121,6 +123,11 @@ const buildHandler = (bindings: WorkersBindings): Handler => {
     authWrite: LIMITER_AUTH_WRITE,
   };
 
+  // Phase 10 Step 6: Idempotency 永続化は service_role 必須（RLS が明示ポリシーなしで
+  //   全 anon 経路を遮断するため）。admin SupabaseClient を 1 度だけ作って
+  //   SupabaseIdempotencyStore に渡す。cold start 1 回コストで毎リクエストの読み書きを賄える。
+  const idempotencyStore = new SupabaseIdempotencyStore(createAdminClient(env));
+
   const app = bootstrap({
     env,
     logger,
@@ -128,6 +135,7 @@ const buildHandler = (bindings: WorkersBindings): Handler => {
     appVersion,
     metricsRecorder,
     rateLimiters,
+    idempotencyStore,
   });
   return async (request, ctx) => app.fetch(request, bindings, ctx);
 };

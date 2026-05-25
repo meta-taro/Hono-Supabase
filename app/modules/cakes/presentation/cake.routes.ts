@@ -184,6 +184,9 @@ export interface CakeRouterDeps {
   adminGuard: MiddlewareHandler<AppEnv>[];
   // Phase 10 Step 5: Rate Limit middleware。未指定なら何も適用しない（テスト最小経路）。
   rateLimits?: RateLimitMiddlewares;
+  // Phase 10 Step 6: POST /v1/cakes に貼る Idempotency middleware。
+  //   未指定なら適用しない（テスト最小経路 / Supabase 未接続）。
+  idempotency?: MiddlewareHandler<AppEnv>;
 }
 
 export const createCakeRouter = (deps: CakeRouterDeps): OpenAPIHono<AppEnv> => {
@@ -231,6 +234,12 @@ export const createCakeRouter = (deps: CakeRouterDeps): OpenAPIHono<AppEnv> => {
 
   router.use(createCakeRoute.getRoutingPath(), ...deps.adminGuard);
   if (rl) router.use(createCakeRoute.getRoutingPath(), restrictToMethods(['POST'], rl.authWrite));
+  // Phase 10 Step 6: POST /v1/cakes は管理者操作だが、ネットワーク再送による
+  //   二重登録（同名 / 同 price のケーキが 2 件できる）を防ぐため Idempotency-Key を必須化。
+  //   adminGuard の後に貼ることで user.id（admin の認証ユーザ）で owner キーが解決される。
+  //   path が GET / と共有なので POST に method 制限する。
+  if (deps.idempotency)
+    router.use(createCakeRoute.getRoutingPath(), restrictToMethods(['POST'], deps.idempotency));
   router.openapi(createCakeRoute, async (c) => {
     const controller = c.get('modules').cakes;
     const input = c.req.valid('json');

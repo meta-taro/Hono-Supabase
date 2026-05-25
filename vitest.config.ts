@@ -51,6 +51,7 @@ export default defineConfig({
             'app/shared/infrastructure/node-pino-logger.test.ts',
             'app/shared/infrastructure/supabase.test.ts',
             'app/shared/infrastructure/metrics.test.ts',
+            'app/shared/infrastructure/idempotency-store.test.ts',
           ],
           env: {
             SUPABASE_URL: supabaseUrl,
@@ -74,6 +75,7 @@ export default defineConfig({
             'app/modules/*/infrastructure/**/*.test.ts',
             'app/__tests__/integration/**/*.test.ts',
             'app/shared/infrastructure/jwks-fetcher.test.ts',
+            'app/shared/infrastructure/supabase-idempotency-store.test.ts',
           ],
           poolOptions: {
             workers: {
