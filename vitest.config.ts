@@ -52,6 +52,8 @@ export default defineConfig({
             'app/shared/infrastructure/supabase.test.ts',
             'app/shared/infrastructure/metrics.test.ts',
             'app/shared/infrastructure/idempotency-store.test.ts',
+            'app/shared/infrastructure/webhook-dispatcher.test.ts',
+            'app/shared/infrastructure/webhook-event-publisher.test.ts',
           ],
           env: {
             SUPABASE_URL: supabaseUrl,
