@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createSilentLogger } from '@/shared/infrastructure/logger';
+import { NoopEventPublisher } from '@/shared/application/event-publisher';
 import type { MiddlewareHandler } from 'hono';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createApp } from '@/app';
@@ -20,6 +21,13 @@ import { createGetOrderUseCase } from '@/modules/orders/application/get-order.us
 import { createListOrdersUseCase } from '@/modules/orders/application/list-orders.usecase';
 import { createOrderController } from '@/modules/orders/presentation/order.controller';
 import { InMemoryOrderRepository } from '@/modules/orders/application/__test-helpers__/in-memory-order.repository';
+import { createRegisterSubscriptionUseCase } from '@/modules/webhooks/application/register-subscription.usecase';
+import { createListSubscriptionsUseCase } from '@/modules/webhooks/application/list-subscriptions.usecase';
+import { createDeleteSubscriptionUseCase } from '@/modules/webhooks/application/delete-subscription.usecase';
+import { createListDeliveriesUseCase } from '@/modules/webhooks/application/list-deliveries.usecase';
+import { createWebhookController } from '@/modules/webhooks/presentation/webhook.controller';
+import { InMemoryWebhookSubscriptionRepository } from '@/modules/webhooks/application/__test-helpers__/in-memory-webhook-subscription.repository';
+import { InMemoryWebhookDeliveryRepository } from '@/modules/webhooks/application/__test-helpers__/in-memory-webhook-delivery.repository';
 import { createFakeAuthMiddleware, requireAuth, requireAdmin } from '@/shared/http/auth.middleware';
 import type { AppEnv, AuthUser, RequestModules } from '@/shared/http/request-context';
 import { InMemoryRateLimiter } from '@/shared/http/rate-limiter';
@@ -84,7 +92,7 @@ const buildTestApp = (
 
   const ordersRepo = new InMemoryOrderRepository();
   const ordersController = createOrderController({
-    placeOrder: createPlaceOrderUseCase(ordersRepo, silentLogger),
+    placeOrder: createPlaceOrderUseCase(ordersRepo, silentLogger, NoopEventPublisher),
     getOrder: createGetOrderUseCase(ordersRepo),
     listOrders: createListOrdersUseCase(ordersRepo),
     resolveCustomerId: async (authUserId) => {
@@ -93,10 +101,20 @@ const buildTestApp = (
     },
   });
 
+  const webhookSubRepo = new InMemoryWebhookSubscriptionRepository();
+  const webhookDelRepo = new InMemoryWebhookDeliveryRepository();
+  const webhooksController = createWebhookController({
+    registerSubscription: createRegisterSubscriptionUseCase(webhookSubRepo, silentLogger),
+    listSubscriptions: createListSubscriptionsUseCase(webhookSubRepo),
+    deleteSubscription: createDeleteSubscriptionUseCase(webhookSubRepo, silentLogger),
+    listDeliveries: createListDeliveriesUseCase(webhookSubRepo, webhookDelRepo),
+  });
+
   const modules: RequestModules = {
     cakes: cakesController,
     customers: customersController,
     orders: ordersController,
+    webhooks: webhooksController,
   };
 
   // テストでは sb を実体として持たないので null 相当のスタブを積む。

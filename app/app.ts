@@ -7,6 +7,7 @@ import { createSilentLogger, type AppLogger } from '@/shared/infrastructure/logg
 import { createCakeRouter } from '@/modules/cakes/presentation/cake.routes';
 import { createCustomerRouter } from '@/modules/customers/presentation/customer.routes';
 import { createOrderRouter } from '@/modules/orders/presentation/order.routes';
+import { createWebhookRouter } from '@/modules/webhooks/presentation/webhook.routes';
 
 // Phase 9 Step 3a: /health の DB プローブ結果。
 //   ok        = REST 応答が成功した
@@ -81,6 +82,8 @@ export interface IdempotencyMiddlewares {
   orders: MiddlewareHandler<AppEnv>;
   cakes: MiddlewareHandler<AppEnv>;
   customers: MiddlewareHandler<AppEnv>;
+  // Phase 10 Step 7: POST /v1/webhooks/subscriptions 用。owner=user（admin guard 後）。
+  webhooks: MiddlewareHandler<AppEnv>;
 }
 
 export interface AppOptions {
@@ -97,6 +100,11 @@ export interface AppOptions {
   // Phase 9 Step 1: /health 含む全パスに通すミドルウェア。
   // requestContextMiddleware（requestId 採用 / 生成 + req スコープロガー）を載せる前提。
   globalMiddlewares?: MiddlewareHandler<AppEnv>[];
+  // Phase 10 Step 7: Webhook 配信ループを `/v1/*` の後段に挟む middleware。
+  //   `next()` の後で c.executionCtx.waitUntil で 1 ラウンドの delivery 配信を走らせる。
+  //   未指定 → 何も貼らない（テスト最小経路 / fetcher 未注入時）。/health には貼らない
+  //   （uptime monitor の叩きで配信ループが回ると意図しないバックグラウンド負荷になるため）。
+  webhookDispatchMiddleware?: MiddlewareHandler<AppEnv>;
   // onError ハンドラに渡す logger。省略時は silent（テストで明示注入したい場合のみ
   // 指定を推奨）。Phase 7 で error-handler を factory 化したことに伴う追加引数。
   // Phase 9 Step 1 以降は c.get('logger') があればそちらを優先（fallback として残す）。
@@ -154,6 +162,13 @@ export const createApp = (options?: AppOptions): OpenAPIHono<AppEnv> => {
       app.use('/v1/*', mw);
     }
 
+    // Phase 10 Step 7: webhook 配信ループは /v1/* 全体の出口で 1 ラウンドだけ回す。
+    //   modulesMiddleware の後段に置くことで `c.var.logger` を消費可能。
+    //   /health には貼らない（外形監視で副系を回さないため）。
+    if (options.webhookDispatchMiddleware) {
+      app.use('/v1/*', options.webhookDispatchMiddleware);
+    }
+
     const rl = options.rateLimitMiddlewares;
     const idem = options.idempotencyMiddlewares;
     app.route(
@@ -178,6 +193,14 @@ export const createApp = (options?: AppOptions): OpenAPIHono<AppEnv> => {
         authGuard: options.guards.authGuard,
         rateLimits: rl,
         idempotency: idem?.orders,
+      }),
+    );
+    app.route(
+      '/v1/webhooks',
+      createWebhookRouter({
+        adminGuard: options.guards.adminGuard,
+        rateLimits: rl,
+        idempotency: idem?.webhooks,
       }),
     );
   }

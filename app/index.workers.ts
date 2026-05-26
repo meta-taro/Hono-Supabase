@@ -136,6 +136,10 @@ const buildHandler = (bindings: WorkersBindings): Handler => {
     metricsRecorder,
     rateLimiters,
     idempotencyStore,
+    // Phase 10 Step 7: Workers では globalThis.fetch を webhook 配信用 fetcher として
+    //   渡す。bootstrap が FetchWebhookDispatcher + dispatch middleware を組み立て、
+    //   各リクエスト処理後に ctx.waitUntil で 1 ラウンドの delivery 配信を回す。
+    webhookFetcher: globalThis.fetch.bind(globalThis),
   });
   return async (request, ctx) => app.fetch(request, bindings, ctx);
 };

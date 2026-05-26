@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createSilentLogger } from '@/shared/infrastructure/logger';
+import { NoopEventPublisher } from '@/shared/application/event-publisher';
 import { createGetOrderUseCase } from './get-order.usecase';
 import { createPlaceOrderUseCase } from './place-order.usecase';
 import { InMemoryOrderRepository } from './__test-helpers__/in-memory-order.repository';
@@ -15,7 +16,7 @@ describe('get-order usecase', () => {
     const repo = new InMemoryOrderRepository();
     repo.seedCake({ cakeId: CAKE_A, price: 500, stock: 10 });
 
-    const placeOrder = createPlaceOrderUseCase(repo, silentLogger);
+    const placeOrder = createPlaceOrderUseCase(repo, silentLogger, NoopEventPublisher);
     const placed = await placeOrder({
       customerId: CUSTOMER,
       items: [{ cakeId: CAKE_A, quantity: 2 }],

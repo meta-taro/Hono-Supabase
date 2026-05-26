@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AppLogger } from '@/shared/infrastructure/logger';
 import type { Env } from '@/shared/http/env';
 import type { AppEnv, RequestModules } from '@/shared/http/request-context';
+import type { EventPublisher } from '@/shared/application/event-publisher';
 import { createAdminClient } from '@/shared/infrastructure/supabase';
 import { CakeSupabaseRepository } from '@/modules/cakes/infrastructure/cake.supabase-repository';
 import { createListCakesUseCase } from '@/modules/cakes/application/list-cakes.usecase';
@@ -20,6 +21,13 @@ import { createPlaceOrderUseCase } from '@/modules/orders/application/place-orde
 import { createGetOrderUseCase } from '@/modules/orders/application/get-order.usecase';
 import { createListOrdersUseCase } from '@/modules/orders/application/list-orders.usecase';
 import { createOrderController } from '@/modules/orders/presentation/order.controller';
+import { SupabaseWebhookSubscriptionRepository } from '@/modules/webhooks/infrastructure/webhook-subscription.supabase-repository';
+import { SupabaseWebhookDeliveryRepository } from '@/modules/webhooks/infrastructure/webhook-delivery.supabase-repository';
+import { createRegisterSubscriptionUseCase } from '@/modules/webhooks/application/register-subscription.usecase';
+import { createListSubscriptionsUseCase } from '@/modules/webhooks/application/list-subscriptions.usecase';
+import { createDeleteSubscriptionUseCase } from '@/modules/webhooks/application/delete-subscription.usecase';
+import { createListDeliveriesUseCase } from '@/modules/webhooks/application/list-deliveries.usecase';
+import { createWebhookController } from '@/modules/webhooks/presentation/webhook.controller';
 
 // ---------------------------------------------------------------------------
 // composition-root = アプリケーション全体の DI を組み立てる中心地。
@@ -38,6 +46,13 @@ import { createOrderController } from '@/modules/orders/presentation/order.contr
 export interface ModuleDeps {
   env: Env;
   logger: AppLogger;
+  // Phase 10 Step 7: ドメインイベントの publisher（注文確定で OrderPlaced を発行）。
+  //   - bootstrap 側で WebhookEventPublisher（admin Supabase 経由で subscriptions / deliveries に書く）
+  //     を 1 度だけ作って全リクエストで使い回す（cold start 1 回コスト）。
+  //   - publisher 自体に Supabase client が閉じ込められているため、per-request ではなく
+  //     アプリ起動時に組み立てる（subscription 一覧の取得は service_role でしか出来ない）。
+  //   - テスト経路は NoopEventPublisher を渡せる。
+  publisher: EventPublisher;
 }
 
 // per-request の Bounded Context 別 Controller 集合を組み立てる。
@@ -70,7 +85,7 @@ export const buildRequestModules = (sb: SupabaseClient, deps: ModuleDeps): Reque
   // orders
   const orderRepo = new OrderSupabaseRepository(sb);
   const orders = createOrderController({
-    placeOrder: createPlaceOrderUseCase(orderRepo, deps.logger),
+    placeOrder: createPlaceOrderUseCase(orderRepo, deps.logger, deps.publisher),
     getOrder: createGetOrderUseCase(orderRepo),
     listOrders: createListOrdersUseCase(orderRepo),
     // authUserId → customers.id の解決は customers リポジトリを使う。
@@ -82,7 +97,24 @@ export const buildRequestModules = (sb: SupabaseClient, deps: ModuleDeps): Reque
     },
   });
 
-  return { cakes, customers, orders };
+  // webhooks（管理 API は admin 専用 = service_role 必須）
+  //   webhook_subscriptions / webhook_deliveries は RLS で明示ポリシーを置かず
+  //   service_role 経路のみアクセス可。リクエストごとの user-sb（anon + JWT）では
+  //   全クエリが空集合を返すため、admin Supabase client を per-request で組み立てる。
+  //   customers の admin 経路と同じく、ここで作っても cold start 1 回分のコストではなく
+  //   毎リクエスト 1 回作る形になるが、Supabase JS client は単なる薄い fetch wrapper
+  //   なので無視できる（実通信は実際にメソッドが呼ばれたタイミングで発生）。
+  const webhookAdminSb = createAdminClient(deps.env);
+  const webhookSubscriptionRepo = new SupabaseWebhookSubscriptionRepository(webhookAdminSb);
+  const webhookDeliveryRepo = new SupabaseWebhookDeliveryRepository(webhookAdminSb);
+  const webhooks = createWebhookController({
+    registerSubscription: createRegisterSubscriptionUseCase(webhookSubscriptionRepo, deps.logger),
+    listSubscriptions: createListSubscriptionsUseCase(webhookSubscriptionRepo),
+    deleteSubscription: createDeleteSubscriptionUseCase(webhookSubscriptionRepo, deps.logger),
+    listDeliveries: createListDeliveriesUseCase(webhookSubscriptionRepo, webhookDeliveryRepo),
+  });
+
+  return { cakes, customers, orders, webhooks };
 };
 
 // per-request にモジュールを組み立てて c.var.modules に積むミドルウェア。
@@ -95,7 +127,7 @@ export const createModulesMiddleware = (deps: ModuleDeps): MiddlewareHandler<App
   return async (c, next) => {
     const sb = c.get('sb');
     const logger = c.get('logger') ?? deps.logger;
-    c.set('modules', buildRequestModules(sb, { env: deps.env, logger }));
+    c.set('modules', buildRequestModules(sb, { env: deps.env, logger, publisher: deps.publisher }));
     await next();
   };
 };

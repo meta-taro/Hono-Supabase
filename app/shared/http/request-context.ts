@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { CakeController } from '@/modules/cakes/presentation/cake.controller';
 import type { CustomerController } from '@/modules/customers/presentation/customer.controller';
 import type { OrderController } from '@/modules/orders/presentation/order.controller';
+import type { WebhookController } from '@/modules/webhooks/presentation/webhook.controller';
 import type { AppLogger } from '@/shared/infrastructure/logger';
 
 // ---------------------------------------------------------------------------
@@ -41,6 +42,10 @@ export interface RequestModules {
   cakes: CakeController;
   customers: CustomerController;
   orders: OrderController;
+  // Phase 10 Step 7: Webhook 管理 API。webhook subscription の登録 / 一覧 / 削除 /
+  //   配信履歴閲覧を扱う。すべて admin 専用。composition-root が per-request DI で
+  //   admin Supabase client から組み立てて積む。
+  webhooks: WebhookController;
 }
 
 export interface AppVariables {

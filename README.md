@@ -791,18 +791,22 @@ interface CakeRow {
 
 ### エンドポイント
 
-| Method | Path             | 認証   | 概要                                       |
-| ------ | ---------------- | ------ | ------------------------------------------ |
-| GET    | `/health`        | 不要   | ヘルスチェック                             |
-| GET    | `/v1/cakes`      | 不要   | ケーキ一覧（カーソルページネーション）     |
-| GET    | `/v1/cakes/:id`  | 不要   | ケーキ 1 件（ETag 付き）                   |
-| POST   | `/v1/cakes`      | 管理者 | ケーキ登録                                 |
-| PATCH  | `/v1/cakes/:id`  | 管理者 | 在庫更新（楽観ロック・If-Match 必須）      |
-| POST   | `/v1/customers`  | 不要   | 顧客サインアップ                           |
-| GET    | `/v1/customers`  | 管理者 | 顧客一覧                                   |
-| POST   | `/v1/orders`     | 必須   | 注文作成                                   |
-| GET    | `/v1/orders`     | 本人   | 自分の注文一覧（カーソルページネーション） |
-| GET    | `/v1/orders/:id` | 本人   | 注文詳細                                   |
+| Method | Path                                        | 認証   | 概要                                         |
+| ------ | ------------------------------------------- | ------ | -------------------------------------------- |
+| GET    | `/health`                                   | 不要   | ヘルスチェック                               |
+| GET    | `/v1/cakes`                                 | 不要   | ケーキ一覧（カーソルページネーション）       |
+| GET    | `/v1/cakes/:id`                             | 不要   | ケーキ 1 件（ETag 付き）                     |
+| POST   | `/v1/cakes`                                 | 管理者 | ケーキ登録                                   |
+| PATCH  | `/v1/cakes/:id`                             | 管理者 | 在庫更新（楽観ロック・If-Match 必須）        |
+| POST   | `/v1/customers`                             | 不要   | 顧客サインアップ                             |
+| GET    | `/v1/customers`                             | 管理者 | 顧客一覧                                     |
+| POST   | `/v1/orders`                                | 必須   | 注文作成                                     |
+| GET    | `/v1/orders`                                | 本人   | 自分の注文一覧（カーソルページネーション）   |
+| GET    | `/v1/orders/:id`                            | 本人   | 注文詳細                                     |
+| POST   | `/v1/webhooks/subscriptions`                | 管理者 | Webhook 配信先登録（secret を 1 度だけ開示） |
+| GET    | `/v1/webhooks/subscriptions`                | 管理者 | Webhook 配信先一覧                           |
+| DELETE | `/v1/webhooks/subscriptions/:id`            | 管理者 | Webhook 配信先削除（履歴 cascade）           |
+| GET    | `/v1/webhooks/subscriptions/:id/deliveries` | 管理者 | サブスクリプション別の配信履歴               |
 
 ### `GET /v1/cakes` のページネーション仕様（Phase 10 Step 1）
 
@@ -1052,6 +1056,134 @@ curl -i -X POST http://localhost:3010/v1/customers \
 - **冪等な GET / DELETE**: GET は元から副作用なし、DELETE は冪等な操作として扱える（RFC 7231）ので Idempotency-Key を強制していない。
 - **5xx の replay**: handler が 5xx を返した場合もそのまま保存して replay する素朴な実装。Stripe は 5xx だけは保存しない（クライアントが再試行できる）方針だが、本実装では「保存されたエラーは別 key で再試行」する運用にしている（学習段階の簡素化）。
 - **DB トランザクション**: `tryReserve` と handler 実行は別接続のため、handler が DB トランザクションを張る場合でも idempotency 行と業務行は別コミット。学習段階では許容（「同じ key の再送はサーバが捌くが、別 key で並行に来た同一意味の操作は handler 側で 409/重複検知する」前提）。
+
+### `POST /v1/orders` → Webhook 配信仕様（Phase 10 Step 7）
+
+注文確定（`POST /v1/orders` 成功）をトリガに、登録済みの外部 URL へ **HMAC-SHA256 署名付きの JSON ペイロード**を POST する。配信は **fire-and-forget + 指数バックオフ retry**で、API レスポンス時刻には影響を与えない（業務の主系と副系を分離する）。
+
+**配信先の登録**（`POST /v1/webhooks/subscriptions`、管理者専用）:
+
+```bash
+# 配信先 URL を 1 件登録 → secret が 1 度だけ返る（DB には保存するが GET では返さない）
+curl -i -X POST http://localhost:3010/v1/webhooks/subscriptions \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer <admin JWT>" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"url":"https://webhook.site/<your-uuid>","description":"開発確認用"}'
+# 201 Created
+# { "id":"...", "url":"https://webhook.site/<...>", "secret":"<hex 64 文字>", "active":true, ... }
+```
+
+| Method | Path                                        | 概要                                                                   |
+| ------ | ------------------------------------------- | ---------------------------------------------------------------------- |
+| POST   | `/v1/webhooks/subscriptions`                | 配信先登録（secret を 1 度だけ返す。失念したら再登録）                 |
+| GET    | `/v1/webhooks/subscriptions`                | 配信先一覧（secret は出ない。`created_at DESC, id DESC` でキーセット） |
+| DELETE | `/v1/webhooks/subscriptions/:id`            | 配信先削除（紐づく `webhook_deliveries` 行は cascade で消える）        |
+| GET    | `/v1/webhooks/subscriptions/:id/deliveries` | サブスクリプション別の配信履歴（`status` / `attempts` / `last_error`） |
+
+**配信ペイロード**（`Content-Type: application/json`、body は固定スナップショット）:
+
+```json
+{
+  "event_id": "8f6e4a23-...",
+  "event_type": "order.placed",
+  "occurred_at": "2026-05-26T01:23:45.000Z",
+  "data": {
+    "order_id": "...",
+    "customer_id": "...",
+    "items": [{ "cake_id": "...", "quantity": 2, "unit_price": 500 }],
+    "total_amount": 1000
+  }
+}
+```
+
+**配信リクエスト時に乗るヘッダ**:
+
+| ヘッダ                 | 内容                                                                                                             |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `Content-Type`         | `application/json; charset=UTF-8`                                                                                |
+| `X-Webhook-Event-Id`   | ペイロードの `event_id`（受信側で **冪等処理キー**として使う）                                                   |
+| `X-Webhook-Event-Type` | `order.placed` 等                                                                                                |
+| `X-Webhook-Signature`  | **Stripe スタイル** — `t=<unix_seconds>,v1=<hex>`。`v1` は `HMAC-SHA256(secret, "${t}.${raw_body}")` の hex 表記 |
+
+**受信側での検証手順**（Node + Web Crypto 想定）:
+
+```ts
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
+// 1. ヘッダから t と v1 を取り出す
+const [tField, v1Field] = req.headers['x-webhook-signature'].split(',');
+const t = tField.slice(2);
+const v1 = v1Field.slice(3);
+
+// 2. 自分の secret で signed_payload を再計算
+const signedPayload = `${t}.${rawBody}`; // rawBody は req.body の文字列そのまま
+const expected = createHmac('sha256', secret).update(signedPayload).digest('hex');
+
+// 3. 定数時間比較
+if (!timingSafeEqual(Buffer.from(v1, 'hex'), Buffer.from(expected, 'hex'))) {
+  return res.status(401).end();
+}
+
+// 4. t の許容差分（例: ±5 分）でリプレイ攻撃を排除
+if (Math.abs(Math.floor(Date.now() / 1000) - Number(t)) > 300) {
+  return res.status(401).end();
+}
+```
+
+**指数バックオフ retry スケジュール**（`app/modules/webhooks/domain/webhook-delivery.ts`）:
+
+| 試行回数 | 結果         | 次回 retry までの待機 | `status`    |
+| -------- | ------------ | --------------------- | ----------- |
+| 1        | 失敗         | 1 分                  | `failed`    |
+| 2        | 失敗         | 5 分                  | `failed`    |
+| 3        | 失敗         | 30 分                 | `failed`    |
+| 4        | 失敗         | 4 時間                | `failed`    |
+| 5        | 失敗         | 24 時間               | `failed`    |
+| 6        | 失敗         | —（恒久停止）         | `dead`      |
+| いずれか | 2xx/3xx 成功 | —                     | `succeeded` |
+
+合計猶予 ≒ **約 29 時間**（短期障害を吸収しつつ、復旧不能と判断したら `dead` に倒して停止する）。`status='dead'` の行も `webhook_deliveries` に残るので、運用者は `GET /v1/webhooks/subscriptions/:id/deliveries` で原因（`last_error`）を確認できる。
+
+**配信ループの起動方式（Free プラン制約への対応）**:
+
+- 本プロジェクトは Workers Free プランで動かす前提のため、Cron Triggers を「常時動作」と想定するのは過剰。代わりに **リクエスト駆動の dispatch ミドルウェア**（`app/shared/http/webhook-dispatch.middleware.ts`）を採用。
+- 仕組み: 各リクエストの handler 完了後に `c.executionCtx.waitUntil(dispatchPendingDeliveries(...))` で **pending / failed かつ `next_retry_at <= now()` の delivery を最大 5 件**配信する。
+- これにより「API トラフィックがある限り retry は自然に進む」「リクエストのレスポンス時刻には影響しない」の両立が成立。トラフィック皆無の時間帯はラウンドが回らないが、学習プロジェクトの趣旨では許容（必要なら後付けで Cron Triggers / Durable Object Alarm に差し替え可能）。
+
+**設計上の不変条件**:
+
+- **`UNIQUE (event_id, subscription_id)`**（migration `0008_webhooks.sql`）で「同じ event を同じ subscription に二重発火しない」を **DB 制約で構造的に保証**。EventPublisher が万一二度走っても deliveries が増殖しない。
+- **`webhook_deliveries.payload` は INSERT 時に snapshot**（jsonb 列）。retry のたびに発火元の Order を再読み込みしないため、発火後に Order が変わっても配信されるのは「発火時点のスナップショット」。
+- **副系の失敗は主系を巻き戻さない**: `place-order.usecase` 内で `publisher.publish()` を `try/catch` で握り、warn ログだけ残して注文確定の成功は維持する（多重防御として publisher 実装側も throw しない）。
+- **RLS は service_role 専用**（`webhook_subscriptions` / `webhook_deliveries` ともに明示ポリシーなし）。管理 API は admin client（`SUPABASE_SERVICE_ROLE_KEY`）経由で操作する設計に合わせる。
+
+**公開リポジトリの安全性**:
+
+- `seed.sql` / `seed.staging.sql` には subscription を入れない。`webhook_subscriptions` が 0 件 = 配信 0 件 = フォーク者がそのまま `pnpm seed` を打っても外部 URL に意図せず HTTP リクエストを飛ばすことはない。
+- `secret` は `INSERT` 時のみレスポンスに含めて返却し、`GET /v1/webhooks/subscriptions` では出さない（再表示不可。失念したら再登録）。
+
+**失敗カテゴリと挙動**:
+
+| 配信先の応答 / 状態 | 挙動                                                          |
+| ------------------- | ------------------------------------------------------------- |
+| 2xx / 3xx           | `status='succeeded'`、`succeeded_at=now()`、retry 終了        |
+| 4xx / 5xx           | `status='failed'`、`attempts++`、`last_error='HTTP <status>'` |
+| ネットワーク不到達  | `status='failed'`、`last_error=<例外メッセージ>`              |
+| `timeoutMs` 超過    | `AbortController.abort()` で打ち切り → `status='failed'`      |
+| 6 回目失敗          | `status='dead'`、`next_retry_at=null`（以降は拾われない）     |
+
+**試したいとき（ローカル動作確認のレシピ）**:
+
+- **[webhook.site](https://webhook.site/)** — 一時受信用の使い捨て URL を発行してくれる。`POST /v1/webhooks/subscriptions` に `https://webhook.site/<uuid>` を登録し、`POST /v1/orders` を叩くと、ブラウザ上で **ヘッダ（`X-Webhook-Signature` 含む）と body** をリアルタイム観察できる。
+- **Slack incoming webhook** — Slack ワークスペースの Incoming Webhook URL をそのまま登録すれば配信が来ること自体は確認できるが、**Slack 側は Stripe スタイル署名をそのまま検証しない**ため、受信メッセージの整形は別途必要（学習目的の到達確認には十分）。
+- **dispatch を即時に進める** — 待ち時間ゼロで挙動を見たい場合は、続けて `GET /health` 等の軽い API を叩くと、その request の `waitUntil` で次ラウンドの delivery が処理される（リクエスト駆動方式）。
+
+**設計上の割り切り（学習段階）**:
+
+- **配信成功の at-least-once**: 受信側が 2xx を返した直後に DB 更新前に Workers が落ちると、retry でもう一度同じ event_id が届く可能性がある。**受信側は `X-Webhook-Event-Id` で冪等化する**前提（Stripe / GitHub と同じ慣例）。
+- **dead 行の自動削除なし**: `status='dead'` の行は手動 GC（運用者の `DELETE` or 削除 API）まで残る。学習段階ではテーブル監査のため意図的に残す方針。
+- **Cron Triggers 未使用**: 上述の通り Free プラン制約で「リクエスト駆動」に倒している。完全に静かな時間帯があると retry の進行が止まる。
 
 ### `GET /v1/orders` のページネーション仕様（Phase 10 Step 1.5）
 
@@ -1327,7 +1459,7 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
   - [x] Step 3b（2026-05-18 完了）: **`/health` 閾値の実測すり合わせ** — 仮置きした 3 つの判断（`DEGRADED_LATENCY_MS=800` / `PROBE_TIMEOUT_MS=1500` / stateless）を、コードを一時改変 → revert する方式で 3 シナリオ実測検証し**全て据え置きで妥当**と結論。ベースライン: 初回 cold `≈290ms` → 暖機後 `36–66ms`（800ms boundary を大きく下回る）／シナリオ 1（`DEGRADED_LATENCY_MS=5` に一時変更）で 36ms 応答が `degraded` / 200 に切替、3 状態分岐と「degraded は緑のまま」運用方針を確認／シナリオ 2（`PROBE_TIMEOUT_MS=50` に一時変更）で AbortSignal 打ち切り → `down` / 503 / `latency_ms=59ms`、タイムアウト経路がドキュメント通り動く／シナリオ 3（`supabase stop` で REST 完全停止）で `latency_ms=1518ms` ≒ `PROBE_TIMEOUT_MS=1500` の **down via timeout**。最大の学び: Docker Desktop / WSL2 経由のポートはコンテナ停止直後でも TCP SYN を即座に RST せず吸い込むため、TCP 層で「接続不到達」は観測されず**全部タイムアウト経由で down に倒れる**。`AbortSignal.timeout()` が無ければ OS デフォルトの 30–120 秒まで握る事故になる → probe timeout の存在価値が実機で証明された。詳細は [`/health` の応答仕様の Step 3b 実測体験のまとめ](#step-3b-実測体験のまとめ2026-05-18) を参照
   - [x] Step 4（2026-05-19 完了）: **メトリクス収集（Workers Analytics Engine）** — `app/shared/infrastructure/metrics.ts` で `MetricsRecorder` interface + `createAnalyticsEngineRecorder`（Workers 実書き込み）/ `createNoopMetricsRecorder`（Node・テスト・binding 未注入）を実装。`writeDataPoint` のペイロードは **blob `[method, route, status_class, env, app_version]` / doubles `[duration_ms]` / indexes `[status_class]`** の固定順。`access-log.middleware.ts` に `metrics?: AccessLogMetricsBinding` の DI を足し、`routePath(c, -1)` で正規化した route（middleware 経由の `'*'` 退避）を渡す。`wrangler.toml` は **A 案: 物理分離**（`api_requests_staging` / `api_requests_production`、binding 名 `API_REQUESTS` 共通）+ トップレベル fallback dataset。`@cloudflare/workers-types` への直接依存は避けて自前 duck typing（Phase 7 ロガー隔離と同じ方針）。**PII は入れない**（userId はアクセスログにだけ、メトリクスには載せない）。fire-and-forget で response latency に乗らない。テストは metrics.test.ts（新設 19 ケース）+ access-log.middleware.test.ts（既存 6 + 新規 4）で 300 テスト全緑。**SQL 検証は Workers Free プランで Analytics Engine SQL API が HTTP 403（書き込みは Free でも可・読み出しは Paid 必須）** のため、コード検証（300 テスト緑）+ `pnpm wrangler tail cake-shop-api-staging` で本番アクセスログ（`level=30` 2xx / `level=40` 4xx、`requestId` / `path` / `status` / `duration_ms`）が**本番経路で吐かれていること**を実機目視確認してクローズ。route 正規化の最終形（`/v1/orders/:id` 集約）の SQL 確認は Paid 移行時のフォローアップに繰越（※当初ここに「Step 5 で Logpush + R2 + DuckDB に倒せば Free のまま SQL 体験を取り戻せる可能性あり」と書いていたが、**Step 5 で裏取りした結果 Logpush は Workers Paid 必須で Free では使えない**ことが判明。この見込みは誤りだったため取り消す）。**⚠️ デプロイ事故の訂正（2026-05-20）**: この AE バインディング追加（`[[analytics_engine_datasets]]`）以降、**Cloudflare アカウント側で Analytics Engine が未有効**だったため `deploy-staging.yml` が **error 10089（`You need to enable Analytics Engine`）でずっと失敗していた**（Step 4 直後の暫定クローズを `wrangler deploy --dry-run`〔API 非接続〕+ 旧デプロイへの `wrangler tail` で済ませたため、CI 実デプロイが通っていないことを見逃した）。修正は **Cloudflare Dashboard → Workers & Pages → Analytics Engine で dataset を作成する＝アカウントの AE 有効化**（この操作自体は **Free プランで可能**）→ 失敗 run を再実行で復旧。**AE のナビ / dataset 作成は Free でも表示・操作でき、Paid 必須は SQL 読み出しだけ**。教訓: アカウント有効化を伴う変更を入れたら dry-run でなく **CI 実デプロイの成否を必ず確認**してからクローズする
   - [x] Step 5（2026-05-20 完了 — Free プラン制約下で再定義してクローズ）: **観測・アラート** — 当初は「Logpush で R2 / 外部 SaaS へ送出 + Notifications で Slack」を想定したが、課金境界を裏取りした結果 **Free では送出・通知の主要経路がほぼ Paid 境界の外**（Logpush=Workers Paid 必須 / webhook=Pro 以上 / メール通知=Free だが種別限定）と判明。Step 4 と同じく Free 枠内に再定義した。実装は `wrangler.toml` の `[observability]` を3スコープとも明示化（`head_sampling_rate = 1` を追記し、日次上限に当たったら絞る判断材料を Why コメントで残す。Workers Logs 自体は以前から有効）。観測体験は「わざと 5xx を出してアラートが飛ぶ」が Free 不可（5xx 率アラートは Notifications の Free 種別に無い）ため **「わざと 5xx を出して Workers Logs から requestId / status / route で追う」に置換**し、Step 1/2 で仕込んだ構造化フィールドをここで回収。詳細は [Phase 9 Step 5 — Free 枠の観測・アラート](#phase-9-step-5--free-枠の観測アラート) 参照。Logpush 送出 / 5xx 率アラート / Slack 連携 / Step 4 の SQL 検証は Workers Paid 移行時の繰越
-- [ ] **Phase 10**: **API のリッチ化**（実運用 REST API でよく出てくる設計パターンを縦切りで実演）
+- [x] **Phase 10**: **API のリッチ化**（実運用 REST API でよく出てくる設計パターンを縦切りで実演）— **Step 1〜7 全完了（2026-05-20〜05-26）**
   - 動機: 現状の cakes/customers/orders は MVP 規模。実運用なら必須レベルの「ページネーション / ソート / 検索 / 楽観ロック / Rate Limit / Idempotency-Key / Webhook」を**設計判断の練習場**として一周する。それぞれ単独機能というより「設計上のトレードオフを言語化する素材」として扱う
   - [x] Step 1（2026-05-20 完了）: **ページネーション（`/v1/cakes`）** — cursor-based（keyset）を採用。`?limit=20&after=<opaque-cursor>` 形式で、`Link` ヘッダ（RFC 5988, `rel="next"`）とレスポンスボディ `next_cursor` / `has_more` を両論併記。カーソルは `(name, id)` 複合キー（`name` 非一意のため境界またぎ耐性が要る）を base64url で包んだ不透明トークンにし、`TextEncoder`/`TextDecoder` で UTF-8 安全化（`btoa`/`atob` の Latin1 制約と Workers の `Buffer` 不在を回避）。改竄カーソルは Zod 検証で `400 VALIDATION_ERROR`。汎用コーデックを `app/shared/http/cursor.ts` に切り出し。詳細仕様は「[`GET /v1/cakes` のページネーション仕様](#get-v1cakes-のページネーション仕様phase-10-step-1)」参照
   - [x] Step 1.5（2026-05-20 完了）: **ページネーション（`/v1/orders`）** — orders は一覧エンドポイントが未実装だったため、RLS 保護付き `GET /v1/orders`（本人の注文のみ）を新設し、Step 1 の cursor codec（`app/shared/http/cursor.ts`）を再利用。カーソルは `(placed_at, id)` 複合キー（同時刻の注文がありうる非一意キーのため id を tiebreaker に複合化）で、新しい順（`placed_at DESC, id DESC`）に並べる。本人フィルタは **多重防御**（RLS の `orders_select_self` + repository の明示 `customer_id` 絞り込み）で、`service_role` 経路でも漏れない設計。`PostgREST` の `.or('placed_at.lt."X",and(placed_at.eq."X",id.lt."Y")')` でキーセット前進。詳細仕様は「[`GET /v1/orders` のページネーション仕様](#get-v1orders-のページネーション仕様phase-10-step-15)」参照
@@ -1336,7 +1468,7 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
   - [x] Step 4（2026-05-22 完了）: **楽観ロック** — `ETag` + `If-Match` で更新競合検知。Cake の在庫更新（`PATCH /v1/cakes/:id`・stock 絶対値で冪等）に導入し、`GET /v1/cakes/:id`（ETag 取得用・認証不要）を新設。版は `cakes.version` 整数カラム + `BEFORE UPDATE` トリガ採番（`supabase/migrations/0006_cakes_optimistic_lock.sql`）で、`UPDATE … WHERE id=? AND version=?` の原子的更新により lost update を防ぐ。当初案の `409 CONFLICT` ではなく **RFC 準拠の 412 PRECONDITION_FAILED（版不一致）/ 428 PRECONDITION_REQUIRED（If-Match 欠落）** を採用（428 で無条件上書きを構造的に禁止）。Weak ETag（`W/"<version>"`）コーデックは `app/shared/http/etag.ts`。in-memory は version+1 でトリガを模し、実 DB の競合挙動は workers プールの実 Supabase テストで担保（409 テスト全緑）。詳細仕様は「[`GET /v1/cakes/:id` + `PATCH /v1/cakes/:id` の楽観ロック仕様](#get-v1cakesid--patch-v1cakesid-の楽観ロック仕様phase-10-step-4)」参照
   - [x] Step 5（2026-05-24 完了）: **Rate Limit** — Cloudflare Workers の `[[ratelimits]]` binding を 3 本（`LIMITER_PUBLIC_READ` 100/10s・`LIMITER_PUBLIC_WRITE` 5/60s・`LIMITER_AUTH_WRITE` 10/10s）に分割し、IP キー（公開系）/ user キー（認証系）で使い分け。binding の `limit()` は `{ success }` しか返さないので middleware factory が wrangler.toml の period から `Retry-After` を焼き込む。Hono の `router.use(path, mw)` がメソッドを区別しない弱点は `restrictToMethods` ヘルパで補い、`GET /` / `POST /` で `/` を共有する `cakes` / `customers` でもメソッド別 limiter を割り当てた。超過は **429 RATE_LIMITED + Retry-After ヘッダ** を返し、`details[0].field='Retry-After'` にも同値を載せる（JSON だけ読むクライアントでも秒数が取れる）。テストは node-unit プールで `InMemoryRateLimiter`（固定ウィンドウ + `now()` 差し替え）による middleware 単体 + 統合テストで「公開 GET が枯れても POST には影響しない」（`restrictToMethods` の効果）を検証、`pnpm verify` 緑（426 テスト）。詳細仕様は「[`/v1/*` の Rate Limit 仕様](#v1-の-rate-limit-仕様phase-10-step-5)」参照
   - [x] Step 6（2026-05-25 完了）: **Idempotency-Key** — 全 POST エンドポイント（`/v1/orders`・`/v1/cakes`・`/v1/customers`）で `Idempotency-Key` ヘッダ必須化（Stripe スタイル）、Postgres 永続化で再送による二重作成を防ぐ。新規テーブル `idempotency_keys`（migration `0007_idempotency_keys.sql`・複合主キー `(key, owner_type, owner_id, scope)` + `request_hash` + `status` + `response_status/body` + `expires_at(default now()+24h)`、RLS 明示ポリシー無し = service_role 専用）。`IdempotencyStore` ポート（`app/shared/infrastructure/idempotency-store.ts`）は 4 状態 union（`inserted`/`replay`/`in_progress`/`mismatch`）を返す `tryReserve` + `complete` の 2 メソッドで、Supabase 実装は PostgREST の `.upsert(..., { ignoreDuplicates: true, onConflict: 'key,owner_type,owner_id,scope' })` で `INSERT … ON CONFLICT DO NOTHING` 相当を達成。middleware（`app/shared/http/idempotency.middleware.ts`）は **canonical JSON**（キー sort）+ Web Crypto SHA-256 で body をハッシュ化し、replay 経路では `c.newResponse(JSON.stringify(body), status)` で再現 + `Idempotency-Replayed: true` ヘッダ。owner は orders/cakes が user.id・customers は cf-connecting-ip。挿入順は `rate-limit → auth/admin → idempotency` で、認証未通過は 401/403 が先に出て store を消費しない。失敗は **400 `IDEMPOTENCY_KEY_REQUIRED`（欠落 / 形式不正）/ 409 `IDEMPOTENCY_IN_PROGRESS`（処理中）/ 422 `IDEMPOTENCY_KEY_REUSED`（同 key・違う body）**。詳細仕様は「[`POST /v1/*` の Idempotency-Key 仕様](#post-v1-の-idempotency-key-仕様phase-10-step-6)」参照
-  - [ ] Step 7: **Webhook 配信** — 「注文確定」ドメインイベントを外部 URL に POST。HMAC 署名 + retry-with-backoff + DLQ 設計
+  - [x] Step 7（2026-05-26 完了）: **Webhook 配信** — 「注文確定」ドメインイベント (`order.placed`) を登録済みの外部 URL に POST。**HMAC-SHA256 署名（Stripe スタイル `t=<unix>,v1=<hex>`、Web Crypto で実装し Workers 互換）** + **指数バックオフ retry（1m → 5m → 30m → 4h → 24h → 6 回目で `dead`）**。`webhook_subscriptions` / `webhook_deliveries`（migration `0008_webhooks.sql`、`UNIQUE (event_id, subscription_id)` で event × subscription の二重発火を構造的に阻止、`webhook_deliveries.payload` で発火時 snapshot 固定）。**Cron Triggers 未使用 = リクエスト駆動の dispatch ミドルウェア**（`c.executionCtx.waitUntil(dispatchPendingDeliveries({limit:5}))`）で「トラフィックがある限り retry が進む」設計（Workers Free プランのコスト最小化）。`EventPublisher` 抽象は `app/shared/application/event-publisher.ts` に置き、`orders/place-order.usecase` から **publish 失敗を try/catch で握って warn ログ**にする（副系の失敗が注文確定を巻き戻さない）。webhooks コンテンツは `app/modules/webhooks/{domain,application,infrastructure,presentation}` に DDD-lite 4 層で完結、管理 API は **admin 専用 + Idempotency-Key 必須**（POST のみ・GET 系は対象外）。RLS は service_role 専用（明示ポリシーなし）。`seed.sql` には subscription を入れない = 公開リポジトリをそのまま叩いても外部 URL に意図せず HTTP を打たない。テスト 518 件全緑（HMAC・dispatcher の 2xx/3xx/4xx/5xx/timeout/network エラー・EventPublisher の部分失敗耐性・dispatchPendingDeliveries の状態遷移＋ dead 化・cascade 削除・サブスクリプション CRUD 4 ユースケース）。詳細仕様は「[`POST /v1/orders` → Webhook 配信仕様](#post-v1orders--webhook-配信仕様phase-10-step-7)」参照
 
 ---
 
