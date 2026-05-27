@@ -8,6 +8,7 @@ import { createCakeRouter } from '@/modules/cakes/presentation/cake.routes';
 import { createCustomerRouter } from '@/modules/customers/presentation/customer.routes';
 import { createOrderRouter } from '@/modules/orders/presentation/order.routes';
 import { createWebhookRouter } from '@/modules/webhooks/presentation/webhook.routes';
+import { createReviewRouter } from '@/modules/reviews/presentation/review.routes';
 
 // Phase 9 Step 3a: /health の DB プローブ結果。
 //   ok        = REST 応答が成功した
@@ -84,6 +85,8 @@ export interface IdempotencyMiddlewares {
   customers: MiddlewareHandler<AppEnv>;
   // Phase 10 Step 7: POST /v1/webhooks/subscriptions 用。owner=user（admin guard 後）。
   webhooks: MiddlewareHandler<AppEnv>;
+  // Phase 11 Step 1: POST /v1/cakes/:cake_id/reviews 用。owner=user（authGuard 後）。
+  reviews: MiddlewareHandler<AppEnv>;
 }
 
 export interface AppOptions {
@@ -201,6 +204,17 @@ export const createApp = (options?: AppOptions): OpenAPIHono<AppEnv> => {
         adminGuard: options.guards.adminGuard,
         rateLimits: rl,
         idempotency: idem?.webhooks,
+      }),
+    );
+    // Phase 11 Step 1: reviews は cake にネストされたリソース (/v1/cakes/{cake_id}/reviews)。
+    //   cakeRouter と同じ '/v1/cakes' プレフィックスにマウントしても Hono の trie が
+    //   '/'（一覧）/ '/:id'（詳細）と '/:cake_id/reviews' を別パスとして区別するため衝突しない。
+    app.route(
+      '/v1/cakes',
+      createReviewRouter({
+        authGuard: options.guards.authGuard,
+        rateLimits: rl,
+        idempotency: idem?.reviews,
       }),
     );
   }

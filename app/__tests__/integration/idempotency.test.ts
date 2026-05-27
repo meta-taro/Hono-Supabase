@@ -35,6 +35,11 @@ import { createListDeliveriesUseCase } from '@/modules/webhooks/application/list
 import { createWebhookController } from '@/modules/webhooks/presentation/webhook.controller';
 import { InMemoryWebhookSubscriptionRepository } from '@/modules/webhooks/application/__test-helpers__/in-memory-webhook-subscription.repository';
 import { InMemoryWebhookDeliveryRepository } from '@/modules/webhooks/application/__test-helpers__/in-memory-webhook-delivery.repository';
+import { createPostReviewUseCase } from '@/modules/reviews/application/post-review.usecase';
+import { createListReviewsByCakeUseCase } from '@/modules/reviews/application/list-reviews-by-cake.usecase';
+import { createReviewController } from '@/modules/reviews/presentation/review.controller';
+import { InMemoryReviewRepository } from '@/modules/reviews/application/__test-helpers__/in-memory-review.repository';
+import { InMemoryVerifiedPurchaserChecker } from '@/modules/reviews/application/__test-helpers__/in-memory-verified-purchaser.checker';
 import { createFakeAuthMiddleware, requireAuth, requireAdmin } from '@/shared/http/auth.middleware';
 import type { AppEnv, AuthUser, RequestModules } from '@/shared/http/request-context';
 
@@ -94,6 +99,11 @@ const buildIdempotency = (store: InMemoryIdempotencyStore): IdempotencyMiddlewar
     scope: 'POST /v1/webhooks/subscriptions',
     resolveOwner: userOwner,
   }),
+  reviews: createIdempotencyMiddleware({
+    store,
+    scope: 'POST /v1/cakes/:cake_id/reviews',
+    resolveOwner: userOwner,
+  }),
 });
 
 const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
@@ -132,11 +142,19 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
     listDeliveries: createListDeliveriesUseCase(webhookSubRepo, webhookDelRepo),
   });
 
+  const reviewsRepo = new InMemoryReviewRepository();
+  const verifiedPurchaserChecker = new InMemoryVerifiedPurchaserChecker();
+  const reviewsController = createReviewController({
+    postReview: createPostReviewUseCase(reviewsRepo, verifiedPurchaserChecker, silentLogger),
+    listReviewsByCake: createListReviewsByCakeUseCase(reviewsRepo),
+  });
+
   const modules: RequestModules = {
     cakes: cakesController,
     customers: customersController,
     orders: ordersController,
     webhooks: webhooksController,
+    reviews: reviewsController,
   };
 
   const stubSb = null as unknown as SupabaseClient;

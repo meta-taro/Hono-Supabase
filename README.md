@@ -720,7 +720,9 @@ PR と各環境への deploy ワークフローが必ず `checks.yml`（`workflo
 │   │   │   ├── infrastructure/                   # Repository 実装（Supabase）
 │   │   │   └── presentation/                     # Hono ルート + Zod DTO + Controller
 │   │   ├── customers/                            # 同構造
-│   │   └── orders/                               # 同構造 + Domain Event
+│   │   ├── orders/                               # 同構造 + Domain Event
+│   │   ├── webhooks/                             # 同構造（注文確定イベントの外部 POST）
+│   │   └── reviews/                              # 同構造（ケーキへのレビュー投稿・一覧・集計）
 │   ├── shared/                                   # 共有カーネル
 │   │   ├── domain/                               # AppError 等
 │   │   ├── infrastructure/                       # logger（Workers 互換）/ node-pino-logger（Node 専用）/ Supabase クライアント / JwksFetcher
@@ -791,22 +793,24 @@ interface CakeRow {
 
 ### エンドポイント
 
-| Method | Path                                        | 認証   | 概要                                         |
-| ------ | ------------------------------------------- | ------ | -------------------------------------------- |
-| GET    | `/health`                                   | 不要   | ヘルスチェック                               |
-| GET    | `/v1/cakes`                                 | 不要   | ケーキ一覧（カーソルページネーション）       |
-| GET    | `/v1/cakes/:id`                             | 不要   | ケーキ 1 件（ETag 付き）                     |
-| POST   | `/v1/cakes`                                 | 管理者 | ケーキ登録                                   |
-| PATCH  | `/v1/cakes/:id`                             | 管理者 | 在庫更新（楽観ロック・If-Match 必須）        |
-| POST   | `/v1/customers`                             | 不要   | 顧客サインアップ                             |
-| GET    | `/v1/customers`                             | 管理者 | 顧客一覧                                     |
-| POST   | `/v1/orders`                                | 必須   | 注文作成                                     |
-| GET    | `/v1/orders`                                | 本人   | 自分の注文一覧（カーソルページネーション）   |
-| GET    | `/v1/orders/:id`                            | 本人   | 注文詳細                                     |
-| POST   | `/v1/webhooks/subscriptions`                | 管理者 | Webhook 配信先登録（secret を 1 度だけ開示） |
-| GET    | `/v1/webhooks/subscriptions`                | 管理者 | Webhook 配信先一覧                           |
-| DELETE | `/v1/webhooks/subscriptions/:id`            | 管理者 | Webhook 配信先削除（履歴 cascade）           |
-| GET    | `/v1/webhooks/subscriptions/:id/deliveries` | 管理者 | サブスクリプション別の配信履歴               |
+| Method | Path                                        | 認証   | 概要                                           |
+| ------ | ------------------------------------------- | ------ | ---------------------------------------------- |
+| GET    | `/health`                                   | 不要   | ヘルスチェック                                 |
+| GET    | `/v1/cakes`                                 | 不要   | ケーキ一覧（カーソルページネーション）         |
+| GET    | `/v1/cakes/:id`                             | 不要   | ケーキ 1 件（ETag 付き）                       |
+| POST   | `/v1/cakes`                                 | 管理者 | ケーキ登録                                     |
+| PATCH  | `/v1/cakes/:id`                             | 管理者 | 在庫更新（楽観ロック・If-Match 必須）          |
+| POST   | `/v1/customers`                             | 不要   | 顧客サインアップ                               |
+| GET    | `/v1/customers`                             | 管理者 | 顧客一覧                                       |
+| POST   | `/v1/orders`                                | 必須   | 注文作成                                       |
+| GET    | `/v1/orders`                                | 本人   | 自分の注文一覧（カーソルページネーション）     |
+| GET    | `/v1/orders/:id`                            | 本人   | 注文詳細                                       |
+| POST   | `/v1/webhooks/subscriptions`                | 管理者 | Webhook 配信先登録（secret を 1 度だけ開示）   |
+| GET    | `/v1/webhooks/subscriptions`                | 管理者 | Webhook 配信先一覧                             |
+| DELETE | `/v1/webhooks/subscriptions/:id`            | 管理者 | Webhook 配信先削除（履歴 cascade）             |
+| GET    | `/v1/webhooks/subscriptions/:id/deliveries` | 管理者 | サブスクリプション別の配信履歴                 |
+| GET    | `/v1/cakes/:cake_id/reviews`                | 不要   | ケーキのレビュー一覧（カーソル + 集計同梱）    |
+| POST   | `/v1/cakes/:cake_id/reviews`                | 必須   | ケーキへのレビュー投稿（Idempotency-Key 必須） |
 
 ### `GET /v1/cakes` のページネーション仕様（Phase 10 Step 1）
 
@@ -1225,6 +1229,67 @@ if (Math.abs(Math.floor(Date.now() / 1000) - Number(t)) > 300) {
 - `authUserId → 業務 customerId` の解決は controller が `resolveCustomerId` ポート経由で行う（POST と同じ。対応する customer がいなければ `404 NOT_FOUND`）。
 - 改竄・壊れた `after` は Zod 検証で `400 VALIDATION_ERROR` に倒す（cakes と同じ）。
 
+### `GET /v1/cakes/:cake_id/reviews` + `POST /v1/cakes/:cake_id/reviews` のレビュー仕様（Phase 11 Step 1）
+
+ケーキへのレビューを **投稿（POST・認証 + Idempotency-Key 必須）** と **一覧 + 集計（GET・公開）** の 2 本立てで提供する。レスポンス 1 本に「1 ページ分のレビュー + 集計（count / average / 星別 distribution）」を同梱して、商品詳細画面が API を 2 回叩かなくて済むようにする。
+
+**`POST /v1/cakes/:cake_id/reviews`**
+
+| 制約                    | 値                                                                                                                            |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| 認証                    | 必須（`Authorization: Bearer <JWT>`）                                                                                         |
+| `Idempotency-Key`       | 必須（Stripe スタイル・Phase 10 Step 6 と同じ仕様。scope = `'POST /v1/cakes/:cake_id/reviews'`、owner = `user`）              |
+| Body                    | `{ rating: 1..5, title: 1..100 字, body: 1..2000 字 }`                                                                        |
+| 重複投稿                | 同一 `(cake_id, user_id)` で既に published / hidden のレビューがあれば `409 REVIEW_CONFLICT`                                  |
+| `is_verified_purchaser` | **投稿時点の snapshot** として保存（後で履歴が変わっても表示は動かない）。判定は `has_purchased(cake_id, user_id)` RPC を使う |
+| 401 / 400 / 422         | 未認証 / バリデーション失敗（rating 範囲外・title/body 空・cake_id 非 UUID）/ 同 key + 違う body                              |
+
+**`GET /v1/cakes/:cake_id/reviews`**
+
+| クエリパラメータ | 型      | 既定     | 制約                | 説明                                                                             |
+| ---------------- | ------- | -------- | ------------------- | -------------------------------------------------------------------------------- |
+| `sort`           | string  | `newest` | `newest \| helpful` | 並び順。`helpful` は `helpful_count DESC, created_at DESC, id DESC` の多段ソート |
+| `limit`          | integer | 20       | 1〜100              | 1 ページの件数                                                                   |
+| `filter_rating`  | integer | —        | 1〜5                | 星別フィルタ                                                                     |
+| `verified_only`  | string  | —        | `true \| false`     | 購入済みバッジ付きのみに絞る                                                     |
+| `after`          | string  | —        | 不透明トークン      | 前ページの `next_cursor`。先頭ページでは省略                                     |
+
+**レスポンス**:
+
+```json
+{
+  "reviews": [
+    {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "cake_id": "11111111-1111-4111-8111-111111111111",
+      "user_id": "auth-user-abcdef",
+      "rating": 5,
+      "title": "とても美味しかった",
+      "body": "生クリームの甘さが絶妙でした。",
+      "is_verified_purchaser": true,
+      "helpful_count": 12,
+      "created_at": "2026-05-27T10:00:00.000Z"
+    }
+  ],
+  "next_cursor": "eyJzb3J0...",
+  "has_more": true,
+  "stats": {
+    "count": 123,
+    "average": 4.5,
+    "distribution": { "1": 3, "2": 5, "3": 20, "4": 40, "5": 55 }
+  }
+}
+```
+
+**設計判断のメモ**:
+
+- **カーソルは sort 別に複合キーを切り替える**: `newest` は `(created_at, id)`、`helpful` は `(helpful_count, created_at, id)`。Phase 10 Step 2 と同じく**カーソルに正規化 sort 文字列を埋め込み**、次ページ取得時に sort が一致しなければ `400`（フィルタは不透明トークンに含めない）。`id` は常に最終 tiebreaker（全順序を保証）。
+- **集計を 1 リクエストに同梱**: count / average / 星別 distribution を repository 側で同じ where 句で再利用して N+1 にならない設計。0 件のときは `average=null`（クライアントが「まだ評価なし」を明示的に表現できるように）、distribution は 0 件の星も 0 を返す（フロントが空配列の特殊扱いを書かなくて済む）。
+- **購入済みバッジは投稿時点の snapshot**: 後で注文がキャンセル/返金された場合でも、過去の「購入したうえでのレビュー」表記は維持される（履歴の真実を尊重する／表示が遡及して動くのは UX 上望ましくない）。判定は `has_purchased(cake_id, user_id)` RPC（`security invoker`・注文 status='placed' の order_items を見る・service_role からのみ呼ばれる port + adapter）。
+- **重複投稿の構造的禁止**: スキーマに `UNIQUE(cake_id, user_id) WHERE status='published'` 部分インデックスを張り、DB レベルでも防御（アプリ側の `findByCakeIdAndUserId` 事前チェックと多重防御）。`hidden` 状態のレビューは UNIQUE 制約から外し、モデレータが「公開取り消し」した場合でも本人の再投稿を許可する（Step 4 通報フローで使う）。
+- **コンテキスト跨ぎ禁止対応**: `reviews` は `cakes` / `orders` の Entity を import せず、`CakeId` は reviews ローカルの VO として再宣言、購入済み判定だけを port 経由で受ける（DDD-lite のコンテキスト境界を保つ）。
+- **ルーターは cakeRouter と同じ `/v1/cakes` プレフィックスに別ルーターとして並べる**: Hono の trie は `/v1/cakes/:id`（cakeRouter）と `/v1/cakes/:cake_id/reviews`（reviewsRouter）を別パスとして区別するので衝突しない。GET / POST が同じパスを共有するため、`restrictToMethods` ヘルパで authGuard / Idempotency を POST だけにゲートし、GET は public 経路を保つ。
+
 ### `/health` の応答仕様（Phase 9 Step 3a）
 
 `/health` は **DB 到達性も含めた 3 状態のヘルスチェック**を返す（外形監視・uptime monitor の連携前提）。
@@ -1469,6 +1534,9 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
   - [x] Step 5（2026-05-24 完了）: **Rate Limit** — Cloudflare Workers の `[[ratelimits]]` binding を 3 本（`LIMITER_PUBLIC_READ` 100/10s・`LIMITER_PUBLIC_WRITE` 5/60s・`LIMITER_AUTH_WRITE` 10/10s）に分割し、IP キー（公開系）/ user キー（認証系）で使い分け。binding の `limit()` は `{ success }` しか返さないので middleware factory が wrangler.toml の period から `Retry-After` を焼き込む。Hono の `router.use(path, mw)` がメソッドを区別しない弱点は `restrictToMethods` ヘルパで補い、`GET /` / `POST /` で `/` を共有する `cakes` / `customers` でもメソッド別 limiter を割り当てた。超過は **429 RATE_LIMITED + Retry-After ヘッダ** を返し、`details[0].field='Retry-After'` にも同値を載せる（JSON だけ読むクライアントでも秒数が取れる）。テストは node-unit プールで `InMemoryRateLimiter`（固定ウィンドウ + `now()` 差し替え）による middleware 単体 + 統合テストで「公開 GET が枯れても POST には影響しない」（`restrictToMethods` の効果）を検証、`pnpm verify` 緑（426 テスト）。詳細仕様は「[`/v1/*` の Rate Limit 仕様](#v1-の-rate-limit-仕様phase-10-step-5)」参照
   - [x] Step 6（2026-05-25 完了）: **Idempotency-Key** — 全 POST エンドポイント（`/v1/orders`・`/v1/cakes`・`/v1/customers`）で `Idempotency-Key` ヘッダ必須化（Stripe スタイル）、Postgres 永続化で再送による二重作成を防ぐ。新規テーブル `idempotency_keys`（migration `0007_idempotency_keys.sql`・複合主キー `(key, owner_type, owner_id, scope)` + `request_hash` + `status` + `response_status/body` + `expires_at(default now()+24h)`、RLS 明示ポリシー無し = service_role 専用）。`IdempotencyStore` ポート（`app/shared/infrastructure/idempotency-store.ts`）は 4 状態 union（`inserted`/`replay`/`in_progress`/`mismatch`）を返す `tryReserve` + `complete` の 2 メソッドで、Supabase 実装は PostgREST の `.upsert(..., { ignoreDuplicates: true, onConflict: 'key,owner_type,owner_id,scope' })` で `INSERT … ON CONFLICT DO NOTHING` 相当を達成。middleware（`app/shared/http/idempotency.middleware.ts`）は **canonical JSON**（キー sort）+ Web Crypto SHA-256 で body をハッシュ化し、replay 経路では `c.newResponse(JSON.stringify(body), status)` で再現 + `Idempotency-Replayed: true` ヘッダ。owner は orders/cakes が user.id・customers は cf-connecting-ip。挿入順は `rate-limit → auth/admin → idempotency` で、認証未通過は 401/403 が先に出て store を消費しない。失敗は **400 `IDEMPOTENCY_KEY_REQUIRED`（欠落 / 形式不正）/ 409 `IDEMPOTENCY_IN_PROGRESS`（処理中）/ 422 `IDEMPOTENCY_KEY_REUSED`（同 key・違う body）**。詳細仕様は「[`POST /v1/*` の Idempotency-Key 仕様](#post-v1-の-idempotency-key-仕様phase-10-step-6)」参照
   - [x] Step 7（2026-05-26 完了）: **Webhook 配信** — 「注文確定」ドメインイベント (`order.placed`) を登録済みの外部 URL に POST。**HMAC-SHA256 署名（Stripe スタイル `t=<unix>,v1=<hex>`、Web Crypto で実装し Workers 互換）** + **指数バックオフ retry（1m → 5m → 30m → 4h → 24h → 6 回目で `dead`）**。`webhook_subscriptions` / `webhook_deliveries`（migration `0008_webhooks.sql`、`UNIQUE (event_id, subscription_id)` で event × subscription の二重発火を構造的に阻止、`webhook_deliveries.payload` で発火時 snapshot 固定）。**Cron Triggers 未使用 = リクエスト駆動の dispatch ミドルウェア**（`c.executionCtx.waitUntil(dispatchPendingDeliveries({limit:5}))`）で「トラフィックがある限り retry が進む」設計（Workers Free プランのコスト最小化）。`EventPublisher` 抽象は `app/shared/application/event-publisher.ts` に置き、`orders/place-order.usecase` から **publish 失敗を try/catch で握って warn ログ**にする（副系の失敗が注文確定を巻き戻さない）。webhooks コンテンツは `app/modules/webhooks/{domain,application,infrastructure,presentation}` に DDD-lite 4 層で完結、管理 API は **admin 専用 + Idempotency-Key 必須**（POST のみ・GET 系は対象外）。RLS は service_role 専用（明示ポリシーなし）。`seed.sql` には subscription を入れない = 公開リポジトリをそのまま叩いても外部 URL に意図せず HTTP を打たない。テスト 518 件全緑（HMAC・dispatcher の 2xx/3xx/4xx/5xx/timeout/network エラー・EventPublisher の部分失敗耐性・dispatchPendingDeliveries の状態遷移＋ dead 化・cascade 削除・サブスクリプション CRUD 4 ユースケース）。詳細仕様は「[`POST /v1/orders` → Webhook 配信仕様](#post-v1orders--webhook-配信仕様phase-10-step-7)」参照
+- [ ] **Phase 11**: **レビュー機能**（ケーキ / 店舗のレビュー投稿・一覧・集計・モデレーション）— 進行中
+  - 動機: Cake Shop API は MVP として CRUD + 注文系を一周したので、**ユーザー生成コンテンツ (UGC) の設計判断**を一周する。投稿資格・購入済みバッジ・モデレーション・役立った投票・通報といった、実運用のレビュー機能で必ず出てくる選択肢を縦切りで実演する
+  - [x] Step 1（2026-05-27 完了）: **ケーキレビュー（投稿・一覧・集計）** — `app/modules/reviews/{domain,application,infrastructure,presentation}` を DDD-lite 4 層で新設し、`/v1/cakes/:cake_id/reviews` の GET（公開・カーソル + 集計同梱）/ POST（認証 + Idempotency-Key 必須）を実装。**投稿資格は「誰でも」**（購入してなくても投稿可）、**購入済みバッジ `is_verified_purchaser` は投稿時点の snapshot**（後で履歴が変わっても表示が動かない）として保存する設計を採用。レビュー対象は cake と店舗の二層を想定したが、Step 1 では cake 向けのみ縦切りで完成（店舗は Step 2 で同型を増殖）。スキーマは `supabase/migrations/0009_reviews.sql`（`reviews` + `UNIQUE(cake_id, user_id) WHERE status='published'` で「同一 user × cake = 1 件」を構造的に保証 + `helpful_count` カラム + 部分インデックス）+ `has_purchased(cake_id uuid, user_id uuid)` RPC（service_role からの購入済み判定。注文確定済み = orders.status='placed' の order_items 行で判定し、Step 3 の役立った投票で再利用予定）。port + adapter = `VerifiedPurchaserChecker`（`app/modules/reviews/domain/verified-purchaser-checker.ts`）の interface を切り、infrastructure 側で `SupabaseVerifiedPurchaserChecker` が RPC を 1 リクエストで叩く（in-memory 実装はテストで購入履歴を差し替え可能）。**カーソル**は sort 種別ごとに違う複合キー（`newest` = `(created_at DESC, id DESC)` / `helpful` = `(helpful_count DESC, created_at DESC, id DESC)`）+ Step 1/2 と同じ汎用 codec（base64url + sort 文字列を埋め込み・不一致 400）。集計は `count` / `average`（0 件は null）/ `distribution`（1..5 の星別件数、0 件の星も 0 を返す）を 1 レスポンスで返す（N+1 にならないよう repository 側で同じ where 句を使い回す）。**コンテキスト跨ぎ禁止対応** = `cakes` / `orders` を直接 import せず、`CakeId` は reviews ローカル VO（`app/modules/reviews/domain/cake-id.vo.ts`）として再宣言、`has_purchased` の判定だけを port 経由で受ける（cake / order の Entity は触らない）。**ルーターマウント** = cakeRouter と同じ `/v1/cakes` プレフィックスに `createReviewRouter()` を別ルーターとして並べて装着（Hono の trie は `:id` と `:cake_id/reviews` を別パスとして区別するので衝突しない）+ GET / POST が同パスを共有するので `restrictToMethods` ヘルパで authGuard / Idempotency をメソッド別ゲート。**エラー** = `409 REVIEW_CONFLICT`（同 user × 同 cake で既存）/ `400 VALIDATION_ERROR`（rating 1〜5 範囲外・title/body 空・cake_id 非 UUID・カーソル改竄 / sort 不一致）/ `401`（POST 未認証）/ `422 IDEMPOTENCY_KEY_REUSED`（同 key + 違う body）。テスト 592 件全緑（domain 単体・application UseCase・infrastructure（workers プールで実 Supabase + RPC）・presentation routes・統合 20 件 = GET 空 / フィルタ / 集計 / sort=newest / sort=helpful / verified_only / cursor 前進 + sort 不一致 400 + 改竄 400 / POST 201 + is_verified_purchaser snapshot / 409 / 401 / 422 / router 共存）+ `pnpm verify` 緑
 
 ---
 

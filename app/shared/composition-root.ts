@@ -28,6 +28,11 @@ import { createListSubscriptionsUseCase } from '@/modules/webhooks/application/l
 import { createDeleteSubscriptionUseCase } from '@/modules/webhooks/application/delete-subscription.usecase';
 import { createListDeliveriesUseCase } from '@/modules/webhooks/application/list-deliveries.usecase';
 import { createWebhookController } from '@/modules/webhooks/presentation/webhook.controller';
+import { ReviewSupabaseRepository } from '@/modules/reviews/infrastructure/review.supabase-repository';
+import { SupabaseVerifiedPurchaserChecker } from '@/modules/reviews/infrastructure/supabase-verified-purchaser.checker';
+import { createListReviewsByCakeUseCase } from '@/modules/reviews/application/list-reviews-by-cake.usecase';
+import { createPostReviewUseCase } from '@/modules/reviews/application/post-review.usecase';
+import { createReviewController } from '@/modules/reviews/presentation/review.controller';
 
 // ---------------------------------------------------------------------------
 // composition-root = アプリケーション全体の DI を組み立てる中心地。
@@ -114,7 +119,20 @@ export const buildRequestModules = (sb: SupabaseClient, deps: ModuleDeps): Reque
     listDeliveries: createListDeliveriesUseCase(webhookSubscriptionRepo, webhookDeliveryRepo),
   });
 
-  return { cakes, customers, orders, webhooks };
+  // reviews（cake 向け口コミ）
+  //   - sb は per-request の anon / authenticated クライアント。
+  //     公開 GET は anon でも reviews_select_published policy で読める。
+  //     POST は authenticated + reviews_insert_self policy で本人のみ insert 可。
+  //   - VerifiedPurchaserChecker は has_purchased RPC を本人 JWT で呼ぶことで
+  //     「他人の購入実績バッジ誤付与」を構造的に防ぐ（security invoker + RLS）。
+  const reviewRepo = new ReviewSupabaseRepository(sb);
+  const verifiedPurchaserChecker = new SupabaseVerifiedPurchaserChecker(sb);
+  const reviews = createReviewController({
+    postReview: createPostReviewUseCase(reviewRepo, verifiedPurchaserChecker, deps.logger),
+    listReviewsByCake: createListReviewsByCakeUseCase(reviewRepo),
+  });
+
+  return { cakes, customers, orders, webhooks, reviews };
 };
 
 // per-request にモジュールを組み立てて c.var.modules に積むミドルウェア。

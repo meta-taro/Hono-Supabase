@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { CakeController } from '@/modules/cakes/presentation/cake.controller';
 import type { CustomerController } from '@/modules/customers/presentation/customer.controller';
 import type { OrderController } from '@/modules/orders/presentation/order.controller';
+import type { ReviewController } from '@/modules/reviews/presentation/review.controller';
 import type { WebhookController } from '@/modules/webhooks/presentation/webhook.controller';
 import type { AppLogger } from '@/shared/infrastructure/logger';
 
@@ -46,6 +47,11 @@ export interface RequestModules {
   //   配信履歴閲覧を扱う。すべて admin 専用。composition-root が per-request DI で
   //   admin Supabase client から組み立てて積む。
   webhooks: WebhookController;
+  // Phase 11 Step 1: cakes 向けレビュー。投稿（POST）+ 一覧（GET）+ 集計。
+  //   composition-root が per-request の sb から組み立てる。
+  //   has_purchased RPC は security invoker なので、本人の JWT で呼ばれた sb を使うことで
+  //   「他人の購入実績バッジを誤付与する」事故を構造的に防ぐ。
+  reviews: ReviewController;
 }
 
 export interface AppVariables {
