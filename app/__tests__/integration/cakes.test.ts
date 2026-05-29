@@ -33,6 +33,11 @@ import { createListReviewsByCakeUseCase } from '@/modules/reviews/application/li
 import { createReviewController } from '@/modules/reviews/presentation/review.controller';
 import { InMemoryReviewRepository } from '@/modules/reviews/application/__test-helpers__/in-memory-review.repository';
 import { InMemoryVerifiedPurchaserChecker } from '@/modules/reviews/application/__test-helpers__/in-memory-verified-purchaser.checker';
+import { createPostShopReviewUseCase } from '@/modules/reviews/application/post-shop-review.usecase';
+import { createListShopReviewsUseCase } from '@/modules/reviews/application/list-shop-reviews.usecase';
+import { createShopReviewController } from '@/modules/reviews/presentation/shop-review.controller';
+import { InMemoryShopReviewRepository } from '@/modules/reviews/application/__test-helpers__/in-memory-shop-review.repository';
+import { InMemoryOrderHistoryChecker } from '@/modules/reviews/application/__test-helpers__/in-memory-order-history.checker';
 import { createFakeAuthMiddleware, requireAuth, requireAdmin } from '@/shared/http/auth.middleware';
 import type { AppEnv, AuthUser, RequestModules } from '@/shared/http/request-context';
 import { InMemoryRateLimiter } from '@/shared/http/rate-limiter';
@@ -122,12 +127,20 @@ const buildTestApp = (
     listReviewsByCake: createListReviewsByCakeUseCase(reviewsRepo),
   });
 
+  const shopReviewsRepo = new InMemoryShopReviewRepository();
+  const orderHistoryChecker = new InMemoryOrderHistoryChecker();
+  const shopReviewsController = createShopReviewController({
+    postShopReview: createPostShopReviewUseCase(shopReviewsRepo, orderHistoryChecker, silentLogger),
+    listShopReviews: createListShopReviewsUseCase(shopReviewsRepo),
+  });
+
   const modules: RequestModules = {
     cakes: cakesController,
     customers: customersController,
     orders: ordersController,
     webhooks: webhooksController,
     reviews: reviewsController,
+    shopReviews: shopReviewsController,
   };
 
   // テストでは sb を実体として持たないので null 相当のスタブを積む。

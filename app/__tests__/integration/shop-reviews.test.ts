@@ -38,22 +38,22 @@ import { createListShopReviewsUseCase } from '@/modules/reviews/application/list
 import { createShopReviewController } from '@/modules/reviews/presentation/shop-review.controller';
 import { InMemoryShopReviewRepository } from '@/modules/reviews/application/__test-helpers__/in-memory-shop-review.repository';
 import { InMemoryOrderHistoryChecker } from '@/modules/reviews/application/__test-helpers__/in-memory-order-history.checker';
-import { CakeId } from '@/modules/reviews/domain/cake-id.vo';
-import { Review } from '@/modules/reviews/domain/review';
+import { ShopReview } from '@/modules/reviews/domain/shop-review';
 import { createFakeAuthMiddleware, requireAuth, requireAdmin } from '@/shared/http/auth.middleware';
 import type { AppEnv, AuthUser, RequestModules } from '@/shared/http/request-context';
 
 // ---------------------------------------------------------------------------
-// この統合テストの目的:
+// Phase 11 Step 2: 店舗（単一店舗）レビューの統合テスト。
 //   presentation 層（routes / controller / dto）の HTTP 動作を確認する。
-//   - GET  /v1/cakes/{cake_id}/reviews … 認証不要・カーソルページネーション・stats 同梱
-//   - POST /v1/cakes/{cake_id}/reviews … 認証必須・409 / 422 / verified_purchaser snapshot
+//   - GET  /v1/shop/reviews … 認証不要・カーソルページネーション・stats 同梱
+//   - POST /v1/shop/reviews … 認証必須・409 / is_verified_customer snapshot
 //
 // なぜ Supabase に繋がないのか:
-//   infrastructure 層は review.supabase-repository.test.ts で実 Supabase（has_purchased RPC
-//   含む）に対して既に検証済み。ここでは「HTTP → UseCase → Response」の経路と、
-//   reviews router が cakeRouter と同じ '/v1/cakes' プレフィックスにマウントされても
-//   path が衝突しないことを高速・決定的に確認する。
+//   infrastructure 層は shop-review.supabase-repository.test.ts / supabase-order-history.
+//   checker.test.ts で実 Supabase（has_ordered RPC 含む）に対して検証済み。
+//   ここでは「HTTP → UseCase → Response」の経路と、店舗ルーターが /v1/shop に
+//   マウントされても cake レビュー（/v1/cakes/:cake_id/reviews）と独立に動くことを
+//   高速・決定的に確認する。
 // ---------------------------------------------------------------------------
 
 const silentLogger = createSilentLogger();
@@ -72,8 +72,8 @@ const OTHER_USER: AuthUser = {
 
 interface TestApp {
   app: ReturnType<typeof createApp>;
-  reviewsRepo: InMemoryReviewRepository;
-  verifiedChecker: InMemoryVerifiedPurchaserChecker;
+  shopReviewsRepo: InMemoryShopReviewRepository;
+  orderHistoryChecker: InMemoryOrderHistoryChecker;
 }
 
 const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
@@ -150,43 +150,44 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
     },
   });
 
-  return { app, reviewsRepo, verifiedChecker };
+  return { app, shopReviewsRepo, orderHistoryChecker };
 };
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-// テスト用 fixture: Review.create を呼んで preload に突っ込める形で返す。
-//   createdAt は in-memory リポジトリの sort 検証で時系列を確認するため、テスト側で
-//   差し替えたいケースに備えて override 可能にする。
-const buildReview = (params: {
-  cakeId: string;
+// テスト用 fixture: ShopReview.create を呼び、createdAt / helpfulCount / status を
+// 差し替えたい場合は reconstruct で組み直して返す（in-memory リポジトリの sort / filter
+// 検証で時系列や状態を制御するため）。
+const buildShopReview = (params: {
   userId: string;
   rating: number;
   title?: string;
   body?: string;
-  isVerifiedPurchaser?: boolean;
+  isVerifiedCustomer?: boolean;
+  status?: 'published' | 'hidden' | 'removed';
   createdAt?: Date;
   helpfulCount?: number;
-}): Review => {
-  const review = Review.create({
-    cakeId: CakeId.from(params.cakeId),
+}): ShopReview => {
+  const review = ShopReview.create({
     userId: params.userId,
     rating: params.rating,
     title: params.title ?? 'good',
     body: params.body ?? 'tasty',
-    isVerifiedPurchaser: params.isVerifiedPurchaser ?? false,
+    isVerifiedCustomer: params.isVerifiedCustomer ?? false,
   });
-  // createdAt / helpfulCount を反映したい場合は reconstruct で組み直す。
-  if (params.createdAt !== undefined || params.helpfulCount !== undefined) {
-    return Review.reconstruct({
+  if (
+    params.createdAt !== undefined ||
+    params.helpfulCount !== undefined ||
+    params.status !== undefined
+  ) {
+    return ShopReview.reconstruct({
       id: review.id.value,
-      cakeId: review.cakeId.value,
       userId: review.userId,
       rating: review.rating.value,
       title: review.title,
       body: review.body,
-      status: review.status,
-      isVerifiedPurchaser: review.isVerifiedPurchaser,
+      status: params.status ?? review.status,
+      isVerifiedCustomer: review.isVerifiedCustomer,
       helpfulCount: params.helpfulCount ?? review.helpfulCount,
       flagCount: 0,
       createdAt: params.createdAt ?? review.createdAt,
@@ -196,12 +197,11 @@ const buildReview = (params: {
   return review;
 };
 
-describe('GET /v1/cakes/:cake_id/reviews（認証不要）', () => {
+describe('GET /v1/shop/reviews（認証不要）', () => {
   it('レビューが 1 件もない場合 200 + 空配列 + count=0/average=null を返す', async () => {
     const { app } = buildTestApp();
-    const cakeId = randomUUID();
 
-    const res = await app.request(`/v1/cakes/${cakeId}/reviews`);
+    const res = await app.request('/v1/shop/reviews');
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -218,35 +218,25 @@ describe('GET /v1/cakes/:cake_id/reviews（認証不要）', () => {
     expect(body.stats.distribution).toEqual({ '1': 0, '2': 0, '3': 0, '4': 0, '5': 0 });
   });
 
-  it('cake_id が UUID でなければ 400 VALIDATION_ERROR を返す', async () => {
-    const { app } = buildTestApp();
-    const res = await app.request('/v1/cakes/not-a-uuid/reviews');
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: { code: string } };
-    expect(body.error.code).toBe('VALIDATION_ERROR');
-  });
-
-  it('対象 cake のレビューだけを返し、stats も計算される', async () => {
-    const { app, reviewsRepo } = buildTestApp();
-    const cakeA = randomUUID();
-    const cakeB = randomUUID();
-    reviewsRepo.preload([
-      buildReview({ cakeId: cakeA, userId: 'u1', rating: 5 }),
-      buildReview({ cakeId: cakeA, userId: 'u2', rating: 4 }),
-      buildReview({ cakeId: cakeA, userId: 'u3', rating: 3 }),
-      // 別ケーキ → 含まれない
-      buildReview({ cakeId: cakeB, userId: 'u4', rating: 1 }),
+  it('published レビューだけを返し、stats も計算される', async () => {
+    const { app, shopReviewsRepo } = buildTestApp();
+    shopReviewsRepo.preload([
+      buildShopReview({ userId: 'u1', rating: 5 }),
+      buildShopReview({ userId: 'u2', rating: 4 }),
+      buildShopReview({ userId: 'u3', rating: 3 }),
+      // hidden / removed は一覧にも stats にも含めない
+      buildShopReview({ userId: 'u4', rating: 1, status: 'hidden' }),
+      buildShopReview({ userId: 'u5', rating: 1, status: 'removed' }),
     ]);
 
-    const res = await app.request(`/v1/cakes/${cakeA}/reviews`);
+    const res = await app.request('/v1/shop/reviews');
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      reviews: Array<{ cake_id: string; rating: number }>;
+      reviews: Array<{ user_id: string; rating: number }>;
       stats: { count: number; average: number | null; distribution: Record<string, number> };
     };
     expect(body.reviews).toHaveLength(3);
-    expect(body.reviews.every((r) => r.cake_id === cakeA)).toBe(true);
     expect(body.stats.count).toBe(3);
     // 平均 (5+4+3)/3 = 4
     expect(body.stats.average).toBe(4);
@@ -254,45 +244,40 @@ describe('GET /v1/cakes/:cake_id/reviews（認証不要）', () => {
   });
 
   it('sort=newest（既定）で created_at の降順に並ぶ', async () => {
-    const { app, reviewsRepo } = buildTestApp();
-    const cakeId = randomUUID();
-    reviewsRepo.preload([
-      buildReview({
-        cakeId,
+    const { app, shopReviewsRepo } = buildTestApp();
+    shopReviewsRepo.preload([
+      buildShopReview({
         userId: 'u-old',
         rating: 5,
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
       }),
-      buildReview({
-        cakeId,
+      buildShopReview({
         userId: 'u-mid',
         rating: 3,
         createdAt: new Date('2026-03-01T00:00:00.000Z'),
       }),
-      buildReview({
-        cakeId,
+      buildShopReview({
         userId: 'u-new',
         rating: 4,
         createdAt: new Date('2026-05-01T00:00:00.000Z'),
       }),
     ]);
 
-    const res = await app.request(`/v1/cakes/${cakeId}/reviews`);
+    const res = await app.request('/v1/shop/reviews');
     expect(res.status).toBe(200);
     const body = (await res.json()) as { reviews: Array<{ user_id: string }> };
     expect(body.reviews.map((r) => r.user_id)).toEqual(['u-new', 'u-mid', 'u-old']);
   });
 
   it('sort=helpful で helpful_count の降順に並ぶ', async () => {
-    const { app, reviewsRepo } = buildTestApp();
-    const cakeId = randomUUID();
-    reviewsRepo.preload([
-      buildReview({ cakeId, userId: 'u-a', rating: 5, helpfulCount: 1 }),
-      buildReview({ cakeId, userId: 'u-b', rating: 5, helpfulCount: 10 }),
-      buildReview({ cakeId, userId: 'u-c', rating: 5, helpfulCount: 5 }),
+    const { app, shopReviewsRepo } = buildTestApp();
+    shopReviewsRepo.preload([
+      buildShopReview({ userId: 'u-a', rating: 5, helpfulCount: 1 }),
+      buildShopReview({ userId: 'u-b', rating: 5, helpfulCount: 10 }),
+      buildShopReview({ userId: 'u-c', rating: 5, helpfulCount: 5 }),
     ]);
 
-    const res = await app.request(`/v1/cakes/${cakeId}/reviews?sort=helpful`);
+    const res = await app.request('/v1/shop/reviews?sort=helpful');
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       reviews: Array<{ user_id: string; helpful_count: number }>;
@@ -302,15 +287,14 @@ describe('GET /v1/cakes/:cake_id/reviews（認証不要）', () => {
   });
 
   it('filter_rating で星評価による絞り込みができる（stats は全件ベース）', async () => {
-    const { app, reviewsRepo } = buildTestApp();
-    const cakeId = randomUUID();
-    reviewsRepo.preload([
-      buildReview({ cakeId, userId: 'u1', rating: 5 }),
-      buildReview({ cakeId, userId: 'u2', rating: 5 }),
-      buildReview({ cakeId, userId: 'u3', rating: 3 }),
+    const { app, shopReviewsRepo } = buildTestApp();
+    shopReviewsRepo.preload([
+      buildShopReview({ userId: 'u1', rating: 5 }),
+      buildShopReview({ userId: 'u2', rating: 5 }),
+      buildShopReview({ userId: 'u3', rating: 3 }),
     ]);
 
-    const res = await app.request(`/v1/cakes/${cakeId}/reviews?filter_rating=5`);
+    const res = await app.request('/v1/shop/reviews?filter_rating=5');
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       reviews: Array<{ rating: number }>;
@@ -322,60 +306,45 @@ describe('GET /v1/cakes/:cake_id/reviews（認証不要）', () => {
     expect(body.stats.count).toBe(3);
   });
 
-  it('verified_only=true で購入済みバッジ付きだけに絞れる', async () => {
-    const { app, reviewsRepo } = buildTestApp();
-    const cakeId = randomUUID();
-    reviewsRepo.preload([
-      buildReview({ cakeId, userId: 'u-verified', rating: 5, isVerifiedPurchaser: true }),
-      buildReview({ cakeId, userId: 'u-unverified', rating: 4, isVerifiedPurchaser: false }),
+  it('verified_only=true で利用実績バッジ付きだけに絞れる', async () => {
+    const { app, shopReviewsRepo } = buildTestApp();
+    shopReviewsRepo.preload([
+      buildShopReview({ userId: 'u-verified', rating: 5, isVerifiedCustomer: true }),
+      buildShopReview({ userId: 'u-unverified', rating: 4, isVerifiedCustomer: false }),
     ]);
 
-    const res = await app.request(`/v1/cakes/${cakeId}/reviews?verified_only=true`);
+    const res = await app.request('/v1/shop/reviews?verified_only=true');
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      reviews: Array<{ user_id: string; is_verified_purchaser: boolean }>;
+      reviews: Array<{ user_id: string; is_verified_customer: boolean }>;
     };
     expect(body.reviews).toHaveLength(1);
     expect(body.reviews[0]?.user_id).toBe('u-verified');
-  });
-
-  it('limit が境界外なら 400 VALIDATION_ERROR を返す', async () => {
-    const { app } = buildTestApp();
-    const cakeId = randomUUID();
-
-    const tooLarge = await app.request(`/v1/cakes/${cakeId}/reviews?limit=101`);
-    expect(tooLarge.status).toBe(400);
-    const tooSmall = await app.request(`/v1/cakes/${cakeId}/reviews?limit=0`);
-    expect(tooSmall.status).toBe(400);
+    expect(body.reviews[0]?.is_verified_customer).toBe(true);
   });
 
   describe('カーソルページネーション', () => {
-    it('limit を超える件数があるとき next_cursor + Link ヘッダを返し、次ページで残りを取得できる', async () => {
-      const { app, reviewsRepo } = buildTestApp();
-      const cakeId = randomUUID();
-      // 3 件 / limit=2 で「ページ1: 2件 + next_cursor」「ページ2: 1件」になる
-      reviewsRepo.preload([
-        buildReview({
-          cakeId,
+    it('limit で分割し、next_cursor を after に渡して続きが取得できる', async () => {
+      const { app, shopReviewsRepo } = buildTestApp();
+      shopReviewsRepo.preload([
+        buildShopReview({
           userId: 'u-old',
           rating: 5,
           createdAt: new Date('2026-01-01T00:00:00.000Z'),
         }),
-        buildReview({
-          cakeId,
+        buildShopReview({
           userId: 'u-mid',
           rating: 4,
           createdAt: new Date('2026-03-01T00:00:00.000Z'),
         }),
-        buildReview({
-          cakeId,
+        buildShopReview({
           userId: 'u-new',
           rating: 3,
           createdAt: new Date('2026-05-01T00:00:00.000Z'),
         }),
       ]);
 
-      const res1 = await app.request(`/v1/cakes/${cakeId}/reviews?limit=2`);
+      const res1 = await app.request('/v1/shop/reviews?limit=2');
       expect(res1.status).toBe(200);
       const body1 = (await res1.json()) as {
         reviews: Array<{ user_id: string }>;
@@ -385,14 +354,9 @@ describe('GET /v1/cakes/:cake_id/reviews（認証不要）', () => {
       expect(body1.reviews.map((r) => r.user_id)).toEqual(['u-new', 'u-mid']);
       expect(body1.has_more).toBe(true);
       expect(body1.next_cursor).not.toBeNull();
-      // RFC 5988 Link ヘッダで次ページ URL を提示する
-      const link = res1.headers.get('Link');
-      expect(link).toContain('rel="next"');
-      expect(link).toContain('after=');
 
-      // next_cursor を after に渡して次ページ取得
       const res2 = await app.request(
-        `/v1/cakes/${cakeId}/reviews?limit=2&after=${encodeURIComponent(body1.next_cursor as string)}`,
+        `/v1/shop/reviews?limit=2&after=${encodeURIComponent(body1.next_cursor as string)}`,
       );
       expect(res2.status).toBe(200);
       const body2 = (await res2.json()) as {
@@ -406,31 +370,26 @@ describe('GET /v1/cakes/:cake_id/reviews（認証不要）', () => {
     });
 
     it('カーソル発行時の sort と異なる sort を指定すると 400 VALIDATION_ERROR を返す', async () => {
-      const { app, reviewsRepo } = buildTestApp();
-      const cakeId = randomUUID();
-      reviewsRepo.preload([
-        buildReview({
-          cakeId,
+      const { app, shopReviewsRepo } = buildTestApp();
+      shopReviewsRepo.preload([
+        buildShopReview({
           userId: 'u1',
           rating: 5,
           createdAt: new Date('2026-01-01T00:00:00.000Z'),
         }),
-        buildReview({
-          cakeId,
+        buildShopReview({
           userId: 'u2',
           rating: 4,
           createdAt: new Date('2026-05-01T00:00:00.000Z'),
         }),
       ]);
 
-      // sort=newest で 1 ページ目を取得 → next_cursor が出る
-      const res1 = await app.request(`/v1/cakes/${cakeId}/reviews?sort=newest&limit=1`);
+      const res1 = await app.request('/v1/shop/reviews?sort=newest&limit=1');
       const body1 = (await res1.json()) as { next_cursor: string | null };
       expect(body1.next_cursor).not.toBeNull();
 
-      // 同じカーソルを sort=helpful で渡す → 400
       const res2 = await app.request(
-        `/v1/cakes/${cakeId}/reviews?sort=helpful&limit=1&after=${encodeURIComponent(
+        `/v1/shop/reviews?sort=helpful&limit=1&after=${encodeURIComponent(
           body1.next_cursor as string,
         )}`,
       );
@@ -441,8 +400,7 @@ describe('GET /v1/cakes/:cake_id/reviews（認証不要）', () => {
 
     it('改竄カーソルは 400 VALIDATION_ERROR を返す', async () => {
       const { app } = buildTestApp();
-      const cakeId = randomUUID();
-      const res = await app.request(`/v1/cakes/${cakeId}/reviews?after=not-a-valid-cursor`);
+      const res = await app.request('/v1/shop/reviews?after=not-a-valid-cursor');
       expect(res.status).toBe(400);
       const body = (await res.json()) as { error: { code: string } };
       expect(body.error.code).toBe('VALIDATION_ERROR');
@@ -450,67 +408,64 @@ describe('GET /v1/cakes/:cake_id/reviews（認証不要）', () => {
   });
 });
 
-describe('POST /v1/cakes/:cake_id/reviews（要認証）', () => {
-  it('201 と作成されたレビューを返す（購入実績が無ければ is_verified_purchaser=false）', async () => {
-    const { app, reviewsRepo } = buildTestApp({ user: AUTH_USER });
-    const cakeId = randomUUID();
+describe('POST /v1/shop/reviews（要認証）', () => {
+  it('201 と作成されたレビューを返す（利用実績が無ければ is_verified_customer=false）', async () => {
+    const { app, shopReviewsRepo } = buildTestApp({ user: AUTH_USER });
 
-    const res = await app.request(`/v1/cakes/${cakeId}/reviews`, {
+    const res = await app.request('/v1/shop/reviews', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         rating: 5,
-        title: 'とても美味しかった',
-        body: '生クリームの甘さが絶妙でした。',
+        title: '雰囲気が良いお店',
+        body: '店員さんの対応も丁寧でした。',
       }),
     });
 
     expect(res.status).toBe(201);
     const body = (await res.json()) as {
       id: string;
-      cake_id: string;
       user_id: string;
       rating: number;
       title: string;
       body: string;
-      is_verified_purchaser: boolean;
+      is_verified_customer: boolean;
       helpful_count: number;
       created_at: string;
     };
     expect(body.id).toMatch(UUID_REGEX);
-    expect(body.cake_id).toBe(cakeId);
     expect(body.user_id).toBe(AUTH_USER.id);
     expect(body.rating).toBe(5);
-    expect(body.title).toBe('とても美味しかった');
-    expect(body.is_verified_purchaser).toBe(false);
+    expect(body.title).toBe('雰囲気が良いお店');
+    expect(body.is_verified_customer).toBe(false);
     expect(body.helpful_count).toBe(0);
+    // 単一店舗なので cake_id は存在しない
+    expect(body).not.toHaveProperty('cake_id');
     // 永続化されている
-    const stats = await reviewsRepo.statsByCake(CakeId.from(cakeId));
+    const stats = await shopReviewsRepo.stats();
     expect(stats.count).toBe(1);
   });
 
-  it('購入済みなら is_verified_purchaser=true で snapshot される', async () => {
-    const { app, verifiedChecker } = buildTestApp({ user: AUTH_USER });
-    const cakeId = randomUUID();
-    verifiedChecker.markPurchased(AUTH_USER.id, cakeId);
+  it('利用実績があれば is_verified_customer=true で snapshot される', async () => {
+    const { app, orderHistoryChecker } = buildTestApp({ user: AUTH_USER });
+    orderHistoryChecker.markOrdered(AUTH_USER.id);
 
-    const res = await app.request(`/v1/cakes/${cakeId}/reviews`, {
+    const res = await app.request('/v1/shop/reviews', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ rating: 4, title: 'good', body: 'ok' }),
     });
 
     expect(res.status).toBe(201);
-    const body = (await res.json()) as { is_verified_purchaser: boolean };
-    expect(body.is_verified_purchaser).toBe(true);
+    const body = (await res.json()) as { is_verified_customer: boolean };
+    expect(body.is_verified_customer).toBe(true);
   });
 
   describe('認証ガード', () => {
     it('未認証だと 401 + UNAUTHORIZED を返し、レビューは作成されない', async () => {
-      const { app, reviewsRepo } = buildTestApp({ user: null });
-      const cakeId = randomUUID();
+      const { app, shopReviewsRepo } = buildTestApp({ user: null });
 
-      const res = await app.request(`/v1/cakes/${cakeId}/reviews`, {
+      const res = await app.request('/v1/shop/reviews', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ rating: 5, title: 't', body: 'b' }),
@@ -519,35 +474,32 @@ describe('POST /v1/cakes/:cake_id/reviews（要認証）', () => {
       expect(res.status).toBe(401);
       const body = (await res.json()) as { error: { code: string } };
       expect(body.error.code).toBe('UNAUTHORIZED');
-      const stats = await reviewsRepo.statsByCake(CakeId.from(cakeId));
+      const stats = await shopReviewsRepo.stats();
       expect(stats.count).toBe(0);
     });
   });
 
   describe('業務エラー', () => {
-    it('同じユーザーが同じケーキに 2 回投稿すると 409 CONFLICT を返す', async () => {
-      const { app, reviewsRepo } = buildTestApp({ user: AUTH_USER });
-      const cakeId = randomUUID();
-      reviewsRepo.preload([buildReview({ cakeId, userId: AUTH_USER.id, rating: 5 })]);
+    it('同じユーザーが店舗に 2 回投稿すると 409 CONFLICT を返す', async () => {
+      const { app, shopReviewsRepo } = buildTestApp({ user: AUTH_USER });
+      shopReviewsRepo.preload([buildShopReview({ userId: AUTH_USER.id, rating: 5 })]);
 
-      const res = await app.request(`/v1/cakes/${cakeId}/reviews`, {
+      const res = await app.request('/v1/shop/reviews', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ rating: 4, title: 't', body: 'b' }),
       });
 
       expect(res.status).toBe(409);
-      const body = (await res.json()) as { error: { code: string; message: string } };
+      const body = (await res.json()) as { error: { code: string } };
       expect(body.error.code).toBe('CONFLICT');
-      expect(body.error.message).toContain(cakeId);
     });
 
-    it('別ユーザーは同じケーキに投稿できる', async () => {
-      const { app, reviewsRepo } = buildTestApp({ user: OTHER_USER });
-      const cakeId = randomUUID();
-      reviewsRepo.preload([buildReview({ cakeId, userId: AUTH_USER.id, rating: 5 })]);
+    it('別ユーザーは店舗に投稿できる', async () => {
+      const { app, shopReviewsRepo } = buildTestApp({ user: OTHER_USER });
+      shopReviewsRepo.preload([buildShopReview({ userId: AUTH_USER.id, rating: 5 })]);
 
-      const res = await app.request(`/v1/cakes/${cakeId}/reviews`, {
+      const res = await app.request('/v1/shop/reviews', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ rating: 3, title: 't', body: 'b' }),
@@ -560,9 +512,8 @@ describe('POST /v1/cakes/:cake_id/reviews（要認証）', () => {
   describe('入力バリデーション', () => {
     it('rating が 1〜5 の範囲外なら 400 VALIDATION_ERROR を返す', async () => {
       const { app } = buildTestApp({ user: AUTH_USER });
-      const cakeId = randomUUID();
 
-      const res = await app.request(`/v1/cakes/${cakeId}/reviews`, {
+      const res = await app.request('/v1/shop/reviews', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ rating: 6, title: 't', body: 'b' }),
@@ -575,9 +526,8 @@ describe('POST /v1/cakes/:cake_id/reviews（要認証）', () => {
 
     it('title が空なら 400 VALIDATION_ERROR を返す', async () => {
       const { app } = buildTestApp({ user: AUTH_USER });
-      const cakeId = randomUUID();
 
-      const res = await app.request(`/v1/cakes/${cakeId}/reviews`, {
+      const res = await app.request('/v1/shop/reviews', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ rating: 5, title: '', body: 'b' }),
@@ -585,35 +535,30 @@ describe('POST /v1/cakes/:cake_id/reviews（要認証）', () => {
 
       expect(res.status).toBe(400);
     });
-
-    it('cake_id が UUID でなければ 400 VALIDATION_ERROR を返す', async () => {
-      const { app } = buildTestApp({ user: AUTH_USER });
-      const res = await app.request('/v1/cakes/not-a-uuid/reviews', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ rating: 5, title: 't', body: 'b' }),
-      });
-      expect(res.status).toBe(400);
-    });
   });
 });
 
-describe('reviews router と cakeRouter の共存', () => {
-  it('/v1/cakes/:id は cakeRouter（GET /:id）が拾い、/v1/cakes/:cake_id/reviews は reviewsRouter が拾う', async () => {
-    // reviews ルーターを同じ /v1/cakes プレフィックスにマウントしても、
-    // Hono の trie が '/:id' と '/:cake_id/reviews' を別パスとして扱うことを確認する。
-    const { app, reviewsRepo } = buildTestApp();
-    const cakeId = randomUUID();
-    reviewsRepo.preload([buildReview({ cakeId, userId: 'u1', rating: 5 })]);
+describe('shop レビューと cake レビューの独立性', () => {
+  it('店舗レビューを投稿しても cake レビュー一覧には現れない', async () => {
+    const { app } = buildTestApp({ user: AUTH_USER });
 
-    // reviews 側は 200 を返す
-    const reviewsRes = await app.request(`/v1/cakes/${cakeId}/reviews`);
-    expect(reviewsRes.status).toBe(200);
-    const body = (await reviewsRes.json()) as { reviews: unknown[] };
-    expect(body.reviews).toHaveLength(1);
+    const postRes = await app.request('/v1/shop/reviews', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ rating: 5, title: 't', body: 'b' }),
+    });
+    expect(postRes.status).toBe(201);
 
-    // cake 詳細側は cake が存在しないため 404 を返す（reviews ルーターに食われていない）
-    const cakeRes = await app.request(`/v1/cakes/${cakeId}`);
-    expect(cakeRes.status).toBe(404);
+    // 店舗一覧には 1 件
+    const shopRes = await app.request('/v1/shop/reviews');
+    const shopBody = (await shopRes.json()) as { reviews: unknown[] };
+    expect(shopBody.reviews).toHaveLength(1);
+
+    // 任意のケーキ一覧には現れない（別 Aggregate / 別テーブル）
+    const cakeRes = await app.request(`/v1/cakes/${randomUUID()}/reviews`);
+    expect(cakeRes.status).toBe(200);
+    const cakeBody = (await cakeRes.json()) as { reviews: unknown[]; stats: { count: number } };
+    expect(cakeBody.reviews).toHaveLength(0);
+    expect(cakeBody.stats.count).toBe(0);
   });
 });

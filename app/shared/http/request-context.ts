@@ -3,6 +3,7 @@ import type { CakeController } from '@/modules/cakes/presentation/cake.controlle
 import type { CustomerController } from '@/modules/customers/presentation/customer.controller';
 import type { OrderController } from '@/modules/orders/presentation/order.controller';
 import type { ReviewController } from '@/modules/reviews/presentation/review.controller';
+import type { ShopReviewController } from '@/modules/reviews/presentation/shop-review.controller';
 import type { WebhookController } from '@/modules/webhooks/presentation/webhook.controller';
 import type { AppLogger } from '@/shared/infrastructure/logger';
 
@@ -52,6 +53,11 @@ export interface RequestModules {
   //   has_purchased RPC は security invoker なので、本人の JWT で呼ばれた sb を使うことで
   //   「他人の購入実績バッジを誤付与する」事故を構造的に防ぐ。
   reviews: ReviewController;
+  // Phase 11 Step 2: 店舗（単一店舗）向けレビュー。投稿（POST）+ 一覧（GET）+ 集計。
+  //   cakes 向け reviews とは別 Aggregate / 別テーブル（shop_reviews）。
+  //   has_ordered RPC は security invoker なので、本人の JWT で呼ばれた sb を使うことで
+  //   「他人の利用実績バッジを誤付与する」事故を構造的に防ぐ。
+  shopReviews: ShopReviewController;
 }
 
 export interface AppVariables {

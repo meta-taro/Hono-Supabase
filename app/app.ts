@@ -9,6 +9,7 @@ import { createCustomerRouter } from '@/modules/customers/presentation/customer.
 import { createOrderRouter } from '@/modules/orders/presentation/order.routes';
 import { createWebhookRouter } from '@/modules/webhooks/presentation/webhook.routes';
 import { createReviewRouter } from '@/modules/reviews/presentation/review.routes';
+import { createShopReviewRouter } from '@/modules/reviews/presentation/shop-review.routes';
 
 // Phase 9 Step 3a: /health の DB プローブ結果。
 //   ok        = REST 応答が成功した
@@ -87,6 +88,8 @@ export interface IdempotencyMiddlewares {
   webhooks: MiddlewareHandler<AppEnv>;
   // Phase 11 Step 1: POST /v1/cakes/:cake_id/reviews 用。owner=user（authGuard 後）。
   reviews: MiddlewareHandler<AppEnv>;
+  // Phase 11 Step 2: POST /v1/shop/reviews 用。owner=user（authGuard 後）。
+  shopReviews: MiddlewareHandler<AppEnv>;
 }
 
 export interface AppOptions {
@@ -215,6 +218,16 @@ export const createApp = (options?: AppOptions): OpenAPIHono<AppEnv> => {
         authGuard: options.guards.authGuard,
         rateLimits: rl,
         idempotency: idem?.reviews,
+      }),
+    );
+    // Phase 11 Step 2: 店舗レビューは単一店舗のため /v1/shop/reviews（path パラメータ無し）。
+    //   cakes レビューとは別テーブル（shop_reviews）・別ルーターで、互いに干渉しない。
+    app.route(
+      '/v1/shop',
+      createShopReviewRouter({
+        authGuard: options.guards.authGuard,
+        rateLimits: rl,
+        idempotency: idem?.shopReviews,
       }),
     );
   }

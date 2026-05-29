@@ -33,6 +33,11 @@ import { SupabaseVerifiedPurchaserChecker } from '@/modules/reviews/infrastructu
 import { createListReviewsByCakeUseCase } from '@/modules/reviews/application/list-reviews-by-cake.usecase';
 import { createPostReviewUseCase } from '@/modules/reviews/application/post-review.usecase';
 import { createReviewController } from '@/modules/reviews/presentation/review.controller';
+import { ShopReviewSupabaseRepository } from '@/modules/reviews/infrastructure/shop-review.supabase-repository';
+import { SupabaseOrderHistoryChecker } from '@/modules/reviews/infrastructure/supabase-order-history.checker';
+import { createListShopReviewsUseCase } from '@/modules/reviews/application/list-shop-reviews.usecase';
+import { createPostShopReviewUseCase } from '@/modules/reviews/application/post-shop-review.usecase';
+import { createShopReviewController } from '@/modules/reviews/presentation/shop-review.controller';
 
 // ---------------------------------------------------------------------------
 // composition-root = アプリケーション全体の DI を組み立てる中心地。
@@ -132,7 +137,18 @@ export const buildRequestModules = (sb: SupabaseClient, deps: ModuleDeps): Reque
     listReviewsByCake: createListReviewsByCakeUseCase(reviewRepo),
   });
 
-  return { cakes, customers, orders, webhooks, reviews };
+  // shopReviews（店舗向け口コミ・単一店舗）
+  //   - reviews と同じく per-request の sb で組み立てる（公開 GET は anon・POST は本人）。
+  //   - OrderHistoryChecker は has_ordered RPC を本人 JWT で呼ぶことで
+  //     「他人の利用実績バッジ誤付与」を構造的に防ぐ（security invoker + RLS）。
+  const shopReviewRepo = new ShopReviewSupabaseRepository(sb);
+  const orderHistoryChecker = new SupabaseOrderHistoryChecker(sb);
+  const shopReviews = createShopReviewController({
+    postShopReview: createPostShopReviewUseCase(shopReviewRepo, orderHistoryChecker, deps.logger),
+    listShopReviews: createListShopReviewsUseCase(shopReviewRepo),
+  });
+
+  return { cakes, customers, orders, webhooks, reviews, shopReviews };
 };
 
 // per-request にモジュールを組み立てて c.var.modules に積むミドルウェア。

@@ -811,6 +811,8 @@ interface CakeRow {
 | GET    | `/v1/webhooks/subscriptions/:id/deliveries` | 管理者 | サブスクリプション別の配信履歴                 |
 | GET    | `/v1/cakes/:cake_id/reviews`                | 不要   | ケーキのレビュー一覧（カーソル + 集計同梱）    |
 | POST   | `/v1/cakes/:cake_id/reviews`                | 必須   | ケーキへのレビュー投稿（Idempotency-Key 必須） |
+| GET    | `/v1/shop/reviews`                          | 不要   | 店舗レビュー一覧（単一店舗・カーソル + 集計）  |
+| POST   | `/v1/shop/reviews`                          | 必須   | 店舗レビュー投稿（Idempotency-Key 必須）       |
 
 ### `GET /v1/cakes` のページネーション仕様（Phase 10 Step 1）
 
@@ -1290,6 +1292,55 @@ if (Math.abs(Math.floor(Date.now() / 1000) - Number(t)) > 300) {
 - **コンテキスト跨ぎ禁止対応**: `reviews` は `cakes` / `orders` の Entity を import せず、`CakeId` は reviews ローカルの VO として再宣言、購入済み判定だけを port 経由で受ける（DDD-lite のコンテキスト境界を保つ）。
 - **ルーターは cakeRouter と同じ `/v1/cakes` プレフィックスに別ルーターとして並べる**: Hono の trie は `/v1/cakes/:id`（cakeRouter）と `/v1/cakes/:cake_id/reviews`（reviewsRouter）を別パスとして区別するので衝突しない。GET / POST が同じパスを共有するため、`restrictToMethods` ヘルパで authGuard / Idempotency を POST だけにゲートし、GET は public 経路を保つ。
 
+### `GET /v1/shop/reviews` + `POST /v1/shop/reviews` の店舗レビュー仕様（Phase 11 Step 2）
+
+ケーキ個別ではなく **店舗そのもの** へのレビューを、Step 1 と同じ「投稿（POST・認証 + Idempotency-Key 必須）」+「一覧 + 集計（GET・公開）」の 2 本立てで提供する。本プロジェクトは **単一店舗**を前提とするため、`shop_id` も `cake_id` も持たず、テーブル・エンドポイントともに店舗を 1 つだけ表す（`shop_reviews` テーブル / `/v1/shop/reviews`）。`reviews` Bounded Context の中に `ShopReview` を **別 Aggregate / 別テーブル**として追加し、ケーキレビュー（Step 1）には一切手を入れない。
+
+**`POST /v1/shop/reviews`**
+
+| 制約                   | 値                                                                                                                    |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| 認証                   | 必須（`Authorization: Bearer <JWT>`）                                                                                 |
+| `Idempotency-Key`      | 必須（Stripe スタイル・Phase 10 Step 6 と同じ仕様。scope = `'POST /v1/shop/reviews'`、owner = `user`）                |
+| Body                   | `{ rating: 1..5, title: 1..100 字, body: 1..2000 字 }`                                                                |
+| 重複投稿               | 同一 `user_id` で既に `removed` でないレビューがあれば `409 CONFLICT`（1 ユーザー 1 店舗レビュー）                    |
+| `is_verified_customer` | **投稿時点の snapshot**。任意ケーキの `PLACED` 注文が 1 件でもあれば `true`。判定は `has_ordered(p_auth_user_id)` RPC |
+| 401 / 400 / 422        | 未認証 / バリデーション失敗（rating 範囲外・title/body 空）/ 同 key + 違う body                                       |
+
+**`GET /v1/shop/reviews`**: クエリパラメータ・レスポンス形状は Step 1（ケーキレビュー）と同一。ただしレビュー要素に **`cake_id` は含まれない**（単一店舗のため対象 ID が不要）。
+
+```json
+{
+  "reviews": [
+    {
+      "id": "33333333-3333-4333-8333-333333333333",
+      "user_id": "auth-user-abcdef",
+      "rating": 5,
+      "title": "雰囲気も接客も最高",
+      "body": "店員さんが親切で居心地が良かったです。",
+      "is_verified_customer": true,
+      "helpful_count": 8,
+      "created_at": "2026-05-29T10:00:00.000Z"
+    }
+  ],
+  "next_cursor": "eyJzb3J0...",
+  "has_more": true,
+  "stats": {
+    "count": 42,
+    "average": 4.6,
+    "distribution": { "1": 1, "2": 1, "3": 4, "4": 10, "5": 26 }
+  }
+}
+```
+
+**設計判断のメモ**:
+
+- **単一店舗 = `shop_id` を持たない**: 「店舗が増えたら」を先取りして `shop_id` を入れると、本来 1 行で済む集計に常に `WHERE shop_id = ?` が付き回り、フロントも常にダミー ID を引き回す羽目になる。多店舗化は破壊的変更を伴う別 Phase の判断とし、現時点は単一店舗に振り切る（YAGNI）。
+- **利用実績バッジ `is_verified_customer`**: ケーキレビューの「この商品を買った人か」とは粒度が違い、「**この店で何か 1 つでも買ったことがある客か**」を表す。判定は `has_ordered(p_auth_user_id)` RPC（`security invoker`・`orders.status='PLACED'` を `customers` 経由で `auth.users.id` に紐付け）。Step 1 と同じく投稿時点の snapshot で固定する。
+- **重複投稿の構造的禁止**: `UNIQUE(user_id) WHERE status <> 'removed'` 部分インデックスで「1 ユーザー 1 店舗レビュー」を DB レベルで保証（`removed` 行は対象外＝モデレーション削除後の再投稿を許可）。アプリ側 `existsActiveByUser` の事前チェックと多重防御。
+- **コンテキスト跨ぎ禁止対応**: Step 1 同様、`orders` の Entity を import せず、注文実績の判定だけを `OrderHistoryChecker` port 経由で受ける（Supabase 実装が `has_ordered` RPC を呼ぶ）。
+- **ルーターは `/v1/shop` プレフィックスの独立ルーターとしてマウント**: cakeRouter / reviewsRouter とパスが重ならないので衝突しない。GET / POST が `/reviews` を共有するため、`restrictToMethods` で authGuard / Idempotency を POST だけにゲートする点も Step 1 と同じ。
+
 ### `/health` の応答仕様（Phase 9 Step 3a）
 
 `/health` は **DB 到達性も含めた 3 状態のヘルスチェック**を返す（外形監視・uptime monitor の連携前提）。
@@ -1537,6 +1588,7 @@ DDD-lite ではドメイン層が DB 非依存になるため、`application/` �
 - [ ] **Phase 11**: **レビュー機能**（ケーキ / 店舗のレビュー投稿・一覧・集計・モデレーション）— 進行中
   - 動機: Cake Shop API は MVP として CRUD + 注文系を一周したので、**ユーザー生成コンテンツ (UGC) の設計判断**を一周する。投稿資格・購入済みバッジ・モデレーション・役立った投票・通報といった、実運用のレビュー機能で必ず出てくる選択肢を縦切りで実演する
   - [x] Step 1（2026-05-27 完了）: **ケーキレビュー（投稿・一覧・集計）** — `app/modules/reviews/{domain,application,infrastructure,presentation}` を DDD-lite 4 層で新設し、`/v1/cakes/:cake_id/reviews` の GET（公開・カーソル + 集計同梱）/ POST（認証 + Idempotency-Key 必須）を実装。**投稿資格は「誰でも」**（購入してなくても投稿可）、**購入済みバッジ `is_verified_purchaser` は投稿時点の snapshot**（後で履歴が変わっても表示が動かない）として保存する設計を採用。レビュー対象は cake と店舗の二層を想定したが、Step 1 では cake 向けのみ縦切りで完成（店舗は Step 2 で同型を増殖）。スキーマは `supabase/migrations/0009_reviews.sql`（`reviews` + `UNIQUE(cake_id, user_id) WHERE status='published'` で「同一 user × cake = 1 件」を構造的に保証 + `helpful_count` カラム + 部分インデックス）+ `has_purchased(cake_id uuid, user_id uuid)` RPC（service_role からの購入済み判定。注文確定済み = orders.status='placed' の order_items 行で判定し、Step 3 の役立った投票で再利用予定）。port + adapter = `VerifiedPurchaserChecker`（`app/modules/reviews/domain/verified-purchaser-checker.ts`）の interface を切り、infrastructure 側で `SupabaseVerifiedPurchaserChecker` が RPC を 1 リクエストで叩く（in-memory 実装はテストで購入履歴を差し替え可能）。**カーソル**は sort 種別ごとに違う複合キー（`newest` = `(created_at DESC, id DESC)` / `helpful` = `(helpful_count DESC, created_at DESC, id DESC)`）+ Step 1/2 と同じ汎用 codec（base64url + sort 文字列を埋め込み・不一致 400）。集計は `count` / `average`（0 件は null）/ `distribution`（1..5 の星別件数、0 件の星も 0 を返す）を 1 レスポンスで返す（N+1 にならないよう repository 側で同じ where 句を使い回す）。**コンテキスト跨ぎ禁止対応** = `cakes` / `orders` を直接 import せず、`CakeId` は reviews ローカル VO（`app/modules/reviews/domain/cake-id.vo.ts`）として再宣言、`has_purchased` の判定だけを port 経由で受ける（cake / order の Entity は触らない）。**ルーターマウント** = cakeRouter と同じ `/v1/cakes` プレフィックスに `createReviewRouter()` を別ルーターとして並べて装着（Hono の trie は `:id` と `:cake_id/reviews` を別パスとして区別するので衝突しない）+ GET / POST が同パスを共有するので `restrictToMethods` ヘルパで authGuard / Idempotency をメソッド別ゲート。**エラー** = `409 REVIEW_CONFLICT`（同 user × 同 cake で既存）/ `400 VALIDATION_ERROR`（rating 1〜5 範囲外・title/body 空・cake_id 非 UUID・カーソル改竄 / sort 不一致）/ `401`（POST 未認証）/ `422 IDEMPOTENCY_KEY_REUSED`（同 key + 違う body）。テスト 592 件全緑（domain 単体・application UseCase・infrastructure（workers プールで実 Supabase + RPC）・presentation routes・統合 20 件 = GET 空 / フィルタ / 集計 / sort=newest / sort=helpful / verified_only / cursor 前進 + sort 不一致 400 + 改竄 400 / POST 201 + is_verified_purchaser snapshot / 409 / 401 / 422 / router 共存）+ `pnpm verify` 緑
+  - [x] Step 2（2026-05-29 完了）: **店舗レビュー（単一店舗・投稿・一覧・集計）** — `reviews` コンテキスト内に `ShopReview` を **別 Aggregate / 別テーブル**として追加し、`/v1/shop/reviews` の GET（公開・カーソル + 集計同梱）/ POST（認証 + Idempotency-Key 必須）を実装。Step 1（ケーキレビュー）には一切手を入れず同型を増殖。本プロジェクトは **単一店舗**前提のため `shop_id` も `cake_id` も持たせず、テーブル `shop_reviews` / エンドポイント `/v1/shop/reviews` は店舗を 1 つだけ表す（多店舗化は破壊的変更を伴う別 Phase 判断＝ YAGNI）。利用実績バッジは **`is_verified_customer`（任意ケーキの `PLACED` 注文が 1 件でもあるか）** を投稿時点の snapshot で固定（Step 1 の `is_verified_purchaser` と同思想だが粒度が「この店で買ったことがあるか」）。スキーマは `supabase/migrations/0010_shop_reviews.sql`（`shop_reviews` + `UNIQUE(user_id) WHERE status <> 'removed'` で「1 ユーザー 1 店舗レビュー」を構造的に保証〔`removed` 行は対象外＝削除後の再投稿可〕 + 並び順用部分インデックス + `shop_review_stats()` jsonb 集計 RPC + `has_ordered(p_auth_user_id uuid)` RPC〔`security invoker`・`orders.status='PLACED'` を `customers` 経由で `auth.users.id` に紐付け〕 + RLS service_role 専用）。**port + adapter** = `OrderHistoryChecker` の interface を切り、infrastructure 側 `SupabaseOrderHistoryChecker` が `has_ordered` RPC を叩く（in-memory 実装はテストで注文履歴を差し替え可能）。**コンテキスト跨ぎ禁止対応** = Step 1 同様 `orders` の Entity は import せず、注文実績判定だけを port 経由で受ける。**ルーターマウント** = `/v1/shop` プレフィックスの独立ルーターとしてマウント（cakeRouter / reviewsRouter とパスが重ならず衝突なし）+ GET / POST が `/reviews` を共有するので `restrictToMethods` で authGuard / Idempotency を POST だけにゲート。**エラー** = `409 CONFLICT`（同 user で既存）/ `400 VALIDATION_ERROR`（rating 1〜5 範囲外・title/body 空・カーソル改竄 / sort 不一致）/ `401`（POST 未認証）/ `422 IDEMPOTENCY_KEY_REUSED`（同 key + 違う body）。テスト 678 件全緑（domain 単体・application UseCase・infrastructure（workers プールで実 Supabase + `has_ordered` / `shop_review_stats` RPC）・統合 = GET 空 / published のみ / 集計 / sort=newest / sort=helpful / verified_only / filter_rating / cursor 前進 + sort 不一致 400 + 改竄 400 / POST 201 + is_verified_customer snapshot + レスポンスに cake_id 不在 / 409 / 401 / 422 / ケーキレビューと相互非干渉）+ `pnpm verify` 緑。詳細仕様は「[`GET /v1/shop/reviews` + `POST /v1/shop/reviews` の店舗レビュー仕様](#get-v1shopreviews--post-v1shopreviews-の店舗レビュー仕様phase-11-step-2)」参照
 
 ---
 

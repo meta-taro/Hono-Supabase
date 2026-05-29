@@ -190,6 +190,7 @@ const buildIdempotencyMiddlewares = (store?: IdempotencyStore): IdempotencyMiddl
       customers: noopIdempotencyMiddleware,
       webhooks: noopIdempotencyMiddleware,
       reviews: noopIdempotencyMiddleware,
+      shopReviews: noopIdempotencyMiddleware,
     };
   }
   return {
@@ -218,6 +219,11 @@ const buildIdempotencyMiddlewares = (store?: IdempotencyStore): IdempotencyMiddl
       // path param `:cake_id` を含むため scope 文字列はテンプレ表記に揃える。
       // DB 行を覗いたとき何のエンドポイントか即座に分かれば十分（一意な文字列であればよい）。
       scope: 'POST /v1/cakes/:cake_id/reviews',
+      resolveOwner: userOwner,
+    }),
+    shopReviews: createIdempotencyMiddleware({
+      store,
+      scope: 'POST /v1/shop/reviews',
       resolveOwner: userOwner,
     }),
   };

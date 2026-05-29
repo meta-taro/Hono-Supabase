@@ -155,6 +155,12 @@ POST /v1/customers          # 顧客登録（認証不要・サインアップ�
 POST /v1/orders             # 注文作成（要認証）
 GET  /v1/orders             # 自分の注文一覧（要認証・本人のみ・カーソルページネーション）
 GET  /v1/orders/:id         # 注文詳細（要認証・本人のみ）
+
+GET  /v1/cakes/:cake_id/reviews  # ケーキレビュー一覧（認証不要・カーソル + 集計同梱）
+POST /v1/cakes/:cake_id/reviews  # ケーキレビュー投稿（要認証・Idempotency-Key 必須）
+
+GET  /v1/shop/reviews       # 店舗レビュー一覧（認証不要・カーソル + 集計同梱・単一店舗）
+POST /v1/shop/reviews       # 店舗レビュー投稿（要認証・Idempotency-Key 必須）
 ```
 
 ### 統一エラーレスポンス形式
@@ -403,6 +409,7 @@ import { Cake } from '@/modules/cakes/domain/cake'; // orders/ では NG
 
 - `orders` テーブル: 本人のみ参照・作成可能
 - `cakes` テーブル: 全員参照可。INSERT は管理者ロールのみ
+- `reviews` / `shop_reviews` テーブル: `published` 行は全員参照可。INSERT は本人のみ（投稿後の編集・削除はモデレーション扱いで後続 Step）
 - RLS ポリシーは `supabase/migrations/` に SQL で定義する
 
 ---
@@ -552,6 +559,7 @@ console.log('order created');
 - [x] Phase 10 (2026-05-26 完了): **API のリッチ化** — カーソルページネーション（`/v1/cakes`・`/v1/orders`）/ ソート・フィルタ / PGroonga 全文検索 / 楽観ロック（ETag + If-Match、412/428）/ Rate Limit（Workers `[[ratelimits]]` binding 3 本、429）/ Idempotency-Key（`POST /v1/*` を Postgres 永続化で冪等化）/ Webhook 配信（HMAC-SHA256 + 指数バックオフ retry）。Step 1〜7 完了。詳細は [docs/PROGRESS.md](docs/PROGRESS.md)
 - [ ] Phase 11 (進行中): **レビュー機能**（cake / 店舗のレビュー投稿・一覧・集計・モデレーション）
   - [x] Step 1 (2026-05-27): **ケーキレビュー（投稿・一覧・集計）** — `app/modules/reviews/` を DDD-lite 4 層で新設、`GET/POST /v1/cakes/:cake_id/reviews`（GET 公開・カーソル + 集計同梱 / POST 認証 + Idempotency-Key 必須）。投稿資格は誰でも・購入バッジ `is_verified_purchaser` は投稿時点 snapshot・`UNIQUE(cake_id,user_id) WHERE published` で重複防止（migration `0009_reviews.sql`）。詳細は [docs/PROGRESS.md](docs/PROGRESS.md)
+  - [x] Step 2 (2026-05-29): **店舗レビュー（単一店舗・投稿・一覧・集計）** — `reviews` コンテキスト内に `ShopReview` を別 Aggregate / 別テーブル（`shop_reviews`・`cake_id` / `shop_id` を持たない単一店舗）で追加、`GET/POST /v1/shop/reviews`（GET 公開・カーソル + 集計同梱 / POST 認証 + Idempotency-Key 必須）。利用実績バッジ `is_verified_customer`（任意ケーキの PLACED 注文有無）は投稿時点 snapshot・`has_ordered(p_auth_user_id)` RPC（security invoker）で判定・`UNIQUE(user_id) WHERE status<>'removed'` で重複防止（migration `0010_shop_reviews.sql`）。詳細は [docs/PROGRESS.md](docs/PROGRESS.md)
 
 ---
 
