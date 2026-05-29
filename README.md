@@ -663,7 +663,7 @@ Cloudflare Dashboard → 右上アカウントメニュー → **Notifications**
 | `supabase db push`                                 | マイグレーション適用（リンク済みプロジェクトに対し）                                                                                                            |
 | `supabase db query --linked -f F`                  | リンク済みプロジェクトに SQL ファイル F を実行（Management API 経由・DB パスワード不要）                                                                        |
 | `powershell -File scripts/zero-downtime-watch.ps1` | デプロイ中に `/health` を叩き続け無停止切替を観察する体験用ループ（→ [体験用スクリプト](#体験用スクリプトscripts) / bash 版: `scripts/zero-downtime-watch.sh`） |
-| `pnpm verify`                                      | 手動の総合チェック（`lint` + `typecheck` + `format:check` + `test` を順に実行）。push 前や PR 前のセルフ確認に使う                                              |
+| `pnpm verify`                                      | 手動の総合チェック（`lint` + `typecheck` + `format:check` + `test:coverage` を順に実行）。push 前や PR 前のセルフ確認に使う（カバレッジ閾値 80% も同時に検査）  |
 
 ---
 
@@ -687,7 +687,7 @@ CI で初めて lint / format 違反に気づくと「ローカルでは緑な�
 ### 2 段目: 手動コマンド `pnpm verify`（push 前のセルフ確認）
 
 ```bash
-pnpm verify   # = pnpm lint && pnpm typecheck && pnpm format:check && pnpm test
+pnpm verify   # = pnpm lint && pnpm typecheck && pnpm format:check && pnpm test:coverage
 ```
 
 CI（`.github/workflows/checks.yml`）が回しているのと同じセットをローカルで一気に流せる。**push する前に手元で 1 回叩く習慣** をつけておくと、CI がレッドになる事故をほぼゼロにできる。
