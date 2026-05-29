@@ -29,6 +29,62 @@ export const OrderResponseSchema = z
 
 export type OrderResponse = z.infer<typeof OrderResponseSchema>;
 
+// ページネーションの既定値・上限（cakes 一覧と揃える）。
+//   DEFAULT_LIMIT: limit 未指定時の 1 ページ件数。
+//   MAX_LIMIT: 1 リクエストの最大件数（無制限取得 = 重い全件スキャンを防ぐ）。
+export const DEFAULT_LIMIT = 20;
+export const MAX_LIMIT = 100;
+
+// ---------------------------------------------------------------------------
+// Request: GET /v1/orders のクエリパラメータ
+//   limit … 1 ページ件数（1〜MAX_LIMIT、未指定なら DEFAULT_LIMIT）。
+//           クエリ文字列は常に string で届くため coerce で数値化する。
+//   after … 前ページのレスポンスが返した next_cursor（不透明トークン）をそのまま渡す。
+// ---------------------------------------------------------------------------
+export const ListOrdersQuerySchema = z.object({
+  limit: z.coerce
+    .number()
+    .int({ message: 'limit は整数である必要があります' })
+    .min(1, { message: 'limit は 1 以上である必要があります' })
+    .max(MAX_LIMIT, { message: `limit は ${String(MAX_LIMIT)} 以下である必要があります` })
+    .default(DEFAULT_LIMIT)
+    .openapi({ example: 20, description: '1 ページの件数（1〜100、既定 20）' }),
+  after: z
+    .string()
+    .optional()
+    .openapi({ description: '前ページの next_cursor。先頭ページでは省略する。' }),
+});
+
+export type ListOrdersQuery = z.infer<typeof ListOrdersQuerySchema>;
+
+// カーソルの中身（不透明トークンをデコードした後の形）。
+// controller が decodeCursor() で検証に使う。改竄されていれば 400 に倒す。
+//   placedAt … ISO 8601 UTC 文字列（DB の placed_at と同表現で辞書順 = 時系列順）。
+//   id       … 同時刻の tiebreaker（注文 ID）。
+export const OrderCursorSchema = z.object({
+  placedAt: z.string().datetime(),
+  id: z.string().uuid(),
+});
+
+// ---------------------------------------------------------------------------
+// Response: GET /v1/orders
+//   配列直返しではなくオブジェクトに包み、ページネーションのメタ情報を同居させる。
+//   next_cursor: 次ページがある場合の不透明トークン。無ければ null。
+//   has_more:    次ページの有無（next_cursor !== null と同義の利便フラグ）。
+// ---------------------------------------------------------------------------
+export const ListOrdersResponseSchema = z
+  .object({
+    orders: z.array(OrderResponseSchema),
+    next_cursor: z.string().nullable().openapi({
+      example: 'eyJwbGFjZWRBdCI6...',
+      description: '次ページ取得用カーソル（無ければ null）',
+    }),
+    has_more: z.boolean().openapi({ example: true, description: '次ページが存在するか' }),
+  })
+  .openapi('ListOrdersResponse');
+
+export type ListOrdersResponse = z.infer<typeof ListOrdersResponseSchema>;
+
 // ---------------------------------------------------------------------------
 // Request: POST /v1/orders
 //   制約は domain（OrderQuantity / Order.assertItemsShape）と一致させる。

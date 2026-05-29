@@ -18,6 +18,7 @@
 - **本番デプロイ先**: **Cloudflare Workers**（V8 Isolate 上のグローバルエッジ実行）。Hono が Web 標準ベースで Workers ネイティブに動くため、`@hono/node-server` を使わずに `export default app` 形式で展開する
 - **ローカル開発ランタイム**: Node.js 22 LTS。学習中の TDD・デバッグ・型チェックは Node 上で完結させ、本番経路だけ Workers に切り替える二段構え
 - **データ層**: Supabase（PostgreSQL）は **Cloudflare Workers から Supabase REST API（`@supabase/supabase-js`）経由で接続**。TCP 直接続不可な Workers 環境でもそのまま動く（PostgreSQL 直接続が必要になったら Cloudflare Hyperdrive を後付け検討）
+- **学習は基本ローカル Supabase 主体**: 日々の TDD・デバッグ・統合テストは `supabase start` のローカルコンテナで完結させる。Cloud 側（staging / production）は Phase 完了時のスモークテストや RLS / メール / OpenAPI の実機検証用で、Free Tier の auto-pause（7 日無アクティビティで停止）を受け入れて普段は寝かせる。pause されたら Dashboard で `Restore project`（数分・無料）。keep-alive 等の延命策は学習プロジェクトの趣旨に合わないので入れない。詳細は README「## クイックスタート」冒頭注記と「### Supabase 側の前提」末尾を参照
 - **スコープ外**: フロントエンド実装・専用 SDK・IaC（フロントは別リポジトリで Next.js 想定）
 
 ### 学習ゴール
@@ -125,69 +126,8 @@ export const buildCakesModule = (sb: SupabaseClient) => {
 
 ## Directory Structure
 
-```
-cake-shop-api/
-├── app/                                              # アプリケーションコード（全 TypeScript）
-│   ├── index.ts                                      # エントリーポイント（サーバー起動）
-│   ├── app.ts                                        # Hono インスタンス・ミドルウェア・ルート集約
-│   ├── modules/                                      # = Bounded Contexts
-│   │   ├── cakes/
-│   │   │   ├── domain/                               # ★純粋層（外部依存ゼロ）
-│   │   │   │   ├── cake.ts                           # Entity / Aggregate Root
-│   │   │   │   ├── price.vo.ts                       # Value Object
-│   │   │   │   ├── cake.repository.ts                # interface（DI 用）
-│   │   │   │   ├── cake.errors.ts                    # ドメイン例外
-│   │   │   │   └── cake.test.ts                      # 単体テスト（共置）
-│   │   │   ├── application/                          # UseCase 層
-│   │   │   │   ├── list-cakes.usecase.ts
-│   │   │   │   ├── list-cakes.usecase.test.ts        # in-memory repo で UseCase をテスト
-│   │   │   │   ├── create-cake.usecase.ts
-│   │   │   │   └── create-cake.usecase.test.ts
-│   │   │   ├── infrastructure/                       # 外部世界の実装詳細
-│   │   │   │   ├── cake.supabase-repository.ts       # Repository 実装
-│   │   │   │   └── cake.supabase-repository.test.ts  # 実 Supabase ローカルでテスト
-│   │   │   └── presentation/                         # HTTP I/F
-│   │   │       ├── cake.routes.ts                    # Hono ルート + OpenAPI 定義
-│   │   │       ├── cake.controller.ts                # 入出力 ↔ UseCase 変換
-│   │   │       └── cake.dto.ts                       # Zod スキーマ（Request/Response）
-│   │   ├── customers/                                # 同構造（Phase 4）
-│   │   └── orders/                                   # 同構造 + Domain Event（Phase 5）
-│   ├── shared/                                       # 共有カーネル
-│   │   ├── domain/
-│   │   │   ├── errors.ts                             # AppError + 5 サブクラス
-│   │   │   └── errors.test.ts
-│   │   ├── infrastructure/
-│   │   │   ├── logger.ts                             # pino 構造化ログ
-│   │   │   ├── logger.test.ts
-│   │   │   └── supabase.ts                           # Supabase クライアント（Phase 3）
-│   │   └── http/
-│   │       ├── env.ts                                # Zod env 検証
-│   │       ├── env.test.ts
-│   │       └── error-handler.ts                      # app.onError ハンドラ
-│   └── __tests__/
-│       └── integration/                              # 跨り系の統合テスト
-│           ├── health.test.ts
-│           └── error-handler.test.ts
-├── supabase/
-│   ├── config.toml                                   # Supabase CLI 設定
-│   ├── migrations/                                   # SQL マイグレーション（連番_説明.sql）
-│   └── seed.sql                                      # 開発用初期データ
-├── bruno/                                            # API テストコレクション（Bruno）
-├── scripts/                                          # 体験用スクリプト（zero-downtime-watch.ps1 / .sh など）
-├── .claude/
-│   └── settings.json                                 # Claude Code プロジェクト設定
-├── CLAUDE.md                                         # このファイル
-├── docker-compose.yml
-├── Dockerfile
-├── package.json
-├── tsconfig.json
-├── vitest.config.ts
-├── eslint.config.js
-├── .prettierrc.json
-├── .editorconfig
-├── .env.example
-└── .gitignore
-```
+ディレクトリ構成の全体図と各レイヤの役割は **README.md「## ディレクトリ構成（DDD-lite）」** を参照。
+ここでは AI agent が常に意識すべき**依存方向ルール**（上記「Architecture」節の「レイヤの役割と依存方向」）を絶対遵守すること。
 
 ---
 
@@ -205,12 +145,15 @@ cake-shop-api/
 GET  /health                # ヘルスチェック（非バージョン・認証不要）
 
 GET  /v1/cakes              # ケーキ一覧（認証不要）
+GET  /v1/cakes/:id          # ケーキ詳細（認証不要・ETag 付き）
 POST /v1/cakes              # ケーキ登録（要認証・管理者ロール）
+PATCH /v1/cakes/:id         # 在庫更新（要認証・管理者ロール・楽観ロック / If-Match 必須）
 
 GET  /v1/customers          # 顧客一覧（要認証・管理者ロール）
 POST /v1/customers          # 顧客登録（認証不要・サインアップ相当）
 
 POST /v1/orders             # 注文作成（要認証）
+GET  /v1/orders             # 自分の注文一覧（要認証・本人のみ・カーソルページネーション）
 GET  /v1/orders/:id         # 注文詳細（要認証・本人のみ）
 ```
 
@@ -228,14 +171,20 @@ GET  /v1/orders/:id         # 注文詳細（要認証・本人のみ）
 }
 ```
 
-| HTTP Status | Error Code              | 意味                         |
-| ----------- | ----------------------- | ---------------------------- |
-| 400         | `VALIDATION_ERROR`      | Zod バリデーション失敗       |
-| 401         | `UNAUTHORIZED`          | 認証トークン不正または未提供 |
-| 403         | `FORBIDDEN`             | 権限なし（RLS ポリシー違反） |
-| 404         | `NOT_FOUND`             | 指定リソースが存在しない     |
-| 409         | `CONFLICT`              | 一意制約違反（メール重複等） |
-| 500         | `INTERNAL_SERVER_ERROR` | 予期しないサーバーエラー     |
+| HTTP Status | Error Code                 | 意味                                                 |
+| ----------- | -------------------------- | ---------------------------------------------------- |
+| 400         | `VALIDATION_ERROR`         | Zod バリデーション失敗                               |
+| 401         | `UNAUTHORIZED`             | 認証トークン不正または未提供                         |
+| 403         | `FORBIDDEN`                | 権限なし（RLS ポリシー違反）                         |
+| 404         | `NOT_FOUND`                | 指定リソースが存在しない                             |
+| 409         | `CONFLICT`                 | 一意制約違反（メール重複等）                         |
+| 412         | `PRECONDITION_FAILED`      | If-Match の版が不一致（楽観ロック競合）              |
+| 428         | `PRECONDITION_REQUIRED`    | If-Match 未指定（条件付き更新が必須）                |
+| 400         | `IDEMPOTENCY_KEY_REQUIRED` | `Idempotency-Key` ヘッダ未指定 / 形式不正            |
+| 409         | `IDEMPOTENCY_IN_PROGRESS`  | 同じ `Idempotency-Key` の処理が進行中                |
+| 422         | `IDEMPOTENCY_KEY_REUSED`   | 同じ `Idempotency-Key` で異なる body が送られた      |
+| 429         | `RATE_LIMITED`             | リクエスト数が上限を超えた（`Retry-After` ヘッダ付） |
+| 500         | `INTERNAL_SERVER_ERROR`    | 予期しないサーバーエラー                             |
 
 ---
 
@@ -404,14 +353,29 @@ import { Cake } from '@/modules/cakes/domain/cake'; // orders/ では NG
 
 ### テスト分類と配置
 
-| 種類                   | 対象                                 | 配置                         | DB                            |
-| ---------------------- | ------------------------------------ | ---------------------------- | ----------------------------- |
-| 単体（domain）         | Entity / VO / Repository interface   | 実装と共置（`*.test.ts`）    | 不要                          |
-| 単体（application）    | UseCase（in-memory repo で差し替え） | 実装と共置                   | 不要                          |
-| 単体（infrastructure） | Repository 実装                      | 実装と共置                   | **必要**（Supabase ローカル） |
-| 統合（presentation）   | routes / controllers                 | `app/__tests__/integration/` | UseCase mock or 実 Supabase   |
-| 統合（shared 跨り）    | error-handler 等                     | `app/__tests__/integration/` | 不要                          |
-| E2E                    | 全エンドポイント疎通                 | `bruno/`                     | 必要                          |
+`vitest.config.ts` の `projects` で **2 プールに分割**（Phase 7 / Step 9 後の保留タスクで導入）。`pnpm test` 一発で両プールが順に走る。
+
+| プール      | ランタイム           | 速度 | 対象                                                                                                                                  |
+| ----------- | -------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `node-unit` | Node (threads)       | 速い | `modules/*/domain` / `modules/*/application` / `shared/domain` / `shared/http` / 純粋な shared/infrastructure（logger / supabase 等） |
+| `workers`   | workerd（miniflare） | 遅い | `modules/*/infrastructure` / `__tests__/integration` / `jwks-fetcher`                                                                 |
+
+| 種類                   | プール      | 対象                                 | 配置                         | DB                            |
+| ---------------------- | ----------- | ------------------------------------ | ---------------------------- | ----------------------------- |
+| 単体（domain）         | `node-unit` | Entity / VO / Repository interface   | 実装と共置（`*.test.ts`）    | 不要                          |
+| 単体（application）    | `node-unit` | UseCase（in-memory repo で差し替え） | 実装と共置                   | 不要                          |
+| 単体（infrastructure） | `workers`   | Repository 実装                      | 実装と共置                   | **必要**（Supabase ローカル） |
+| 統合（presentation）   | `workers`   | routes / controllers                 | `app/__tests__/integration/` | UseCase mock or 実 Supabase   |
+| 統合（shared 跨り）    | `workers`   | error-handler 等                     | `app/__tests__/integration/` | 不要                          |
+| E2E                    | —           | 全エンドポイント疎通                 | `bruno/`                     | 必要                          |
+
+**狙い**: typecheck だけでは検出できない Workers 互換事故（`node:crypto` 等の Node 専用 API・トップレベル `process.env`・pino 引きずり込み等）を、本番と同じ workerd 上で `infrastructure/` と `__tests__/integration/` を回すことで弾く。純粋層は速度優先で Node プールに残す。
+
+**workers プールでのテスト実装上の注意**:
+
+- workerd 上では `process.env` が空。`loadEnv()` に渡す env は `cloudflare:test` の `env`（= `vitest.config.ts` の `miniflare.bindings` で注入された値）を `loadEnv(workerEnv as unknown as RawEnv)` で渡す
+- `cloudflare:test` モジュールの型は `app/__tests__/cloudflare-test.d.ts` の triple-slash reference で取り込む（本番ビルドの `tsconfig.json` `types` を汚さないため）
+- 依存版: `@cloudflare/vitest-pool-workers@0.8.x` が vitest 3.x の peer（0.15.x 以降は vitest 4.x 必須で `/config` サブパスも撤去されているため、vitest 3.x のままなら 0.8 系を pin する）
 
 ### 共置テストの利点（DDD-lite で重要）
 
@@ -532,134 +496,68 @@ console.log('order created');
 - **push 前は `pnpm verify` を必ず叩く**: `lint + typecheck + format:check + test` を一括実行。CI と同じセットなので、ここが緑なら CI もほぼ緑（過去に `format:check` だけローカルで踏まずに staging deploy が落ちた事故あり）
 - **`git commit --no-verify` でフックを潰すのは禁止**（CI で結局赤くなる）
 
+### コミット前の README 同期チェック（MUST — agent が自動で実施）
+
+コミット作成時、Claude は **必ず以下を判定** し、該当すれば README.md（および必要なら CLAUDE.md）の修正を**同じコミットに含めて**から `git commit` する。
+ユーザーが「README は今回更新不要」と明示した場合のみ省略可。
+
+**README 更新が必要なケース（チェックリスト）**:
+
+- [ ] **フェーズ進捗の変化**（Phase X / Step Y が完了 → README 末尾の進捗チェックリストを `[x]` に + 完了日 + 学んだことの要約）
+- [ ] **公開コマンド / スクリプトの追加・変更**（`package.json` の `scripts` 追加、`scripts/` 配下の新規ファイル → README の「主要コマンド」「体験用スクリプト」節を更新）
+- [ ] **環境変数の追加・削除・意味変更**（`.env.example` を直したら README の「環境変数」節も対応する。`wrangler.toml` の `vars` / `[env.*]` も同様）
+- [ ] **エンドポイントの追加・削除・契約変更**（HTTP method / path / 認証要否 / レスポンス形式 → README の「API Design」節）
+- [ ] **アーキテクチャ・設計判断の変更**（依存方向ルール、新しい禁止パターン、ファイルサフィックス規約、新しいレイヤ → CLAUDE.md と README 両方）
+- [ ] **デプロイ・CI/CD・運用フローの変更**（GitHub Actions、`wrangler.toml` env 構成、リリース手順 → README「CI/CD・環境構成の指針」節）
+- [ ] **本番 / staging URL・プロジェクト識別子の追加**（README のチートシート系の節 / プレースホルダ表記との整合）
+- [ ] **ローカル開発のセットアップ手順を変える変更**（`pnpm` スクリプト名の改名、新規依存のインストール手順、Docker / Supabase CLI の前提変更）
+- [ ] **新しい罠・落とし穴の発見**（同じ環境で再発しうるもの → README の該当節か、なければ「## トラブルシューティング」相当に追記）
+
+**README 更新が不要なケース**（=コードだけ直して終わる）:
+
+- 純粋なリファクタ・命名整理・型の絞り込み
+- 既存テストの修正・追加（実装の挙動は変えない）
+- ライブラリの patch バージョン更新（API 互換）
+- フォーマット / lint 修正のみ
+- 内部実装の差し替え（外部 I/F が変わらないもの。例: 同じ interface を保ったまま `infrastructure/` の Repository 実装を入れ替える）
+
+**運用上の手順**（agent はこの順で動く）:
+
+1. `git status` / `git diff` でステージ済みの変更を確認
+2. 上記チェックリストに 1 つでも該当するか判定
+3. 該当する → README.md（および CLAUDE.md）の修正案を提示 → ユーザー承認 → 同一コミットに含める
+4. 該当しない → そのままコミット
+5. 迷ったら**ユーザーに確認**（「この変更で README は更新不要でいいか？」と一言聞く）
+
+**Why**: コードと README の乖離はフォーク者・将来の自分・新メンバーの最初のハマりポイントになる。
+本プロジェクトでは README が「学習プロジェクトの単一の真実」を担う設計（フェーズ進捗・運用ポリシー・主要コマンドの一覧）なので、ここがコードに追従しないと CLAUDE.md だけ更新して README が陳腐化する事故が起きやすい。
+過去にも「Phase 完了したのに README のチェックボックスだけ `[ ]` のまま」「`package.json` に新規 script を足したのに README の表に出てこない」が複数回発生済。
+
 ---
 
 ## Implementation Progress（実装進捗）
 
-> フェーズ完了時にチェックを入れてください
+> 各 Phase / Step の **詳細ログ・設計判断の根拠・実機で得た知見** は [docs/PROGRESS.md](docs/PROGRESS.md) に退避済み。CLAUDE.md には現フェーズと完了サマリのみ残す。
 
-- [x] **Phase 1**: 設定ファイル群・プロジェクト初期化
-- [x] **Phase 2**: Hono アプリ骨格 + `/health` + 統一エラー + 構造化ログ + env 検証
-- [x] **Phase 2.5（軌道修正）**: DDD-lite 4 層構造への移行（`app/lib/` → `app/shared/`、`app/modules/{cakes,customers,orders}` 骨格）
-- [x] **Phase 3**: `cakes` Bounded Context（domain → application → infrastructure → presentation の縦切り完成）
-- [x] **Phase 4**: `customers` Bounded Context（同構造）
-- [x] **Phase 5**: `orders` Bounded Context（Domain Event + Postgres Function でアトミック在庫減算）
-- [x] **Phase 6**: 認証（Supabase Auth + RLS + 認証ミドルウェア）+ OpenAPI 仕上げ
-- [x] **Phase 7**: **Cloudflare Workers 化**（本番デプロイ想定の最終段）
-  - [x] **Step 1**: エントリ二系統化（`app/index.ts` → `app/index.node.ts` リネーム + `app/index.workers.ts` 新設 + 共通組立を `app/bootstrap.ts` に切出）
-  - [x] **Step 2**: `wrangler.toml` 追加・`@cloudflare/workers-types` 導入・`wrangler` 4.88.0 + `pnpm wrangler:dev` / `wrangler:deploy` / `wrangler:tail` 整備（**`compatibility_flags = []` を維持し `nodejs_compat` に逃げない方針**）
-  - [x] **Step 3**: 環境変数の移行（ローカル）— `.dev.vars` 導入 + `.dev.vars.example` 配布 + `.gitignore` 追記（`.dev.vars` / `.wrangler/`）
-  - [x] **Step 4**: ロガー差し替え — pino 依存を `app/shared/infrastructure/node-pino-logger.ts` に隔離。`logger.ts` は `AppLogger` interface + `createWorkersLogger`（`console.log(JSON.stringify(...))` ベース）+ `createSilentLogger` のみ。Workers バンドルから pino を完全除去
-  - [x] **Step 5**: jose JWKS fetch を `JwksFetcherProvider` で per-request DI 化。Workers 側は `caches.default` + `ctx.waitUntil` で SWR キャッシュ。Node 側は jose 内蔵キャッシュをそのまま使用
-  - [x] **Step 6**: `wrangler dev` で `GET /health` / `GET /v1/cakes` 200 OK 確認（Hono + Supabase REST が Workers V8 Isolate 上で動作）。33 テスト / 250 テスト全緑、typecheck OK
-  - [x] **Step 7**: Cloudflare アカウント取得 + Supabase Cloud プロジェクト作成 + `supabase db push`（4 マイグレーション適用）+ `wrangler secret put` ×3（URL / anon / service_role）+ `wrangler deploy` で初回本番デプロイ完了。`https://cake-shop-api.rzrhacympbmdkagoybba.workers.dev/health` / `/v1/cakes` 200 OK 確認（Workers V8 Isolate → Supabase Cloud REST の本番疎通成功）
-  - [x] **Step 8**: 環境分離。`wrangler.toml` を **`--env <name>` 必須運用**に再構成（`[env.staging]` = `cake-shop-api-staging` / NODE_ENV=staging / LOG_LEVEL=debug、`[env.production]` = `cake-shop-api` / NODE_ENV=production / LOG_LEVEL=info、トップレベル `[vars]` は env 未指定時のフォールバック）。`package.json` の wrangler スクリプトを `:staging` / `:production` 別に分離（素の `wrangler:deploy` / `wrangler:tail` は廃止）。`env.ts` の NODE_ENV enum に `'staging'` を追加。`node-pino-logger.ts` を厳格化（pino-pretty は `NODE_ENV === 'development'` のときだけ適用＝staging/production は両方 JSON 経路）。**staging 用に本番とは別の Supabase プロジェクト `Hono-Supabase-STG`（ref `gnvlfivangrgyryjmybu`）を作成**し、4 マイグレーションを `supabase db push`。**「本番ダンプを staging に流さない」演習として、最初から合成・匿名化済みのテストデータ `supabase/seed.staging.sql` を作成**（`.example` TLD・ダミー顧客 3 + 管理者 1・auth.users 経由で handle_new_user トリガが customers を自動生成・placed_at は日単位に丸めて準識別子を一般化）し `supabase db query --linked -f supabase/seed.staging.sql`（Management API 経由・DB パスワード不要）で投入。`cake-shop-api-staging` Worker に secret 3 種を `wrangler secret put --env staging` で登録 → `wrangler deploy --env staging`。`https://cake-shop-api-staging.<account>.workers.dev/health` `/v1/cakes` 動作確認済み
-  - [x] **Step 9**: **CI/CD + リリース管理を一周**（実運用のリリースフロー体験）
-    - (a) 素の `wrangler deploy` 中に curl ループで無停止切替を観察（**ゼロダウンタイムのベースライン体験**。体験用スクリプト `scripts/zero-downtime-watch.ps1` / `.sh`）
-    - (b) `wrangler versions upload` でバージョン作成（**流量 0**）→ 払い出された preview URL で動作確認
-    - (c) `wrangler versions deploy --percentage 10` でカナリア展開 → 50% → 100% の段階展開を curl ループで観察
-    - (d) わざとバグを入れて 100% リリース → `wrangler rollback` で**直前バージョンへ即時巻き戻し**
-    - (e) GitHub Actions 化（`cloudflare/wrangler-action@v3`）— ワークフローを**ブランチ別に分割**: `deploy-staging.yml`（`push: develop` → `checks` → `wrangler deploy --env staging`。本番には一切触れない）／`deploy-production.yml`（`push: main` → `checks` → `wrangler versions upload --env production`(0%) → Environment `production` の Required reviewers 承認ゲート → `wrangler versions deploy <id>@100 --env production --yes`）。`checks.yml`（再利用 `workflow_call` = Lint&Typecheck / Bundle check (tsup + wrangler dry-run) / Test (Vitest + local Supabase)）を `ci.yml`（PR）と両 deploy が呼ぶ。`main` ブランチ保護（PR 必須・status checks 3 本必須・force push/削除禁止・bypass なし）+ リポジトリ Secrets（`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`。Supabase 鍵は置かない＝Worker の `wrangler secret` 側）+ Environments（`staging` ゲートなし / `production` Required reviewers）も設定済。**運用ポリシーの全文は README「## CI/CD・環境構成の指針（実運用想定）」を参照**
-
-### CI/CD・リリース運用の要点（README に詳細）
-
-- **ブランチ→環境**: `develop` push = staging に自動デプロイ（即時 100%）／`main` push = production（`versions upload` 0% → **GitHub Environment `production` の手動承認** → `deploy@100`）。feature → PR → CI → `develop` マージ → 区切りで `develop`→`main` PR → マージで本番。ロールバックは `wrangler rollback --env production`
-- **`main` はブランチ保護必須**: PR 経由のみ・CI チェック必須・force push/削除禁止。本番に出すコードは必ず CI を通った `main` の内容
-- **シークレットの置き場を分ける**: アプリのシークレット（`SUPABASE_*`）は実行環境（`wrangler secret put --env <name>`）／CI のシークレット（`CLOUDFLARE_API_TOKEN` 等）は GitHub リポジトリ Secrets。リポジトリにも他方にも混ぜない
-- **Supabase は 1 環境 1 プロジェクト**: production / staging で別プロジェクト。**本番データを staging に流さない**（合成・匿名化シード `supabase/seed.staging.sql` を使う）。マイグレは前方向のみ・`supabase db push`、アドホック SQL は `supabase db query --linked -f`
-- **ドキュメント上の識別子の線引き**: 個人固有の値（Cloudflare アカウントサブドメイン・Supabase project ref）は `<...>` プレースホルダ表記。構成上の固有名（Worker 名 `cake-shop-api` / プロジェクト名 `Hono-Supabase` / env 名）はそのまま残す（フォーク者が「これ何？」にならないように）
-- [ ] **Phase 8**: **Supabase Auth メール運用**（確認メールのテンプレート / Custom SMTP / 確認後リダイレクト設計）
-  - 動機: 「Supabase Auth を使うバックエンド担当」が「確認メールのテンプレートを更新できる・Custom SMTP に切替えられる」を一度も触らないのは学習漏れ。本番が `enable_confirmations = ON`（＝正しい設定）である以上、その運用面を一周しておく
-  - [x] **Step 1（2026-05-13 完了）**: ローカルで `supabase/config.toml` の `[auth.email] enable_confirmations = true` に変更（＝本番 Cloud に合わせた）。`POST /v1/customers` → Mailpit/Inbucket（http://localhost:54324）に確認メール受信 → 確認リンク（`/auth/v1/verify?token=...&type=signup&redirect_to=<site_url>`）を踏むと 303 + `auth.users.email_confirmed_at` がセット／確認前ログインは 400 `email_not_confirmed`／確認後ログインで JWT 取得、を実機確認。**この変更で顕在化したバグも修正**: `enable_confirmations = ON` だと `auth.signUp()` がセッションを返さない → サインアップ経路の sb は anon のまま → 直後の「トリガが作った `customers` 行を `authUserId` で読み戻す」が RLS で弾かれ 404 になっていた（本番も同じ潜在バグ）。`composition-root.ts` でサインアップ用に `CustomerSupabaseRepository(createAdminClient(env))` を 1 本足し、サインアップ経路の `customers` 参照のみ RLS バイパスの service_role 経由に（`auth.signUp()` 自体は公開 auth 操作なので anon のまま）。副次効果として `findByEmail` の重複チェックが実際に効くようになり、同一メール再登録が 409 `CONFLICT` を返すようになった
-  - [x] **Step 2（2026-05-14 完了）**: メールテンプレートを **リポジトリ管理**化。`supabase/templates/{confirmation,recovery,magic_link,email_change}.html` を新設（日本語＋ブランド色 `#b85c5c`・テーブルレイアウト + インライン CSS で HTML メール互換）。`supabase/config.toml` の `[auth.email.template.*]` 4 セクションを有効化、件名を `【ケーキショップ】…` に日本語化。Go template 変数（`{{ .ConfirmationURL }}` / `{{ .Token }}` / `{{ .SiteURL }}` / `{{ .Email }}` / `{{ .NewEmail }}` / `{{ .Data }}`）の使い方を冒頭コメントに整理。confirmation メールは Mailpit で実機表示を確認済（recovery / magic_link / email_change は同じ仕組みなので個別検証は省略）。`.prettierignore` に `supabase/templates/` を追加（HTML メールの属性改行を prettier に壊させないため）
-  - [x] **Step 3（2026-05-14 完了）**: 確認後リダイレクトの三層設計（`site_url` / `additional_redirect_urls` / `redirect_to`）と PKCE/Implicit フローを整理し、README に新節「## 認証メールのリダイレクト設計（Supabase Auth・Phase 8 Step 3）」を追加。`additional_redirect_urls` に将来のフロント用 `http://127.0.0.1:3000/auth/callback` を許可リストとして追加（着地先の切替コスト最小化）。フロント不在での実機観察手順（Mailpit からリンク → `?code=...` でブラウザのアドレスバーに着地 → PKCE 動作確認）と、フロント有り時の Next.js App Router `app/auth/callback/route.ts` の理屈（`exchangeCodeForSession` + `type` 分岐 + cookie 保存）も README に明記
-  - [x] **Step 4（2026-05-14 完了 — 方針変更）**: 当初は「ローカルで `[auth.email.smtp]` を Resend に切替えて実メール送信を体験」と定義していたが、実行段階で **ホスト Windows の Norton Antivirus "Web/Mail Shield" が outbound TLS を巻き取り、自社 CA で再署名する** ため、gotrue コンテナ → smtp.resend.com の TLS 検証が `x509: certificate signed by unknown authority` で必ず失敗することが判明（PowerShell の生 TLS で確認した Issuer が `CN=Norton Web/Mail Shield Root` だった）。Norton Root を コンテナの CA 束に注入する案は学習リポジトリの clean さを壊し、Norton の TLS スキャンを切る案は PC のセキュリティ運用を犠牲にするため不採用。**Step 5 と統合して「Cloud 上の Supabase に直接 Resend を繋ぐ」に再定義**することで、Custom SMTP の学習目的（設定経験・送信元検証・ブランド差出人）は完全達成可能と判断。リポジトリには「ローカルで実 SMTP 検証は TLS インスペクション環境では成立しない」旨を `supabase/config.toml` のコメントブロック / `.env.example` / README に記録（同じ罠を踏まないため）。ローカルは引き続き Inbucket（http://127.0.0.1:54324）で運用
-  - [ ] **Step 5（再定義済み）**: **Cloud 上の Supabase（production / staging）に Custom SMTP を直接設定**して実メールを送る。
-    - Resend Dashboard でドメイン検証（DNS の TXT/CNAME 追加で SPF/DKIM）
-    - Supabase Cloud Dashboard → Authentication → SMTP Settings に Resend の SMTP 情報を入力（API キーはここ＝Supabase 側 secret として管理。アプリの `.env` / `wrangler secret` には置かない）
-    - 本番 / staging URL に対して `POST /v1/customers` を叩き、確認メールが**ブランド差出人・日本語テンプレ**で実受信箱に届くことを確認
-    - Phase 7 手2（認証フロー E2E）の実メール経由版を staging で一度通す
+- [x] Phase 1: 設定ファイル群・プロジェクト初期化
+- [x] Phase 2: Hono 骨格 + `/health` + 統一エラー + 構造化ログ + env 検証
+- [x] Phase 2.5: DDD-lite 4 層構造への移行（`app/lib/` → `app/shared/`、`modules/{cakes,customers,orders}` 骨格）
+- [x] Phase 3: `cakes` Bounded Context（4 層縦切り）
+- [x] Phase 4: `customers` Bounded Context
+- [x] Phase 5: `orders` Bounded Context（Domain Event + Postgres Function でアトミック在庫減算）
+- [x] Phase 6: 認証（Supabase Auth + RLS + 認証ミドルウェア）+ OpenAPI 仕上げ
+- [x] Phase 7: **Cloudflare Workers 化** — Workers / Node 二系統エントリ、Workers 互換ロガー、JWKS per-request DI、本番 + staging デプロイ、CI/CD（GitHub Actions + カナリア + rollback）
+- [x] Phase 8（2026-05-14 完了）: **Supabase Auth メール運用** — `enable_confirmations = ON` 化、テンプレートのリポジトリ管理、確認後リダイレクト三層設計（README 別節）、Cloud 上の Custom SMTP（Resend）で実メール送信
+- [x] Phase 9 (2026-05-20 完了): **観測・運用の質を上げる** — requestId 伝播 + リクエストスコープロガー / アクセスログ（ステータス別レベル）/ `/health` 3 状態化（ok/degraded/down）/ メトリクス（Workers Analytics Engine）/ 観測・アラート（Free プラン制約下で再定義）。Step 1〜5 完了。詳細は [docs/PROGRESS.md](docs/PROGRESS.md)
+- [x] Phase 10 (2026-05-26 完了): **API のリッチ化** — カーソルページネーション（`/v1/cakes`・`/v1/orders`）/ ソート・フィルタ / PGroonga 全文検索 / 楽観ロック（ETag + If-Match、412/428）/ Rate Limit（Workers `[[ratelimits]]` binding 3 本、429）/ Idempotency-Key（`POST /v1/*` を Postgres 永続化で冪等化）/ Webhook 配信（HMAC-SHA256 + 指数バックオフ retry）。Step 1〜7 完了。詳細は [docs/PROGRESS.md](docs/PROGRESS.md)
+- [ ] Phase 11 (進行中): **レビュー機能**（cake / 店舗のレビュー投稿・一覧・集計・モデレーション）
+  - [x] Step 1 (2026-05-27): **ケーキレビュー（投稿・一覧・集計）** — `app/modules/reviews/` を DDD-lite 4 層で新設、`GET/POST /v1/cakes/:cake_id/reviews`（GET 公開・カーソル + 集計同梱 / POST 認証 + Idempotency-Key 必須）。投稿資格は誰でも・購入バッジ `is_verified_purchaser` は投稿時点 snapshot・`UNIQUE(cake_id,user_id) WHERE published` で重複防止（migration `0009_reviews.sql`）。詳細は [docs/PROGRESS.md](docs/PROGRESS.md)
 
 ---
 
 ## Common Commands
 
-```bash
-# 開発サーバー起動（ホットリロード）
-pnpm dev
-
-# TypeScript ビルド
-pnpm build
-
-# テスト実行
-pnpm test
-
-# カバレッジ付きテスト
-pnpm test:coverage
-
-# Lint チェック
-pnpm lint
-
-# コードフォーマット
-pnpm format
-
-# 型チェック
-pnpm typecheck
-
-# 手動の総合チェック（CI が回しているのと同じセット = lint + typecheck + format:check + test）
-# push 前 / PR 前にローカルで一度叩く運用
-pnpm verify
-
-# Supabase ローカル起動（Docker が起動している必要あり）
-supabase start
-
-# マイグレーション適用
-supabase db push
-
-# Supabase Studio（ブラウザ管理画面）→ http://localhost:54323
-# Supabase 停止
-supabase stop
-
-# Docker Compose（アプリのみ・ローカル学習用途）
-docker compose up -d
-docker compose down
-
-# --- Cloudflare Workers ---
-# wrangler.toml は --env <name> 必須運用（[env.staging] / [env.production] を明示定義）。
-# pnpm wrangler:* スクリプトに env を埋め込んであるので、素の wrangler deploy は使わない。
-
-# Workers ローカル起動（V8 Isolate を再現する公式ツール）
-pnpm wrangler:dev
-
-# デプロイ（env ごと）
-pnpm wrangler:deploy:staging
-pnpm wrangler:deploy:production
-
-# シークレット登録（env ごとに 3 回ずつ。secret は Worker 名単位のストア）
-pnpm wrangler:secret:staging SUPABASE_URL
-pnpm wrangler:secret:staging SUPABASE_ANON_KEY
-pnpm wrangler:secret:staging SUPABASE_SERVICE_ROLE_KEY
-pnpm wrangler:secret:production SUPABASE_URL
-pnpm wrangler:secret:production SUPABASE_ANON_KEY
-pnpm wrangler:secret:production SUPABASE_SERVICE_ROLE_KEY
-
-# ログ tail（env ごと）
-pnpm wrangler:tail:staging
-pnpm wrangler:tail:production
-
-# リンク済み Supabase プロジェクトに SQL を実行（Management API 経由・DB パスワード不要）
-supabase db query --linked -f supabase/seed.staging.sql
-
-# ゼロダウンタイム観察ループ（Step 9 (a) 体験用）— 別ターミナルで pnpm wrangler:deploy:staging を打ちながら眺める
-pwsh scripts/zero-downtime-watch.ps1          # bash 版: bash scripts/zero-downtime-watch.sh
-# 稼働中の deployment 一覧（デプロイ前後で確認）
-pnpm exec wrangler deployments list --env staging
-
-# バージョン管理（カナリアリリース）— Step 9 で扱う
-pnpm exec wrangler versions upload --env production
-pnpm exec wrangler versions deploy --env production
-pnpm exec wrangler rollback --env production
-```
+主要コマンド（`pnpm dev` / `test` / `verify` / `wrangler:*` / `supabase` 系）は **README.md「## 主要コマンド」** に集約済み。新しいスクリプトを追加するときは README を真実の単一ソースとして更新する。
 
 ---
 

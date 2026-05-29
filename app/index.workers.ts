@@ -8,6 +8,13 @@ import {
   createWorkersJwksFetcher,
   type JwksFetcherProvider,
 } from '@/shared/infrastructure/jwks-fetcher';
+import {
+  createAnalyticsEngineRecorder,
+  createNoopMetricsRecorder,
+  type MetricsRecorder,
+} from '@/shared/infrastructure/metrics';
+import { createAdminClient } from '@/shared/infrastructure/supabase';
+import { SupabaseIdempotencyStore } from '@/shared/infrastructure/supabase-idempotency-store';
 
 // ---------------------------------------------------------------------------
 // Cloudflare Workers エントリ（本番デプロイ先）。
@@ -43,6 +50,20 @@ interface WorkersBindings {
   // ローカル wrangler dev では placeholder 値、未宣言環境では undefined になりうるので
   // 参照側は ?. + フォールバックで扱う。
   CF_VERSION_METADATA?: WorkerVersionMetadata;
+  // wrangler.toml の [[analytics_engine_datasets]] バインディング（Phase 9 Step 4）。
+  // staging / production それぞれ別 dataset に書き込む構成（A 案: 物理分離）。
+  // `wrangler dev` では undefined になりうる（Analytics Engine は本物の Workers に
+  // デプロイされてから初めて writeDataPoint が実書き込みされる）ので optional。
+  API_REQUESTS?: AnalyticsEngineDataset;
+  // wrangler.toml の [[ratelimits]] バインディング（Phase 10 Step 5）。
+  // shape は { limit({ key }): Promise<{ success }> }（@cloudflare/workers-types の
+  // RateLimit 型）。binding ごとに simple.{limit, period} が焼き込まれているので、
+  // middleware は紐づく period を別途知って Retry-After に反映する責務を負う。
+  // 未宣言環境（旧デプロイ / 最小テスト）で undefined になりうるため optional + bootstrap
+  // 側で no-op フォールバック。
+  LIMITER_PUBLIC_READ?: RateLimit;
+  LIMITER_PUBLIC_WRITE?: RateLimit;
+  LIMITER_AUTH_WRITE?: RateLimit;
 }
 
 type Handler = (request: Request, ctx: ExecutionContext) => Promise<Response>;
@@ -50,9 +71,17 @@ type Handler = (request: Request, ctx: ExecutionContext) => Promise<Response>;
 let cachedHandler: Handler | null = null;
 
 const buildHandler = (bindings: WorkersBindings): Handler => {
-  // CF_VERSION_METADATA はオブジェクト型のバインディングなので、文字列だけを期待する
-  // loadEnv（RawEnv = string の Record）には渡さない。残りのキーだけスプレッドする。
-  const { CF_VERSION_METADATA, ...envBindings } = bindings;
+  // CF_VERSION_METADATA / API_REQUESTS / LIMITER_* はオブジェクト型のバインディングなので、
+  // 文字列だけを期待する loadEnv（RawEnv = string の Record）には渡さない。
+  // 残りの文字列キーだけスプレッドする。
+  const {
+    CF_VERSION_METADATA,
+    API_REQUESTS,
+    LIMITER_PUBLIC_READ,
+    LIMITER_PUBLIC_WRITE,
+    LIMITER_AUTH_WRITE,
+    ...envBindings
+  } = bindings;
   // WorkersBindings は固定キーの interface のため RawEnv（任意キー Record）に
   // 直接キャストできない。スプレッドで「普通の Record」を作って渡す。
   const env = loadEnv({ ...envBindings });
@@ -77,7 +106,41 @@ const buildHandler = (bindings: WorkersBindings): Handler => {
   // 1 回読めば十分。/health に晒して段階展開（カナリア）中の応答元バージョンを観察可能にする。
   const appVersion = CF_VERSION_METADATA?.id ?? 'unknown';
 
-  const app = bootstrap({ env, logger, jwksFetcherProvider, appVersion });
+  // Phase 9 Step 4: Analytics Engine binding が来ていれば実 recorder、無ければ noop。
+  //   - `wrangler dev` は API_REQUESTS が undefined になりがち（ローカルでは書き込まない）
+  //   - 本番 / staging deploy 後は wrangler.toml の [[analytics_engine_datasets]]
+  //     で必ず注入される
+  const metricsRecorder: MetricsRecorder = API_REQUESTS
+    ? createAnalyticsEngineRecorder(API_REQUESTS)
+    : createNoopMetricsRecorder();
+
+  // Phase 10 Step 5: Rate Limit binding は Workers shape をそのまま RateLimiter port に
+  // 流し込めるので wrapper は要らない（構造的に等価）。`wrangler dev` や旧デプロイで
+  // 未注入のケースは undefined のまま渡し、bootstrap 側で no-op middleware に倒す。
+  const rateLimiters = {
+    publicRead: LIMITER_PUBLIC_READ,
+    publicWrite: LIMITER_PUBLIC_WRITE,
+    authWrite: LIMITER_AUTH_WRITE,
+  };
+
+  // Phase 10 Step 6: Idempotency 永続化は service_role 必須（RLS が明示ポリシーなしで
+  //   全 anon 経路を遮断するため）。admin SupabaseClient を 1 度だけ作って
+  //   SupabaseIdempotencyStore に渡す。cold start 1 回コストで毎リクエストの読み書きを賄える。
+  const idempotencyStore = new SupabaseIdempotencyStore(createAdminClient(env));
+
+  const app = bootstrap({
+    env,
+    logger,
+    jwksFetcherProvider,
+    appVersion,
+    metricsRecorder,
+    rateLimiters,
+    idempotencyStore,
+    // Phase 10 Step 7: Workers では globalThis.fetch を webhook 配信用 fetcher として
+    //   渡す。bootstrap が FetchWebhookDispatcher + dispatch middleware を組み立て、
+    //   各リクエスト処理後に ctx.waitUntil で 1 ラウンドの delivery 配信を回す。
+    webhookFetcher: globalThis.fetch.bind(globalThis),
+  });
   return async (request, ctx) => app.fetch(request, bindings, ctx);
 };
 

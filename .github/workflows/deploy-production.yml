@@ -29,6 +29,11 @@ concurrency:
   group: deploy-production-${{ github.ref }}
   cancel-in-progress: false
 
+# JS action のランタイムを Node 24 で起動する（2026/6/2 の強制切替を先取り）。
+# 詳細は checks.yml の同名 env のコメント参照。強制切替後は削除してよい。
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   checks:
     uses: ./.github/workflows/checks.yml

@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { createSilentLogger } from '@/shared/infrastructure/logger';
+import { NoopEventPublisher } from '@/shared/application/event-publisher';
 import type { MiddlewareHandler } from 'hono';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createApp } from '@/app';
 import { createListCakesUseCase } from '@/modules/cakes/application/list-cakes.usecase';
 import { createCreateCakeUseCase } from '@/modules/cakes/application/create-cake.usecase';
+import { createGetCakeUseCase } from '@/modules/cakes/application/get-cake.usecase';
+import { createUpdateCakeStockUseCase } from '@/modules/cakes/application/update-cake-stock.usecase';
 import { createCakeController } from '@/modules/cakes/presentation/cake.controller';
 import { InMemoryCakeRepository } from '@/modules/cakes/application/__test-helpers__/in-memory-cake.repository';
 import { createListCustomersUseCase } from '@/modules/customers/application/list-customers.usecase';
@@ -16,8 +19,21 @@ import { FakeCustomerAuth } from '@/modules/customers/application/__test-helpers
 import { Customer } from '@/modules/customers/domain/customer';
 import { createPlaceOrderUseCase } from '@/modules/orders/application/place-order.usecase';
 import { createGetOrderUseCase } from '@/modules/orders/application/get-order.usecase';
+import { createListOrdersUseCase } from '@/modules/orders/application/list-orders.usecase';
 import { createOrderController } from '@/modules/orders/presentation/order.controller';
 import { InMemoryOrderRepository } from '@/modules/orders/application/__test-helpers__/in-memory-order.repository';
+import { createRegisterSubscriptionUseCase } from '@/modules/webhooks/application/register-subscription.usecase';
+import { createListSubscriptionsUseCase } from '@/modules/webhooks/application/list-subscriptions.usecase';
+import { createDeleteSubscriptionUseCase } from '@/modules/webhooks/application/delete-subscription.usecase';
+import { createListDeliveriesUseCase } from '@/modules/webhooks/application/list-deliveries.usecase';
+import { createWebhookController } from '@/modules/webhooks/presentation/webhook.controller';
+import { InMemoryWebhookSubscriptionRepository } from '@/modules/webhooks/application/__test-helpers__/in-memory-webhook-subscription.repository';
+import { InMemoryWebhookDeliveryRepository } from '@/modules/webhooks/application/__test-helpers__/in-memory-webhook-delivery.repository';
+import { createPostReviewUseCase } from '@/modules/reviews/application/post-review.usecase';
+import { createListReviewsByCakeUseCase } from '@/modules/reviews/application/list-reviews-by-cake.usecase';
+import { createReviewController } from '@/modules/reviews/presentation/review.controller';
+import { InMemoryReviewRepository } from '@/modules/reviews/application/__test-helpers__/in-memory-review.repository';
+import { InMemoryVerifiedPurchaserChecker } from '@/modules/reviews/application/__test-helpers__/in-memory-verified-purchaser.checker';
 import { createFakeAuthMiddleware, requireAuth, requireAdmin } from '@/shared/http/auth.middleware';
 import type { AppEnv, AuthUser, RequestModules } from '@/shared/http/request-context';
 
@@ -66,22 +82,43 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
   const cakesController = createCakeController({
     listCakes: createListCakesUseCase(cakesRepo),
     createCake: createCreateCakeUseCase(cakesRepo, silentLogger),
+    getCake: createGetCakeUseCase(cakesRepo),
+    updateCakeStock: createUpdateCakeStockUseCase(cakesRepo, silentLogger),
   });
 
   const ordersRepo = new InMemoryOrderRepository();
   const ordersController = createOrderController({
-    placeOrder: createPlaceOrderUseCase(ordersRepo, silentLogger),
+    placeOrder: createPlaceOrderUseCase(ordersRepo, silentLogger, NoopEventPublisher),
     getOrder: createGetOrderUseCase(ordersRepo),
+    listOrders: createListOrdersUseCase(ordersRepo),
     resolveCustomerId: async (authUserId) => {
       const c = await customersRepo.findByAuthUserId(authUserId);
       return c?.id.value ?? null;
     },
   });
 
+  const webhookSubRepo = new InMemoryWebhookSubscriptionRepository();
+  const webhookDelRepo = new InMemoryWebhookDeliveryRepository();
+  const webhooksController = createWebhookController({
+    registerSubscription: createRegisterSubscriptionUseCase(webhookSubRepo, silentLogger),
+    listSubscriptions: createListSubscriptionsUseCase(webhookSubRepo),
+    deleteSubscription: createDeleteSubscriptionUseCase(webhookSubRepo, silentLogger),
+    listDeliveries: createListDeliveriesUseCase(webhookSubRepo, webhookDelRepo),
+  });
+
+  const reviewsRepo = new InMemoryReviewRepository();
+  const verifiedPurchaserChecker = new InMemoryVerifiedPurchaserChecker();
+  const reviewsController = createReviewController({
+    postReview: createPostReviewUseCase(reviewsRepo, verifiedPurchaserChecker, silentLogger),
+    listReviewsByCake: createListReviewsByCakeUseCase(reviewsRepo),
+  });
+
   const modules: RequestModules = {
     cakes: cakesController,
     customers: customersController,
     orders: ordersController,
+    webhooks: webhooksController,
+    reviews: reviewsController,
   };
 
   const stubSb = null as unknown as SupabaseClient;
@@ -438,6 +475,135 @@ describe('GET /v1/orders/:id（要認証）', () => {
     const { app } = buildTestApp({ user: null });
 
     const res = await app.request(`/v1/orders/${randomUUID()}`);
+
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('UNAUTHORIZED');
+  });
+});
+
+describe('GET /v1/orders（要認証・本人の一覧）', () => {
+  interface ListBody {
+    orders: Array<{ id: string; customerId: string }>;
+    next_cursor: string | null;
+    has_more: boolean;
+  }
+
+  const CAKE_ID = '99999999-9999-4999-8999-999999999999';
+
+  // placedAt / id を固定して注文を直接投入する（HTTP POST 経由だと placedAt が
+  // 実時刻になりミリ秒衝突で順序が不定になるため、一覧の順序検証は seedOrder で決定的にする）。
+  // 返り値は「新しい順（placed_at DESC）」に並んだ注文 ID の配列。
+  const seedOrders = (
+    ordersRepo: InMemoryOrderRepository,
+    customerId: string,
+    count: number,
+  ): string[] => {
+    const ids: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const id = `${String(i + 1).padStart(8, '0')}-0000-4000-8000-000000000000`;
+      ordersRepo.seedOrder({
+        id,
+        customerId,
+        // i が大きいほど新しい（後 = 未来）。
+        placedAt: new Date(`2026-01-${String(i + 1).padStart(2, '0')}T00:00:00.000Z`),
+        items: [{ cakeId: CAKE_ID, quantity: 1, unitPrice: 500 }],
+      });
+      ids.push(id);
+    }
+    return ids.reverse(); // 新しい順
+  };
+
+  it('本人の注文を新しい順で返し、件数が limit 以下なら has_more=false', async () => {
+    const { app, ordersRepo, seedCustomer } = buildTestApp({ user: AUTH_USER });
+    const customer = seedCustomer(AUTH_USER.id);
+    const expectedOrder = seedOrders(ordersRepo, customer.id.value, 3);
+
+    const res = await app.request('/v1/orders');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ListBody;
+    expect(body.orders.map((o) => o.id)).toEqual(expectedOrder);
+    expect(body.orders.every((o) => o.customerId === customer.id.value)).toBe(true);
+    expect(body.next_cursor).toBeNull();
+    expect(body.has_more).toBe(false);
+  });
+
+  it('limit + after でページを辿れる（next_cursor / Link ヘッダ）', async () => {
+    const { app, ordersRepo, seedCustomer } = buildTestApp({ user: AUTH_USER });
+    const customer = seedCustomer(AUTH_USER.id);
+    const expectedOrder = seedOrders(ordersRepo, customer.id.value, 3);
+
+    // 1 ページ目: limit=2
+    const res1 = await app.request('/v1/orders?limit=2');
+    expect(res1.status).toBe(200);
+    const body1 = (await res1.json()) as ListBody;
+    expect(body1.orders.map((o) => o.id)).toEqual(expectedOrder.slice(0, 2));
+    expect(body1.has_more).toBe(true);
+    expect(body1.next_cursor).not.toBeNull();
+    // Link ヘッダに次ページが提示される
+    expect(res1.headers.get('Link')).toContain('rel="next"');
+
+    // 2 ページ目: after で続きから
+    const res2 = await app.request(
+      `/v1/orders?limit=2&after=${encodeURIComponent(body1.next_cursor!)}`,
+    );
+    expect(res2.status).toBe(200);
+    const body2 = (await res2.json()) as ListBody;
+    expect(body2.orders.map((o) => o.id)).toEqual(expectedOrder.slice(2));
+    expect(body2.has_more).toBe(false);
+    expect(body2.next_cursor).toBeNull();
+  });
+
+  it('注文が無い顧客には空配列を返す', async () => {
+    const { app, seedCustomer } = buildTestApp({ user: AUTH_USER });
+    seedCustomer(AUTH_USER.id);
+
+    const res = await app.request('/v1/orders');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ListBody;
+    expect(body.orders).toEqual([]);
+    expect(body.next_cursor).toBeNull();
+    expect(body.has_more).toBe(false);
+  });
+
+  it('改竄された after カーソルは 400 + VALIDATION_ERROR を返す', async () => {
+    const { app, seedCustomer } = buildTestApp({ user: AUTH_USER });
+    seedCustomer(AUTH_USER.id);
+
+    const res = await app.request('/v1/orders?after=not-a-valid-cursor');
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('limit が範囲外（0）のとき 400 + VALIDATION_ERROR を返す', async () => {
+    const { app, seedCustomer } = buildTestApp({ user: AUTH_USER });
+    seedCustomer(AUTH_USER.id);
+
+    const res = await app.request('/v1/orders?limit=0');
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('認証ユーザーに対応する customer がいないと 404 + NOT_FOUND を返す', async () => {
+    const { app } = buildTestApp({ user: AUTH_USER });
+
+    const res = await app.request('/v1/orders');
+
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('未認証だと 401 + UNAUTHORIZED を返す', async () => {
+    const { app } = buildTestApp({ user: null });
+
+    const res = await app.request('/v1/orders');
 
     expect(res.status).toBe(401);
     const body = (await res.json()) as { error: { code: string } };

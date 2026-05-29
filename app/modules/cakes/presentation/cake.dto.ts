@@ -21,16 +21,109 @@ export const CakeResponseSchema = z
 
 export type CakeResponse = z.infer<typeof CakeResponseSchema>;
 
+// ページネーションの既定値・上限。
+//   DEFAULT_LIMIT: クライアントが limit 未指定のときの 1 ページ件数。
+//   MAX_LIMIT: 1 リクエストで取得できる最大件数（無制限取得 = 重い全件スキャンを防ぐ）。
+export const DEFAULT_LIMIT = 20;
+export const MAX_LIMIT = 100;
+
+// 価格フィルタの上限（CreateCakeRequestSchema の price 上限と揃える）。
+const PRICE_MAX = 1_000_000;
+
+// ---------------------------------------------------------------------------
+// Request: GET /v1/cakes のクエリパラメータ
+//   limit     … 1 ページ件数（1〜MAX_LIMIT、未指定なら DEFAULT_LIMIT）。
+//   after     … 前ページのレスポンスが返した next_cursor（不透明トークン）。
+//   sort      … 並び順。'-' 接頭辞で降順、カンマ区切りで複数指定（例 '-price,name'）。
+//               許可フィールドの検証は controller の parseSortParam が担う（400 を投げる）。
+//   available … 在庫の有無で絞る（'true'=在庫あり / 'false'=在庫切れ）。
+//   min_price / max_price … 価格帯で絞る（両端含む）。
+//   q         … ケーキ名のあいまい検索（PGroonga 全文検索。日本語 N-gram 一致）。
+//   クエリ文字列は常に string で届くため、数値・真偽は coerce / enum で変換する。
+// ---------------------------------------------------------------------------
+export const ListCakesQuerySchema = z.object({
+  limit: z.coerce
+    .number()
+    .int({ message: 'limit は整数である必要があります' })
+    .min(1, { message: 'limit は 1 以上である必要があります' })
+    .max(MAX_LIMIT, { message: `limit は ${String(MAX_LIMIT)} 以下である必要があります` })
+    .default(DEFAULT_LIMIT)
+    .openapi({ example: 20, description: '1 ページの件数（1〜100、既定 20）' }),
+  after: z
+    .string()
+    .optional()
+    .openapi({ description: '前ページの next_cursor。先頭ページでは省略する。' }),
+  sort: z.string().optional().openapi({
+    example: '-price,name',
+    description:
+      "並び順。'-' で降順、カンマ区切りで複数指定。許可: name, price, stock（既定: name 昇順）",
+  }),
+  available: z.enum(['true', 'false']).optional().openapi({
+    example: 'true',
+    description: '在庫の有無で絞る（true=在庫あり / false=在庫切れ）',
+  }),
+  min_price: z.coerce
+    .number()
+    .int({ message: 'min_price は整数である必要があります' })
+    .min(1, { message: 'min_price は 1 以上である必要があります' })
+    .max(PRICE_MAX, { message: `min_price は ${String(PRICE_MAX)} 以下である必要があります` })
+    .optional()
+    .openapi({ example: 300, description: '価格の下限（この値を含む）' }),
+  max_price: z.coerce
+    .number()
+    .int({ message: 'max_price は整数である必要があります' })
+    .min(1, { message: 'max_price は 1 以上である必要があります' })
+    .max(PRICE_MAX, { message: `max_price は ${String(PRICE_MAX)} 以下である必要があります` })
+    .optional()
+    .openapi({ example: 1000, description: '価格の上限（この値を含む）' }),
+  q: z
+    .string()
+    .min(1, { message: 'q は 1 文字以上である必要があります' })
+    .max(100, { message: 'q は 100 文字以内である必要があります' })
+    .optional()
+    .openapi({
+      example: 'いちご',
+      description:
+        'ケーキ名のあいまい検索（PGroonga 全文検索。日本語の N-gram 一致で 2 文字や ひらがな部分一致も拾う）',
+    }),
+});
+
+export type ListCakesQuery = z.infer<typeof ListCakesQuerySchema>;
+
+// カーソルの中身（不透明トークンをデコードした後の形）。
+// controller が decodeCursor() で検証に使う。改竄されていれば 400 に倒す。
+//   sort   … カーソル発行時の並び順（正規形文字列）。次ページ要求の sort と一致必須。
+//   values … sort 各フィールドの最終行の値。フィールドにより string / number。
+//   id     … tiebreaker。
+export const CakeCursorSchema = z.object({
+  sort: z.string(),
+  values: z.object({
+    name: z.string().optional(),
+    price: z.number().int().optional(),
+    stock: z.number().int().optional(),
+  }),
+  id: z.string().uuid(),
+});
+
 // ---------------------------------------------------------------------------
 // Response: GET /v1/cakes
-//   配列直返しではなくオブジェクトに包むのは、将来 pagination / total を
-//   ルートに追加しても破壊的変更にならないようにするため（API 設計の定石）。
+//   配列直返しではなくオブジェクトに包むことで、ページネーションのメタ情報を
+//   同居させても破壊的変更にならない（API 設計の定石）。
+//   next_cursor: 次ページがある場合の不透明トークン。無ければ null。
+//   has_more:    次ページの有無（next_cursor !== null と同義の利便フラグ）。
 // ---------------------------------------------------------------------------
 export const ListCakesResponseSchema = z
   .object({
     cakes: z.array(CakeResponseSchema),
+    next_cursor: z.string().nullable().openapi({
+      example: 'eyJuYW1lIjoi...',
+      description: '次ページ取得用カーソル（無ければ null）',
+    }),
+    has_more: z.boolean().openapi({ example: true, description: '次ページが存在するか' }),
   })
   .openapi('ListCakesResponse');
+
+export type ListCakesResponse = z.infer<typeof ListCakesResponseSchema>;
 
 // ---------------------------------------------------------------------------
 // Request: POST /v1/cakes
@@ -61,6 +154,39 @@ export const CreateCakeRequestSchema = z
   .openapi('CreateCakeRequest');
 
 export type CreateCakeRequest = z.infer<typeof CreateCakeRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// Request: GET /v1/cakes/{id} / PATCH /v1/cakes/{id} のパスパラメータ
+//   id … ケーキ UUID。UUID 形式違反は routes の Zod 検証で 400（domain に届く前に弾く）。
+// ---------------------------------------------------------------------------
+export const CakeIdParamSchema = z.object({
+  id: z
+    .string()
+    .uuid({ message: 'id は UUID 形式である必要があります' })
+    .openapi({
+      param: { name: 'id', in: 'path' },
+      example: '11111111-1111-4111-8111-111111111111',
+    }),
+});
+
+export type CakeIdParam = z.infer<typeof CakeIdParamSchema>;
+
+// ---------------------------------------------------------------------------
+// Request: PATCH /v1/cakes/{id}（在庫更新 = 追加発注 / 棚卸し）
+//   stock の絶対値を送る冪等な部分更新。競合検知は If-Match ヘッダ（version）で行う。
+//   stock の制約は domain（Cake.changeStock）と一致させる（多重防御）。
+// ---------------------------------------------------------------------------
+export const UpdateCakeStockRequestSchema = z
+  .object({
+    stock: z
+      .number()
+      .int({ message: '在庫数は整数である必要があります' })
+      .min(0, { message: '在庫数は 0 以上である必要があります' })
+      .openapi({ example: 50, description: '更新後の在庫数（絶対値・0 以上の整数）' }),
+  })
+  .openapi('UpdateCakeStockRequest');
+
+export type UpdateCakeStockRequest = z.infer<typeof UpdateCakeStockRequestSchema>;
 
 // ---------------------------------------------------------------------------
 // 共通: エラーレスポンス（CLAUDE.md の統一形式に対応）

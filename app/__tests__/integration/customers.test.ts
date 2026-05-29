@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { createSilentLogger } from '@/shared/infrastructure/logger';
+import { NoopEventPublisher } from '@/shared/application/event-publisher';
 import type { MiddlewareHandler } from 'hono';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createApp } from '@/app';
 import { createListCakesUseCase } from '@/modules/cakes/application/list-cakes.usecase';
 import { createCreateCakeUseCase } from '@/modules/cakes/application/create-cake.usecase';
+import { createGetCakeUseCase } from '@/modules/cakes/application/get-cake.usecase';
+import { createUpdateCakeStockUseCase } from '@/modules/cakes/application/update-cake-stock.usecase';
 import { createCakeController } from '@/modules/cakes/presentation/cake.controller';
 import { InMemoryCakeRepository } from '@/modules/cakes/application/__test-helpers__/in-memory-cake.repository';
 import { createListCustomersUseCase } from '@/modules/customers/application/list-customers.usecase';
@@ -15,8 +18,21 @@ import { FakeCustomerAuth } from '@/modules/customers/application/__test-helpers
 import { Customer } from '@/modules/customers/domain/customer';
 import { createPlaceOrderUseCase } from '@/modules/orders/application/place-order.usecase';
 import { createGetOrderUseCase } from '@/modules/orders/application/get-order.usecase';
+import { createListOrdersUseCase } from '@/modules/orders/application/list-orders.usecase';
 import { createOrderController } from '@/modules/orders/presentation/order.controller';
 import { InMemoryOrderRepository } from '@/modules/orders/application/__test-helpers__/in-memory-order.repository';
+import { createRegisterSubscriptionUseCase } from '@/modules/webhooks/application/register-subscription.usecase';
+import { createListSubscriptionsUseCase } from '@/modules/webhooks/application/list-subscriptions.usecase';
+import { createDeleteSubscriptionUseCase } from '@/modules/webhooks/application/delete-subscription.usecase';
+import { createListDeliveriesUseCase } from '@/modules/webhooks/application/list-deliveries.usecase';
+import { createWebhookController } from '@/modules/webhooks/presentation/webhook.controller';
+import { InMemoryWebhookSubscriptionRepository } from '@/modules/webhooks/application/__test-helpers__/in-memory-webhook-subscription.repository';
+import { InMemoryWebhookDeliveryRepository } from '@/modules/webhooks/application/__test-helpers__/in-memory-webhook-delivery.repository';
+import { createPostReviewUseCase } from '@/modules/reviews/application/post-review.usecase';
+import { createListReviewsByCakeUseCase } from '@/modules/reviews/application/list-reviews-by-cake.usecase';
+import { createReviewController } from '@/modules/reviews/presentation/review.controller';
+import { InMemoryReviewRepository } from '@/modules/reviews/application/__test-helpers__/in-memory-review.repository';
+import { InMemoryVerifiedPurchaserChecker } from '@/modules/reviews/application/__test-helpers__/in-memory-verified-purchaser.checker';
 import { createFakeAuthMiddleware, requireAuth, requireAdmin } from '@/shared/http/auth.middleware';
 import type { AppEnv, AuthUser, RequestModules } from '@/shared/http/request-context';
 
@@ -65,22 +81,43 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
   const cakesController = createCakeController({
     listCakes: createListCakesUseCase(cakesRepo),
     createCake: createCreateCakeUseCase(cakesRepo, silentLogger),
+    getCake: createGetCakeUseCase(cakesRepo),
+    updateCakeStock: createUpdateCakeStockUseCase(cakesRepo, silentLogger),
   });
 
   const ordersRepo = new InMemoryOrderRepository();
   const ordersController = createOrderController({
-    placeOrder: createPlaceOrderUseCase(ordersRepo, silentLogger),
+    placeOrder: createPlaceOrderUseCase(ordersRepo, silentLogger, NoopEventPublisher),
     getOrder: createGetOrderUseCase(ordersRepo),
+    listOrders: createListOrdersUseCase(ordersRepo),
     resolveCustomerId: async (authUserId) => {
       const c = await customersRepo.findByAuthUserId(authUserId);
       return c?.id.value ?? null;
     },
   });
 
+  const webhookSubRepo = new InMemoryWebhookSubscriptionRepository();
+  const webhookDelRepo = new InMemoryWebhookDeliveryRepository();
+  const webhooksController = createWebhookController({
+    registerSubscription: createRegisterSubscriptionUseCase(webhookSubRepo, silentLogger),
+    listSubscriptions: createListSubscriptionsUseCase(webhookSubRepo),
+    deleteSubscription: createDeleteSubscriptionUseCase(webhookSubRepo, silentLogger),
+    listDeliveries: createListDeliveriesUseCase(webhookSubRepo, webhookDelRepo),
+  });
+
+  const reviewsRepo = new InMemoryReviewRepository();
+  const verifiedPurchaserChecker = new InMemoryVerifiedPurchaserChecker();
+  const reviewsController = createReviewController({
+    postReview: createPostReviewUseCase(reviewsRepo, verifiedPurchaserChecker, silentLogger),
+    listReviewsByCake: createListReviewsByCakeUseCase(reviewsRepo),
+  });
+
   const modules: RequestModules = {
     cakes: cakesController,
     customers: customersController,
     orders: ordersController,
+    webhooks: webhooksController,
+    reviews: reviewsController,
   };
 
   const stubSb = null as unknown as SupabaseClient;

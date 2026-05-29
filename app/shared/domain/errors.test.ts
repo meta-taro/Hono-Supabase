@@ -3,7 +3,11 @@ import {
   AppError,
   ConflictError,
   ForbiddenError,
+  IdempotencyInProgressError,
+  IdempotencyKeyRequiredError,
+  IdempotencyKeyReusedError,
   NotFoundError,
+  RateLimitedError,
   UnauthorizedError,
   ValidationError,
 } from './errors';
@@ -29,6 +33,10 @@ describe('AppError サブクラスの code/status マッピング', () => {
     [new ForbiddenError(), 'FORBIDDEN', 403],
     [new NotFoundError(), 'NOT_FOUND', 404],
     [new ConflictError('duplicated'), 'CONFLICT', 409],
+    [new RateLimitedError(10), 'RATE_LIMITED', 429],
+    [new IdempotencyKeyRequiredError('missing'), 'IDEMPOTENCY_KEY_REQUIRED', 400],
+    [new IdempotencyInProgressError(), 'IDEMPOTENCY_IN_PROGRESS', 409],
+    [new IdempotencyKeyReusedError(), 'IDEMPOTENCY_KEY_REUSED', 422],
   ] as const)('%s は code=%s status=%d', (err, code, status) => {
     expect(err).toBeInstanceOf(AppError);
     expect(err.code).toBe(code);
@@ -40,5 +48,11 @@ describe('AppError サブクラスの code/status マッピング', () => {
       { field: 'email', message: 'メール形式が不正です' },
     ]);
     expect(err.details).toHaveLength(1);
+  });
+
+  it('RateLimitedError は retryAfterSec を保持し details に Retry-After を載せる', () => {
+    const err = new RateLimitedError(60);
+    expect(err.retryAfterSec).toBe(60);
+    expect(err.details).toEqual([{ field: 'Retry-After', message: '60' }]);
   });
 });

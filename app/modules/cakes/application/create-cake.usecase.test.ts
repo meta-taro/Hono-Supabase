@@ -25,10 +25,14 @@ describe('createCakeUseCase', () => {
     const createCake = createCreateCakeUseCase(repo, silentLogger);
 
     await createCake({ name: 'ガトーショコラ', price: 700, stock: 5 });
-    const stored = await repo.list();
+    const page = await repo.list({
+      limit: 20,
+      sort: [{ field: 'name', direction: 'asc' }],
+      filter: {},
+    });
 
-    expect(stored).toHaveLength(1);
-    expect(stored[0]?.name).toBe('ガトーショコラ');
+    expect(page.cakes).toHaveLength(1);
+    expect(page.cakes[0]?.name).toBe('ガトーショコラ');
   });
 
   it('成功時に info ログを出力する', async () => {

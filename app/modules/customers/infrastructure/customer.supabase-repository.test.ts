@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { env as workerEnv } from 'cloudflare:test';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { Email } from '../domain/email.vo';
 import { CustomerSupabaseRepository } from './customer.supabase-repository';
-import { loadEnv } from '@/shared/http/env';
+import { loadEnv, type RawEnv } from '@/shared/http/env';
 
 // このテストは「実 Supabase ローカルに対して動く」ことの確認なので、
 // 起動済みの Supabase（`supabase start`）が必要。
@@ -17,7 +18,7 @@ import { loadEnv } from '@/shared/http/env';
 
 const TEST_EMAIL_DOMAIN = '@test-customer.local';
 
-const env = loadEnv();
+const env = loadEnv(workerEnv as unknown as RawEnv);
 const sbAdmin: SupabaseClient = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });

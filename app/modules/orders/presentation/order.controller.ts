@@ -1,7 +1,14 @@
 import type { Order } from '../domain/order';
 import type { PlaceOrderUseCase, PlaceOrderInput } from '../application/place-order.usecase';
 import type { GetOrderUseCase } from '../application/get-order.usecase';
-import type { OrderResponse } from './order.dto';
+import type { ListOrdersUseCase } from '../application/list-orders.usecase';
+import { decodeCursor, encodeCursor } from '@/shared/http/cursor';
+import {
+  OrderCursorSchema,
+  type ListOrdersQuery,
+  type ListOrdersResponse,
+  type OrderResponse,
+} from './order.dto';
 import { CustomerNotFoundInOrderError } from '../domain/order.errors';
 
 // Controller の責務:
@@ -24,6 +31,7 @@ export type ResolveCustomerId = (authUserId: string) => Promise<string | null>;
 export interface OrderControllerDeps {
   placeOrder: PlaceOrderUseCase;
   getOrder: GetOrderUseCase;
+  listOrders: ListOrdersUseCase;
   resolveCustomerId: ResolveCustomerId;
 }
 
@@ -61,6 +69,26 @@ export const createOrderController = (deps: OrderControllerDeps) => ({
   get: async (id: string): Promise<OrderResponse> => {
     const order = await deps.getOrder({ orderId: id });
     return toOrderResponse(order);
+  },
+
+  // GET /v1/orders
+  //   authUserId → 業務 customerId を解決し、本人の注文一覧を新しい順で 1 ページ返す。
+  //   after（不透明カーソル）をデコード・検証して UseCase に渡し、
+  //   返ってきた nextCursor を再エンコードしてレスポンスに載せる。
+  //   不正・改竄カーソルは decodeCursor が ValidationError(400) を投げる。
+  list: async (authUserId: string, query: ListOrdersQuery): Promise<ListOrdersResponse> => {
+    const customerId = await deps.resolveCustomerId(authUserId);
+    if (customerId === null) {
+      throw new CustomerNotFoundInOrderError(authUserId);
+    }
+    const after = query.after ? decodeCursor(query.after, OrderCursorSchema) : undefined;
+    const page = await deps.listOrders({ customerId, limit: query.limit, after });
+    const nextCursor = page.nextCursor ? encodeCursor(page.nextCursor) : null;
+    return {
+      orders: page.orders.map(toOrderResponse),
+      next_cursor: nextCursor,
+      has_more: nextCursor !== null,
+    };
   },
 });
 

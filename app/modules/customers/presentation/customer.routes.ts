@@ -3,6 +3,8 @@ import { createRoute } from '@hono/zod-openapi';
 import type { MiddlewareHandler } from 'hono';
 import { createOpenAPIHono } from '@/shared/http/openapi-hono';
 import type { AppEnv } from '@/shared/http/request-context';
+import type { RateLimitMiddlewares } from '@/app';
+import { restrictToMethods } from '@/shared/http/rate-limit.middleware';
 import {
   CustomerResponseSchema,
   SignUpCustomerRequestSchema,
@@ -74,14 +76,31 @@ const signUpCustomerRoute = createRoute({
 export interface CustomerRouterDeps {
   // GET /v1/customers の前に挟む認証 + admin 強制ミドルウェア。
   adminGuard: MiddlewareHandler<AppEnv>[];
+  // Phase 10 Step 5: Rate Limit middleware。未指定なら何も適用しない（テスト最小経路）。
+  rateLimits?: RateLimitMiddlewares;
+  // Phase 10 Step 6: POST /v1/customers（サインアップ）に貼る Idempotency middleware。
+  //   未指定なら適用しない（テスト最小経路 / Supabase 未接続）。
+  idempotency?: MiddlewareHandler<AppEnv>;
 }
 
 export const createCustomerRouter = (deps: CustomerRouterDeps): OpenAPIHono<AppEnv> => {
   const router = createOpenAPIHono();
+  const rl = deps.rateLimits;
 
   // Hono の `router.use(path, mw)` は「呼んだ時点以降に登録される handler」だけに mw を適用する。
   // signUp（公開・認証不要）を **adminGuard より先に** 登録することで、
   // POST / に guard が混入しないようにする。cakes の構造と統一。
+  //
+  // Phase 10 Step 5:
+  //   - POST / (signUp)  → publicWrite (5/60s per IP) — サインアップは認証前なので IP キー
+  //   - GET  / (admin)    → authWrite (10/10s per user) — adminGuard で認証済みのため user キー
+  //   path が同じ '/' なので restrictToMethods で method を絞る。
+  if (rl) router.use('/', restrictToMethods(['POST'], rl.publicWrite));
+  // Phase 10 Step 6: POST /（signUp）は未認証経路だが、再送によるアカウント二重作成を
+  //   防ぐため Idempotency-Key を必須化する。owner は IP（bootstrap 側で ipOwner を選択）。
+  //   path が GET / と共有のため restrictToMethods で POST に絞る。
+  //   rate-limit の後 / signUp handler の前 = 攻撃面の絞り込みを先に通す。
+  if (deps.idempotency) router.use('/', restrictToMethods(['POST'], deps.idempotency));
   router.openapi(signUpCustomerRoute, async (c) => {
     const controller = c.get('modules').customers;
     const input = c.req.valid('json');
@@ -90,6 +109,7 @@ export const createCustomerRouter = (deps: CustomerRouterDeps): OpenAPIHono<AppE
   });
 
   router.use(listCustomersRoute.getRoutingPath(), ...deps.adminGuard);
+  if (rl) router.use(listCustomersRoute.getRoutingPath(), restrictToMethods(['GET'], rl.authWrite));
   router.openapi(listCustomersRoute, async (c) => {
     const controller = c.get('modules').customers;
     const body = await controller.list();
