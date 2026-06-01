@@ -3,8 +3,10 @@ import { REVIEW_SORT_OPTIONS } from '@/modules/reviews/domain/review.repository'
 import {
   DEFAULT_REVIEW_LIMIT,
   ErrorResponseSchema,
+  HelpfulVoteResponseSchema,
   MAX_REVIEW_LIMIT,
   ReviewCursorSchema,
+  ReviewIdPathParamSchema,
   ReviewStatsResponseSchema,
 } from './review.dto';
 
@@ -12,14 +14,19 @@ import {
 //   エンドポイントは /v1/shop/reviews（パスパラメータ無し = cake_id を取らない）。
 //   集計（stats）・カーソル・エラー・ページネーション定数は cake レビューと同一構造なので
 //   review.dto.ts の共通スキーマを同一コンテキスト内で再利用する（重複を避ける）。
+//   投票の review_id パスパラメータ・投票レスポンスも cake レビューと同形なので再利用する。
 
 export {
   DEFAULT_REVIEW_LIMIT,
   ErrorResponseSchema,
+  HelpfulVoteResponseSchema,
   MAX_REVIEW_LIMIT,
   ReviewCursorSchema,
+  ReviewIdPathParamSchema,
   ReviewStatsResponseSchema,
 };
+// 投票レスポンスの型も cake / 店舗で同形なので再利用する（controller が import する）。
+export type { HelpfulVoteResponse } from './review.dto';
 
 // ---------------------------------------------------------------------------
 // Response: 店舗レビュー 1 件

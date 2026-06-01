@@ -17,6 +17,44 @@ export const CakeIdPathParamSchema = z.object({
 export type CakeIdPathParam = z.infer<typeof CakeIdPathParamSchema>;
 
 // ---------------------------------------------------------------------------
+// パスパラメータ: review_id 単体
+//   /v1/cakes/{cake_id}/reviews/{review_id}/helpful と
+//   /v1/shop/reviews/{review_id}/helpful の両方で再利用する。
+// ---------------------------------------------------------------------------
+export const ReviewIdPathParamSchema = z.object({
+  review_id: z
+    .string()
+    .uuid({ message: 'review_id は UUID 形式である必要があります' })
+    .openapi({
+      param: { name: 'review_id', in: 'path' },
+      example: '22222222-2222-4222-8222-222222222222',
+    }),
+});
+
+export type ReviewIdPathParam = z.infer<typeof ReviewIdPathParamSchema>;
+
+// cake レビュー投票のパスは cake_id + review_id の両方を取る。
+export const CakeReviewVotePathParamSchema = CakeIdPathParamSchema.merge(ReviewIdPathParamSchema);
+
+export type CakeReviewVotePathParam = z.infer<typeof CakeReviewVotePathParamSchema>;
+
+// ---------------------------------------------------------------------------
+// Response: 「役立った」投票の付与/取消（POST/DELETE .../helpful）
+//   helpful_count … 操作反映後の投票数（DB トリガで同期済みのカウンタを返す）
+//   voted         … 操作後の自分の投票状態（付与=true / 取消=false）
+//   cake / 店舗どちらの投票も同一形（review_id だけで対象を一意に表せる）。
+// ---------------------------------------------------------------------------
+export const HelpfulVoteResponseSchema = z
+  .object({
+    review_id: z.string().uuid().openapi({ example: '22222222-2222-4222-8222-222222222222' }),
+    helpful_count: z.number().int().min(0).openapi({ example: 13 }),
+    voted: z.boolean().openapi({ example: true, description: '操作後の自分の投票状態' }),
+  })
+  .openapi('HelpfulVoteResult');
+
+export type HelpfulVoteResponse = z.infer<typeof HelpfulVoteResponseSchema>;
+
+// ---------------------------------------------------------------------------
 // Response: レビュー 1 件
 // ---------------------------------------------------------------------------
 export const ReviewResponseSchema = z

@@ -30,14 +30,20 @@ import { InMemoryWebhookSubscriptionRepository } from '@/modules/webhooks/applic
 import { InMemoryWebhookDeliveryRepository } from '@/modules/webhooks/application/__test-helpers__/in-memory-webhook-delivery.repository';
 import { createPostReviewUseCase } from '@/modules/reviews/application/post-review.usecase';
 import { createListReviewsByCakeUseCase } from '@/modules/reviews/application/list-reviews-by-cake.usecase';
+import { createVoteReviewHelpfulUseCase } from '@/modules/reviews/application/vote-review-helpful.usecase';
+import { createRemoveReviewHelpfulUseCase } from '@/modules/reviews/application/remove-review-helpful.usecase';
 import { createReviewController } from '@/modules/reviews/presentation/review.controller';
 import { InMemoryReviewRepository } from '@/modules/reviews/application/__test-helpers__/in-memory-review.repository';
 import { InMemoryVerifiedPurchaserChecker } from '@/modules/reviews/application/__test-helpers__/in-memory-verified-purchaser.checker';
+import { InMemoryReviewHelpfulVoteRepository } from '@/modules/reviews/application/__test-helpers__/in-memory-review-helpful-vote.repository';
 import { createPostShopReviewUseCase } from '@/modules/reviews/application/post-shop-review.usecase';
 import { createListShopReviewsUseCase } from '@/modules/reviews/application/list-shop-reviews.usecase';
+import { createVoteShopReviewHelpfulUseCase } from '@/modules/reviews/application/vote-shop-review-helpful.usecase';
+import { createRemoveShopReviewHelpfulUseCase } from '@/modules/reviews/application/remove-shop-review-helpful.usecase';
 import { createShopReviewController } from '@/modules/reviews/presentation/shop-review.controller';
 import { InMemoryShopReviewRepository } from '@/modules/reviews/application/__test-helpers__/in-memory-shop-review.repository';
 import { InMemoryOrderHistoryChecker } from '@/modules/reviews/application/__test-helpers__/in-memory-order-history.checker';
+import { InMemoryShopReviewHelpfulVoteRepository } from '@/modules/reviews/application/__test-helpers__/in-memory-shop-review-helpful-vote.repository';
 import { CakeId } from '@/modules/reviews/domain/cake-id.vo';
 import { Review } from '@/modules/reviews/domain/review';
 import { createFakeAuthMiddleware, requireAuth, requireAdmin } from '@/shared/http/auth.middleware';
@@ -74,6 +80,7 @@ interface TestApp {
   app: ReturnType<typeof createApp>;
   reviewsRepo: InMemoryReviewRepository;
   verifiedChecker: InMemoryVerifiedPurchaserChecker;
+  voteRepo: InMemoryReviewHelpfulVoteRepository;
 }
 
 const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
@@ -114,16 +121,30 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
 
   const reviewsRepo = new InMemoryReviewRepository();
   const verifiedChecker = new InMemoryVerifiedPurchaserChecker();
+  const voteRepo = new InMemoryReviewHelpfulVoteRepository();
   const reviewsController = createReviewController({
     postReview: createPostReviewUseCase(reviewsRepo, verifiedChecker, silentLogger),
     listReviewsByCake: createListReviewsByCakeUseCase(reviewsRepo),
+    voteHelpful: createVoteReviewHelpfulUseCase(reviewsRepo, voteRepo, silentLogger),
+    removeHelpful: createRemoveReviewHelpfulUseCase(reviewsRepo, voteRepo, silentLogger),
   });
 
   const shopReviewsRepo = new InMemoryShopReviewRepository();
   const orderHistoryChecker = new InMemoryOrderHistoryChecker();
+  const shopVoteRepo = new InMemoryShopReviewHelpfulVoteRepository();
   const shopReviewsController = createShopReviewController({
     postShopReview: createPostShopReviewUseCase(shopReviewsRepo, orderHistoryChecker, silentLogger),
     listShopReviews: createListShopReviewsUseCase(shopReviewsRepo),
+    voteShopReviewHelpful: createVoteShopReviewHelpfulUseCase(
+      shopReviewsRepo,
+      shopVoteRepo,
+      silentLogger,
+    ),
+    removeShopReviewHelpful: createRemoveShopReviewHelpfulUseCase(
+      shopReviewsRepo,
+      shopVoteRepo,
+      silentLogger,
+    ),
   });
 
   const modules: RequestModules = {
@@ -150,7 +171,7 @@ const buildTestApp = (params: { user?: AuthUser | null } = {}): TestApp => {
     },
   });
 
-  return { app, reviewsRepo, verifiedChecker };
+  return { app, reviewsRepo, verifiedChecker, voteRepo };
 };
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -595,6 +616,164 @@ describe('POST /v1/cakes/:cake_id/reviews（要認証）', () => {
       });
       expect(res.status).toBe(400);
     });
+  });
+});
+
+describe('POST /v1/cakes/:cake_id/reviews/:review_id/helpful（要認証・トグル）', () => {
+  it('201 ではなく 200 + helpful_count=1 / voted=true を返し、投票が記録される', async () => {
+    const { app, reviewsRepo, voteRepo } = buildTestApp({ user: OTHER_USER });
+    const cakeId = randomUUID();
+    // 投稿者は AUTH_USER。投票者は OTHER_USER（他人なので付与できる）。
+    const review = buildReview({ cakeId, userId: AUTH_USER.id, rating: 5 });
+    reviewsRepo.preload([review]);
+
+    const res = await app.request(`/v1/cakes/${cakeId}/reviews/${review.id.value}/helpful`, {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      review_id: string;
+      helpful_count: number;
+      voted: boolean;
+    };
+    expect(body.review_id).toBe(review.id.value);
+    expect(body.helpful_count).toBe(1);
+    expect(body.voted).toBe(true);
+    expect(voteRepo.has(review.id, OTHER_USER.id)).toBe(true);
+  });
+
+  it('同じユーザーが 2 回 POST しても冪等（helpful_count=1 のまま）', async () => {
+    const { app, reviewsRepo } = buildTestApp({ user: OTHER_USER });
+    const cakeId = randomUUID();
+    const review = buildReview({ cakeId, userId: AUTH_USER.id, rating: 5 });
+    reviewsRepo.preload([review]);
+
+    await app.request(`/v1/cakes/${cakeId}/reviews/${review.id.value}/helpful`, {
+      method: 'POST',
+    });
+    const res2 = await app.request(`/v1/cakes/${cakeId}/reviews/${review.id.value}/helpful`, {
+      method: 'POST',
+    });
+
+    expect(res2.status).toBe(200);
+    const body = (await res2.json()) as { helpful_count: number; voted: boolean };
+    expect(body.helpful_count).toBe(1);
+    expect(body.voted).toBe(true);
+  });
+
+  it('自分のレビューには投票できず 403 FORBIDDEN を返す', async () => {
+    const { app, reviewsRepo, voteRepo } = buildTestApp({ user: AUTH_USER });
+    const cakeId = randomUUID();
+    const review = buildReview({ cakeId, userId: AUTH_USER.id, rating: 5 });
+    reviewsRepo.preload([review]);
+
+    const res = await app.request(`/v1/cakes/${cakeId}/reviews/${review.id.value}/helpful`, {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('FORBIDDEN');
+    expect(voteRepo.has(review.id, AUTH_USER.id)).toBe(false);
+  });
+
+  it('未認証だと 401 UNAUTHORIZED を返し、投票は記録されない', async () => {
+    const { app, reviewsRepo, voteRepo } = buildTestApp({ user: null });
+    const cakeId = randomUUID();
+    const review = buildReview({ cakeId, userId: AUTH_USER.id, rating: 5 });
+    reviewsRepo.preload([review]);
+
+    const res = await app.request(`/v1/cakes/${cakeId}/reviews/${review.id.value}/helpful`, {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('UNAUTHORIZED');
+    expect(voteRepo.has(review.id, OTHER_USER.id)).toBe(false);
+  });
+
+  it('対象レビューが存在しなければ 404 NOT_FOUND を返す', async () => {
+    const { app } = buildTestApp({ user: OTHER_USER });
+    const cakeId = randomUUID();
+    const missingReviewId = randomUUID();
+
+    const res = await app.request(`/v1/cakes/${cakeId}/reviews/${missingReviewId}/helpful`, {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('review_id が UUID でなければ 400 VALIDATION_ERROR を返す', async () => {
+    const { app } = buildTestApp({ user: OTHER_USER });
+    const cakeId = randomUUID();
+
+    const res = await app.request(`/v1/cakes/${cakeId}/reviews/not-a-uuid/helpful`, {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+});
+
+describe('DELETE /v1/cakes/:cake_id/reviews/:review_id/helpful（要認証・トグル取消）', () => {
+  it('付与済みの投票を取り消すと 200 + helpful_count=0 / voted=false を返す', async () => {
+    const { app, reviewsRepo, voteRepo } = buildTestApp({ user: OTHER_USER });
+    const cakeId = randomUUID();
+    const review = buildReview({ cakeId, userId: AUTH_USER.id, rating: 5 });
+    reviewsRepo.preload([review]);
+
+    // まず付与
+    await app.request(`/v1/cakes/${cakeId}/reviews/${review.id.value}/helpful`, {
+      method: 'POST',
+    });
+    expect(voteRepo.has(review.id, OTHER_USER.id)).toBe(true);
+
+    // 取消
+    const res = await app.request(`/v1/cakes/${cakeId}/reviews/${review.id.value}/helpful`, {
+      method: 'DELETE',
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { helpful_count: number; voted: boolean };
+    expect(body.helpful_count).toBe(0);
+    expect(body.voted).toBe(false);
+    expect(voteRepo.has(review.id, OTHER_USER.id)).toBe(false);
+  });
+
+  it('未投票の状態で DELETE しても冪等（200 + helpful_count=0 / voted=false）', async () => {
+    const { app, reviewsRepo } = buildTestApp({ user: OTHER_USER });
+    const cakeId = randomUUID();
+    const review = buildReview({ cakeId, userId: AUTH_USER.id, rating: 5 });
+    reviewsRepo.preload([review]);
+
+    const res = await app.request(`/v1/cakes/${cakeId}/reviews/${review.id.value}/helpful`, {
+      method: 'DELETE',
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { helpful_count: number; voted: boolean };
+    expect(body.helpful_count).toBe(0);
+    expect(body.voted).toBe(false);
+  });
+
+  it('未認証だと 401 UNAUTHORIZED を返す', async () => {
+    const { app, reviewsRepo } = buildTestApp({ user: null });
+    const cakeId = randomUUID();
+    const review = buildReview({ cakeId, userId: AUTH_USER.id, rating: 5 });
+    reviewsRepo.preload([review]);
+
+    const res = await app.request(`/v1/cakes/${cakeId}/reviews/${review.id.value}/helpful`, {
+      method: 'DELETE',
+    });
+
+    expect(res.status).toBe(401);
   });
 });
 

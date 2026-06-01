@@ -30,13 +30,19 @@ import { InMemoryWebhookSubscriptionRepository } from '@/modules/webhooks/applic
 import { InMemoryWebhookDeliveryRepository } from '@/modules/webhooks/application/__test-helpers__/in-memory-webhook-delivery.repository';
 import { createPostReviewUseCase } from '@/modules/reviews/application/post-review.usecase';
 import { createListReviewsByCakeUseCase } from '@/modules/reviews/application/list-reviews-by-cake.usecase';
+import { createVoteReviewHelpfulUseCase } from '@/modules/reviews/application/vote-review-helpful.usecase';
+import { createRemoveReviewHelpfulUseCase } from '@/modules/reviews/application/remove-review-helpful.usecase';
 import { createReviewController } from '@/modules/reviews/presentation/review.controller';
 import { InMemoryReviewRepository } from '@/modules/reviews/application/__test-helpers__/in-memory-review.repository';
+import { InMemoryReviewHelpfulVoteRepository } from '@/modules/reviews/application/__test-helpers__/in-memory-review-helpful-vote.repository';
 import { InMemoryVerifiedPurchaserChecker } from '@/modules/reviews/application/__test-helpers__/in-memory-verified-purchaser.checker';
 import { createPostShopReviewUseCase } from '@/modules/reviews/application/post-shop-review.usecase';
 import { createListShopReviewsUseCase } from '@/modules/reviews/application/list-shop-reviews.usecase';
+import { createVoteShopReviewHelpfulUseCase } from '@/modules/reviews/application/vote-shop-review-helpful.usecase';
+import { createRemoveShopReviewHelpfulUseCase } from '@/modules/reviews/application/remove-shop-review-helpful.usecase';
 import { createShopReviewController } from '@/modules/reviews/presentation/shop-review.controller';
 import { InMemoryShopReviewRepository } from '@/modules/reviews/application/__test-helpers__/in-memory-shop-review.repository';
+import { InMemoryShopReviewHelpfulVoteRepository } from '@/modules/reviews/application/__test-helpers__/in-memory-shop-review-helpful-vote.repository';
 import { InMemoryOrderHistoryChecker } from '@/modules/reviews/application/__test-helpers__/in-memory-order-history.checker';
 import { createFakeAuthMiddleware, requireAuth, requireAdmin } from '@/shared/http/auth.middleware';
 import type { AppEnv, AuthUser, RequestModules } from '@/shared/http/request-context';
@@ -122,16 +128,30 @@ const buildTestApp = (
 
   const reviewsRepo = new InMemoryReviewRepository();
   const verifiedPurchaserChecker = new InMemoryVerifiedPurchaserChecker();
+  const reviewVoteRepo = new InMemoryReviewHelpfulVoteRepository();
   const reviewsController = createReviewController({
     postReview: createPostReviewUseCase(reviewsRepo, verifiedPurchaserChecker, silentLogger),
     listReviewsByCake: createListReviewsByCakeUseCase(reviewsRepo),
+    voteHelpful: createVoteReviewHelpfulUseCase(reviewsRepo, reviewVoteRepo, silentLogger),
+    removeHelpful: createRemoveReviewHelpfulUseCase(reviewsRepo, reviewVoteRepo, silentLogger),
   });
 
   const shopReviewsRepo = new InMemoryShopReviewRepository();
   const orderHistoryChecker = new InMemoryOrderHistoryChecker();
+  const shopReviewVoteRepo = new InMemoryShopReviewHelpfulVoteRepository();
   const shopReviewsController = createShopReviewController({
     postShopReview: createPostShopReviewUseCase(shopReviewsRepo, orderHistoryChecker, silentLogger),
     listShopReviews: createListShopReviewsUseCase(shopReviewsRepo),
+    voteShopReviewHelpful: createVoteShopReviewHelpfulUseCase(
+      shopReviewsRepo,
+      shopReviewVoteRepo,
+      silentLogger,
+    ),
+    removeShopReviewHelpful: createRemoveShopReviewHelpfulUseCase(
+      shopReviewsRepo,
+      shopReviewVoteRepo,
+      silentLogger,
+    ),
   });
 
   const modules: RequestModules = {

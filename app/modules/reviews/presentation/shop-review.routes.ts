@@ -8,9 +8,11 @@ import { restrictToMethods } from '@/shared/http/rate-limit.middleware';
 import { UnauthorizedError } from '@/shared/domain/errors';
 import {
   ErrorResponseSchema,
+  HelpfulVoteResponseSchema,
   ListShopReviewsQuerySchema,
   ListShopReviewsResponseSchema,
   PostShopReviewRequestSchema,
+  ReviewIdPathParamSchema,
   ShopReviewResponseSchema,
 } from './shop-review.dto';
 
@@ -92,6 +94,83 @@ const postShopReviewRoute = createRoute({
   },
 });
 
+// ---------------------------------------------------------------------------
+// 「役立った」投票（Phase 11 Step 3）
+//   - POST   /v1/shop/reviews/{review_id}/helpful … 付与（冪等）
+//   - DELETE /v1/shop/reviews/{review_id}/helpful … 取消（冪等）
+//   いずれも認証必須。トグルが UNIQUE(user_id, review_id) + INSERT ON CONFLICT DO NOTHING /
+//   DELETE no-op で自然に冪等なので、Idempotency-Key は不要（authWrite rate limit のみ）。
+//   自己投票は 403（付与時のみ）。対象が無い / published でなければ 404。
+// ---------------------------------------------------------------------------
+
+const voteShopHelpfulRoute = createRoute({
+  method: 'post',
+  path: '/reviews/{review_id}/helpful',
+  tags: ['shop-reviews'],
+  summary: '店舗レビューに「役立った」を付ける',
+  description:
+    '認証ユーザーが対象店舗レビューに「役立った」を付与する。既に付与済みなら no-op（冪等）。' +
+    '自分のレビューには付けられない（403）。反映後の helpful_count と自分の投票状態を返す。',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: ReviewIdPathParamSchema,
+  },
+  responses: {
+    200: {
+      description: '付与後の投票数と自分の投票状態',
+      content: { 'application/json': { schema: HelpfulVoteResponseSchema } },
+    },
+    400: {
+      description: 'review_id が UUID でない',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+    401: {
+      description: '未認証',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+    403: {
+      description: '自分のレビューには「役立った」を付けられない',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+    404: {
+      description: '対象レビューが存在しない、または published でない',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+const removeShopHelpfulRoute = createRoute({
+  method: 'delete',
+  path: '/reviews/{review_id}/helpful',
+  tags: ['shop-reviews'],
+  summary: '店舗レビューの「役立った」を取り消す',
+  description:
+    '認証ユーザーが付与済みの「役立った」を取消する。未投票なら no-op（冪等）。' +
+    '反映後の helpful_count と自分の投票状態（voted=false）を返す。',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: ReviewIdPathParamSchema,
+  },
+  responses: {
+    200: {
+      description: '取消後の投票数と自分の投票状態',
+      content: { 'application/json': { schema: HelpfulVoteResponseSchema } },
+    },
+    400: {
+      description: 'review_id が UUID でない',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+    401: {
+      description: '未認証',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+    404: {
+      description: '対象レビューが存在しない、または published でない',
+      content: { 'application/json': { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
 export interface ShopReviewRouterDeps {
   // POST /reviews の前に挟む認証ガード（fakeAuth 経路も同じ shape）。
   authGuard: MiddlewareHandler<AppEnv>[];
@@ -153,6 +232,38 @@ export const createShopReviewRouter = (deps: ShopReviewRouterDeps): OpenAPIHono<
     const input = c.req.valid('json');
     const body = await controller.post(user.id, input);
     return c.json(body, 201);
+  });
+
+  // ----- 「役立った」投票（POST / DELETE .../helpful）-----
+  //   reviews パスとは別 trie ノード（'/reviews/:review_id/helpful'）なので、
+  //   上の reviewsPath に貼った middleware は波及しない。ここで独立に貼り直す。
+  //   POST も DELETE も認証必須。冪等なので Idempotency-Key は貼らない（authWrite のみ）。
+  const votePath = voteShopHelpfulRoute.getRoutingPath(); // '/reviews/:review_id/helpful'
+  for (const mw of deps.authGuard) {
+    router.use(votePath, restrictToMethods(['POST', 'DELETE'], mw));
+  }
+  if (rl) router.use(votePath, restrictToMethods(['POST', 'DELETE'], rl.authWrite));
+
+  router.openapi(voteShopHelpfulRoute, async (c) => {
+    const user = c.get('user');
+    if (!user) {
+      throw new UnauthorizedError('認証情報が取得できませんでした');
+    }
+    const controller = c.get('modules').shopReviews;
+    const { review_id: reviewId } = c.req.valid('param');
+    const body = await controller.voteHelpful(reviewId, user.id);
+    return c.json(body, 200);
+  });
+
+  router.openapi(removeShopHelpfulRoute, async (c) => {
+    const user = c.get('user');
+    if (!user) {
+      throw new UnauthorizedError('認証情報が取得できませんでした');
+    }
+    const controller = c.get('modules').shopReviews;
+    const { review_id: reviewId } = c.req.valid('param');
+    const body = await controller.removeHelpful(reviewId, user.id);
+    return c.json(body, 200);
   });
 
   return router;

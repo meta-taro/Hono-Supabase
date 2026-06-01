@@ -3,12 +3,15 @@ import type {
   ListShopReviewsUseCase,
 } from '@/modules/reviews/application/list-shop-reviews.usecase';
 import type { PostShopReviewUseCase } from '@/modules/reviews/application/post-shop-review.usecase';
+import type { VoteShopReviewHelpfulUseCase } from '@/modules/reviews/application/vote-shop-review-helpful.usecase';
+import type { RemoveShopReviewHelpfulUseCase } from '@/modules/reviews/application/remove-shop-review-helpful.usecase';
 import type { ShopReview } from '@/modules/reviews/domain/shop-review';
 import type { ReviewListCursor } from '@/modules/reviews/domain/review.repository';
 import { decodeCursor, encodeCursor } from '@/shared/http/cursor';
 import { ValidationError } from '@/shared/domain/errors';
 import {
   ReviewCursorSchema,
+  type HelpfulVoteResponse,
   type ListShopReviewsQuery,
   type ListShopReviewsResponse,
   type PostShopReviewRequest,
@@ -53,6 +56,8 @@ const buildListInput = (
 export interface ShopReviewControllerDeps {
   postShopReview: PostShopReviewUseCase;
   listShopReviews: ListShopReviewsUseCase;
+  voteShopReviewHelpful: VoteShopReviewHelpfulUseCase;
+  removeShopReviewHelpful: RemoveShopReviewHelpfulUseCase;
 }
 
 export const createShopReviewController = (deps: ShopReviewControllerDeps) => ({
@@ -123,6 +128,21 @@ export const createShopReviewController = (deps: ShopReviewControllerDeps) => ({
         },
       },
     };
+  },
+
+  // POST /v1/shop/reviews/{review_id}/helpful
+  //   認証ユーザーが対象店舗レビューに「役立った」を付与する（冪等）。
+  //   自己投票は 403 / 対象が無ければ 404 を UseCase が投げる。
+  voteHelpful: async (reviewId: string, userId: string): Promise<HelpfulVoteResponse> => {
+    const result = await deps.voteShopReviewHelpful({ reviewId, userId });
+    return { review_id: reviewId, helpful_count: result.helpfulCount, voted: result.voted };
+  },
+
+  // DELETE /v1/shop/reviews/{review_id}/helpful
+  //   付与済みの「役立った」を取消する（未投票なら no-op で冪等）。
+  removeHelpful: async (reviewId: string, userId: string): Promise<HelpfulVoteResponse> => {
+    const result = await deps.removeShopReviewHelpful({ reviewId, userId });
+    return { review_id: reviewId, helpful_count: result.helpfulCount, voted: result.voted };
   },
 });
 

@@ -3,12 +3,15 @@ import type {
   ListReviewsByCakeUseCase,
 } from '@/modules/reviews/application/list-reviews-by-cake.usecase';
 import type { PostReviewUseCase } from '@/modules/reviews/application/post-review.usecase';
+import type { VoteReviewHelpfulUseCase } from '@/modules/reviews/application/vote-review-helpful.usecase';
+import type { RemoveReviewHelpfulUseCase } from '@/modules/reviews/application/remove-review-helpful.usecase';
 import type { Review } from '@/modules/reviews/domain/review';
 import type { ReviewListCursor } from '@/modules/reviews/domain/review.repository';
 import { decodeCursor, encodeCursor } from '@/shared/http/cursor';
 import { ValidationError } from '@/shared/domain/errors';
 import {
   ReviewCursorSchema,
+  type HelpfulVoteResponse,
   type ListReviewsQuery,
   type ListReviewsResponse,
   type PostReviewRequest,
@@ -59,6 +62,8 @@ const buildListInput = (
 export interface ReviewControllerDeps {
   postReview: PostReviewUseCase;
   listReviewsByCake: ListReviewsByCakeUseCase;
+  voteHelpful: VoteReviewHelpfulUseCase;
+  removeHelpful: RemoveReviewHelpfulUseCase;
 }
 
 export const createReviewController = (deps: ReviewControllerDeps) => ({
@@ -134,6 +139,21 @@ export const createReviewController = (deps: ReviewControllerDeps) => ({
         },
       },
     };
+  },
+
+  // POST /v1/cakes/{cake_id}/reviews/{review_id}/helpful
+  //   認証ユーザーが対象レビューに「役立った」を付与する（冪等）。
+  //   自己投票は 403 / 対象が無ければ 404 を UseCase が投げる。
+  voteHelpful: async (reviewId: string, userId: string): Promise<HelpfulVoteResponse> => {
+    const result = await deps.voteHelpful({ reviewId, userId });
+    return { review_id: reviewId, helpful_count: result.helpfulCount, voted: result.voted };
+  },
+
+  // DELETE /v1/cakes/{cake_id}/reviews/{review_id}/helpful
+  //   付与済みの「役立った」を取消する（未投票なら no-op で冪等）。
+  removeHelpful: async (reviewId: string, userId: string): Promise<HelpfulVoteResponse> => {
+    const result = await deps.removeHelpful({ reviewId, userId });
+    return { review_id: reviewId, helpful_count: result.helpfulCount, voted: result.voted };
   },
 });
 

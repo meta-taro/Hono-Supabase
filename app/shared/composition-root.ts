@@ -30,13 +30,19 @@ import { createListDeliveriesUseCase } from '@/modules/webhooks/application/list
 import { createWebhookController } from '@/modules/webhooks/presentation/webhook.controller';
 import { ReviewSupabaseRepository } from '@/modules/reviews/infrastructure/review.supabase-repository';
 import { SupabaseVerifiedPurchaserChecker } from '@/modules/reviews/infrastructure/supabase-verified-purchaser.checker';
+import { ReviewHelpfulVoteSupabaseRepository } from '@/modules/reviews/infrastructure/review-helpful-vote.supabase-repository';
 import { createListReviewsByCakeUseCase } from '@/modules/reviews/application/list-reviews-by-cake.usecase';
 import { createPostReviewUseCase } from '@/modules/reviews/application/post-review.usecase';
+import { createVoteReviewHelpfulUseCase } from '@/modules/reviews/application/vote-review-helpful.usecase';
+import { createRemoveReviewHelpfulUseCase } from '@/modules/reviews/application/remove-review-helpful.usecase';
 import { createReviewController } from '@/modules/reviews/presentation/review.controller';
 import { ShopReviewSupabaseRepository } from '@/modules/reviews/infrastructure/shop-review.supabase-repository';
 import { SupabaseOrderHistoryChecker } from '@/modules/reviews/infrastructure/supabase-order-history.checker';
+import { ShopReviewHelpfulVoteSupabaseRepository } from '@/modules/reviews/infrastructure/shop-review-helpful-vote.supabase-repository';
 import { createListShopReviewsUseCase } from '@/modules/reviews/application/list-shop-reviews.usecase';
 import { createPostShopReviewUseCase } from '@/modules/reviews/application/post-shop-review.usecase';
+import { createVoteShopReviewHelpfulUseCase } from '@/modules/reviews/application/vote-shop-review-helpful.usecase';
+import { createRemoveShopReviewHelpfulUseCase } from '@/modules/reviews/application/remove-shop-review-helpful.usecase';
 import { createShopReviewController } from '@/modules/reviews/presentation/shop-review.controller';
 
 // ---------------------------------------------------------------------------
@@ -132,9 +138,15 @@ export const buildRequestModules = (sb: SupabaseClient, deps: ModuleDeps): Reque
   //     「他人の購入実績バッジ誤付与」を構造的に防ぐ（security invoker + RLS）。
   const reviewRepo = new ReviewSupabaseRepository(sb);
   const verifiedPurchaserChecker = new SupabaseVerifiedPurchaserChecker(sb);
+  // 「役立った」投票（Phase 11 Step 3）。countByReview は DB トリガで同期された
+  // reviews.helpful_count を読む（RLS で published 行は anon でも読めるため、
+  // 投票テーブル自体を RLS 越しに数える必要がない）。
+  const reviewVoteRepo = new ReviewHelpfulVoteSupabaseRepository(sb);
   const reviews = createReviewController({
     postReview: createPostReviewUseCase(reviewRepo, verifiedPurchaserChecker, deps.logger),
     listReviewsByCake: createListReviewsByCakeUseCase(reviewRepo),
+    voteHelpful: createVoteReviewHelpfulUseCase(reviewRepo, reviewVoteRepo, deps.logger),
+    removeHelpful: createRemoveReviewHelpfulUseCase(reviewRepo, reviewVoteRepo, deps.logger),
   });
 
   // shopReviews（店舗向け口コミ・単一店舗）
@@ -143,9 +155,20 @@ export const buildRequestModules = (sb: SupabaseClient, deps: ModuleDeps): Reque
   //     「他人の利用実績バッジ誤付与」を構造的に防ぐ（security invoker + RLS）。
   const shopReviewRepo = new ShopReviewSupabaseRepository(sb);
   const orderHistoryChecker = new SupabaseOrderHistoryChecker(sb);
+  const shopReviewVoteRepo = new ShopReviewHelpfulVoteSupabaseRepository(sb);
   const shopReviews = createShopReviewController({
     postShopReview: createPostShopReviewUseCase(shopReviewRepo, orderHistoryChecker, deps.logger),
     listShopReviews: createListShopReviewsUseCase(shopReviewRepo),
+    voteShopReviewHelpful: createVoteShopReviewHelpfulUseCase(
+      shopReviewRepo,
+      shopReviewVoteRepo,
+      deps.logger,
+    ),
+    removeShopReviewHelpful: createRemoveShopReviewHelpfulUseCase(
+      shopReviewRepo,
+      shopReviewVoteRepo,
+      deps.logger,
+    ),
   });
 
   return { cakes, customers, orders, webhooks, reviews, shopReviews };
